@@ -272,6 +272,24 @@ class StudioViewModel: ObservableObject {
     @Published var musicPrompt: String = PRESET_TEMPLATES[0].music
     @Published var firstFrameImage: NSImage? = nil
     @Published var lastFrameImage: NSImage? = nil
+    @Published var referenceImages: [NSImage] = []
+    @Published var refImageSizeMode: String = "match"
+    @Published var refAudioFileName: String? = nil
+    @Published var refAudioBase64: String? = nil
+    @Published var h3CorrectorEnabled: Bool = true
+    @Published var h3CorrectorStrength: Double = 1.0
+    @Published var h3CorrectorStartStep: Int = 0
+    @Published var h3CorrectorEndStep: Int = -1
+    @Published var autoSleepAfterGenerate: Bool = {
+        if UserDefaults.standard.object(forKey: "easycolabAutoSleepAfterGenerate") == nil {
+            return true
+        }
+        return UserDefaults.standard.bool(forKey: "easycolabAutoSleepAfterGenerate")
+    }() {
+        didSet {
+            UserDefaults.standard.set(autoSleepAfterGenerate, forKey: "easycolabAutoSleepAfterGenerate")
+        }
+    }
     @Published var selectedVideoResolution: ResolutionOption = VIDEO_RESOLUTIONS[0]
     @Published var selectedImageResolution: ResolutionOption = IMAGE_RESOLUTIONS[0]
     @Published var numFrames: Double = 124
@@ -742,6 +760,53 @@ class StudioViewModel: ObservableObject {
         }
     }
 
+    func addReferenceImages(from urls: [URL]) {
+        guard !urls.isEmpty else { return }
+        let previousCount = referenceImages.count
+        var next = referenceImages
+        for url in urls {
+            guard next.count < 9 else { break }
+            if let img = NSImage(contentsOf: url) {
+                next.append(img)
+            }
+        }
+        referenceImages = next
+        if next.count >= 9 && previousCount + urls.count > 9 {
+            statusMessage = L(
+                "10Eros-Max 最多支持 9 张参考图 (<Picture 1..9>)，已保留前 9 张。",
+                "10Eros-Max supports up to 9 reference images (<Picture 1..9>); kept the first 9."
+            )
+        }
+    }
+
+    func removeReferenceImage(at index: Int) {
+        guard referenceImages.indices.contains(index) else { return }
+        referenceImages.remove(at: index)
+    }
+
+    func clearReferenceImages() {
+        referenceImages.removeAll()
+    }
+
+    func setReferenceAudio(from url: URL) {
+        do {
+            let data = try Data(contentsOf: url)
+            guard !data.isEmpty else { return }
+            refAudioBase64 = data.base64EncodedString()
+            refAudioFileName = url.lastPathComponent
+        } catch {
+            statusMessage = L(
+                "读取参考音频失败: \(error.localizedDescription)",
+                "Failed to read reference audio: \(error.localizedDescription)"
+            )
+        }
+    }
+
+    func clearReferenceAudio() {
+        refAudioFileName = nil
+        refAudioBase64 = nil
+    }
+
     func switchSelectedModel(_ spec: OpenModelSpec) {
         guard selectedModelId != spec.id else { return }
         selectedModelId = spec.id
@@ -763,10 +828,22 @@ class StudioViewModel: ObservableObject {
             }
         }
 
+        if spec.id == "minimax_h3_10eros_max" || spec.id == "minimax_h3_sulphur3",
+           let h3Res = VIDEO_RESOLUTIONS.first(where: { $0.id == "v_1056_608" }) {
+            selectedVideoResolution = h3Res
+        }
+
         // 自动填入匹配该模态的首条示例提示词（若当前框还是另一模态的默认模板）
-        if let sample = PRESET_TEMPLATES.first(where: {
-            $0.category == spec.modality || (spec.modality == .video && $0.category == .videoAudio)
-        }) {
+        let preferredSample: PresetTemplate? = {
+            if spec.id == "minimax_h3_10eros_max",
+               let multiSample = PRESET_TEMPLATES.first(where: { $0.id == "tpl_10eros_multiref" }) {
+                return multiSample
+            }
+            return PRESET_TEMPLATES.first(where: {
+                $0.category == spec.modality || (spec.modality == .video && $0.category == .videoAudio)
+            })
+        }()
+        if let sample = preferredSample {
             visualPrompt = sample.visual
             soundscapePrompt = sample.soundscape
             musicPrompt = sample.music
@@ -1233,6 +1310,13 @@ class StudioViewModel: ObservableObject {
             return
         }
 
+        if taskModeId == "multiref" && referenceImages.isEmpty && refAudioBase64 == nil {
+            statusMessage = L(
+                "在「多图 + 声纹参考」模式下，请至少添加 1 张参考图 (<Picture 1>) 或上传参考音频 (<Audio 1>)。",
+                "In Multi-Image + Voice mode, please add at least 1 reference image (<Picture 1>) or an audio voice clip (<Audio 1>)."
+            )
+            return
+        }
         if taskModeId == "fl2va" && firstFrameImage == nil && lastFrameImage == nil {
             statusMessage = L(
                 "在「首尾帧生视频」模式下，请至少提供一张首帧或尾帧图片。",
@@ -1355,6 +1439,24 @@ class StudioViewModel: ObservableObject {
                 if let lastImg = lastFrameImage, let b64 = encodeImageToBase64(lastImg) {
                     payload["last_frame_base64"] = b64
                 }
+            }
+            if taskModeId == "multiref" {
+                let encodedRefs = referenceImages.prefix(9).compactMap { encodeImageToBase64($0) }
+                if !encodedRefs.isEmpty {
+                    payload["ref_images_base64"] = encodedRefs
+                }
+                payload["ref_image_size"] = refImageSizeMode
+                if let audioB64 = refAudioBase64, !audioB64.isEmpty {
+                    payload["ref_audio_base64"] = audioB64
+                    payload["ref_audio_filename"] = refAudioFileName ?? "voice_seed.wav"
+                }
+            }
+            if selectedModelId == "minimax_h3_sulphur3" {
+                payload["corrector_enabled"] = h3CorrectorEnabled
+                payload["corrector_strength"] = h3CorrectorStrength
+                payload["corrector_budget_fraction"] = 0.5
+                payload["corrector_start_step"] = h3CorrectorStartStep
+                payload["corrector_end_step"] = h3CorrectorEndStep
             }
 
             req.httpBody = try JSONSerialization.data(withJSONObject: payload)
@@ -1527,6 +1629,13 @@ class StudioViewModel: ObservableObject {
                     isGenerating = false
                     progressValue = 1.0
                     await checkColabStatus(silent: true)
+                    if autoSleepAfterGenerate && activeModelSpec.modality != .llmVLM {
+                        statusMessage = L(
+                            "媒体文件已回传至本地，正在按「完成后自动休眠」设置释放 Colab 实例...",
+                            "Media saved locally. Auto-sleeping Colab instance to save CU credits..."
+                        )
+                        await disconnectRemoteColab()
+                    }
                     break
                 } else if job.status == "failed" {
                     if let idx = assistantRowIndex, idx < chatHistory.count, chatHistory[idx].content.isEmpty {

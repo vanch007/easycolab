@@ -21,13 +21,18 @@ extension MainStudioView {
                     // API 协议网关专属面板（OpenAI + Anthropic 双协议配置与一键复制）
                     apiGatewaySection(palette: palette)
                 } else {
-                    // 2. 参考图上传区（在首尾帧、图生视频、指令修图、视觉理解模式下自动展开）
-                    if ["fl2va", "i2v", "i2i_edit", "vlm"].contains(vm.taskModeId) {
+                    // 2. 参考图与声纹参考上传区（在多图参考、首尾帧、图生视频、指令修图、视觉理解模式下自动展开）
+                    if ["multiref", "fl2va", "i2v", "i2i_edit", "vlm"].contains(vm.taskModeId) {
                         referenceImageSection
                     }
 
                     // 3. 提示词与输入工作台
                     promptComposerSection(palette: palette)
+
+                    // 3.5 Sulphur-3 s3_corrector 速度残差修正器原生控制面板
+                    if vm.selectedModelId == "minimax_h3_sulphur3" {
+                        h3CorrectorSection(palette: palette)
+                    }
 
                     // 4. 生成主按钮与状态条
                     generateActionSection
@@ -64,6 +69,7 @@ extension MainStudioView {
             ("controlnet", L("controlnet (姿态 / 深度 / VACE 控制)", "controlnet (Pose / Depth / VACE)")),
             ("upscale_models", L("upscale_models (高清超分放大)", "upscale_models (Super-Resolution Upscalers)")),
             ("audio_encoders", L("audio_encoders (音频驱动 / 配音节点)", "audio_encoders (Audio-Driven / Foley Nodes)")),
+            ("h3_correctors", L("h3_correctors (Sulphur-3 效果修正器)", "h3_correctors (Sulphur-3 Correctors)")),
             ("gguf", L("gguf (量化视频/图像主干)", "gguf (Quantized Video / Image Backbones)"))
         ]
 
@@ -1113,6 +1119,171 @@ extension MainStudioView {
     @ViewBuilder
     var referenceImageSection: some View {
         switch vm.taskModeId {
+        case "multiref":
+            WorkspaceCard(
+                title: L("多图参考 (<Picture 1..9>) 与声纹克隆 (<Audio 1>)", "Multi-Image Refs (<Picture 1..9>) & Voice Clone (<Audio 1>)"),
+                subtitle: L(
+                    "10Eros-Max 支持最多 9 张参考图（按顺序在提示词写 <Picture 1>、<Picture 2>...）及 1 段声纹克隆音频（写 <Audio 1>）",
+                    "10Eros-Max supports up to 9 reference images (<Picture 1>, <Picture 2>...) + optional voice seed (<Audio 1>)"
+                ),
+                icon: "person.2.crop.square.stack"
+            ) {
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack(spacing: 8) {
+                        Text(L("参考图列表 (\(vm.referenceImages.count)/9)", "Reference Images (\(vm.referenceImages.count)/9)"))
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Picker(L("参考缩放", "Ref Scale"), selection: $vm.refImageSizeMode) {
+                            Text(L("match (原图适配)", "match (Fit)")).tag("match")
+                            Text(L("max (高分辨率)", "max (High-Res)")).tag("max")
+                        }
+                        .pickerStyle(.segmented)
+                        .frame(width: 240)
+
+                        Button {
+                            let panel = NSOpenPanel()
+                            panel.allowsMultipleSelection = true
+                            panel.canChooseDirectories = false
+                            panel.allowedContentTypes = [.image, .png, .jpeg, .webP]
+                            if panel.runModal() == .OK {
+                                vm.addReferenceImages(from: panel.urls)
+                            }
+                        } label: {
+                            Label(L("添加参考图", "Add Images"), systemImage: "plus.circle.fill")
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.small)
+                        .disabled(vm.referenceImages.count >= 9)
+
+                        if !vm.referenceImages.isEmpty {
+                            Button(role: .destructive) {
+                                vm.clearReferenceImages()
+                            } label: {
+                                Label(L("清空", "Clear"), systemImage: "trash")
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+                        }
+                    }
+
+                    if vm.referenceImages.isEmpty {
+                        HStack(spacing: 10) {
+                            Image(systemName: "photo.stack")
+                                .font(.title2)
+                                .foregroundStyle(.secondary)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(L("拖入 1~9 张人物定妆、服装或场景图到此处，或点击右上角「添加参考图」", "Drop 1–9 character, outfit, or scene images here, or click 'Add Images'"))
+                                    .font(.callout.weight(.medium))
+                                Text(L("提示词写法示例：The woman from <Picture 1> enters the sunlit room from <Picture 2>...", "Prompt syntax: The woman from <Picture 1> enters the sunlit room from <Picture 2>..."))
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                        }
+                        .padding(14)
+                        .frame(maxWidth: .infinity)
+                        .background(
+                            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                .strokeBorder(Color.secondary.opacity(0.35), style: StrokeStyle(lineWidth: 1.2, dash: [6, 4]))
+                        )
+                    } else {
+                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 112, maximum: 136), spacing: 10)], spacing: 10) {
+                            ForEach(Array(vm.referenceImages.enumerated()), id: \.offset) { idx, img in
+                                ZStack(alignment: .topTrailing) {
+                                    VStack(spacing: 4) {
+                                        Image(nsImage: img)
+                                            .resizable()
+                                            .aspectRatio(contentMode: .fill)
+                                            .frame(width: 112, height: 84)
+                                            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                                        Text("<Picture \(idx + 1)>")
+                                            .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                                            .foregroundStyle(Color.accentColor)
+                                    }
+                                    .padding(5)
+                                    .background(
+                                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                            .fill(Color.primary.opacity(0.04))
+                                    )
+
+                                    Button {
+                                        vm.removeReferenceImage(at: idx)
+                                    } label: {
+                                        Image(systemName: "xmark.circle.fill")
+                                            .font(.system(size: 15))
+                                            .foregroundStyle(.white, Color.red.opacity(0.9))
+                                    }
+                                    .buttonStyle(.plain)
+                                    .padding(4)
+                                }
+                            }
+                        }
+                    }
+
+                    Divider()
+
+                    HStack(spacing: 10) {
+                        Image(systemName: "waveform.circle.fill")
+                            .font(.title3)
+                            .foregroundStyle(vm.refAudioBase64 != nil ? Color.accentColor : .secondary)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(L("声纹克隆音频参考 (<Audio 1>，可选)", "Voice Clone Audio Seed (<Audio 1>, Optional)"))
+                                .font(.caption.weight(.semibold))
+                            Text(
+                                vm.refAudioFileName != nil
+                                    ? L("已绑定声纹：\(vm.refAudioFileName!) — 在音效/对白框写 <Audio 1> 即可复用音色", "Loaded: \(vm.refAudioFileName!) — reference <Audio 1> in dialogue prompt")
+                                    : L("上传 3~15 秒干净人声 (.wav / .mp3 / .m4a / .flac)，提示词用 <Audio 1> 指代", "Upload 3–15s clean speech (.wav/.mp3/.m4a/.flac) and write <Audio 1> in prompt")
+                            )
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Button {
+                            let panel = NSOpenPanel()
+                            panel.allowsMultipleSelection = false
+                            panel.canChooseDirectories = false
+                            panel.allowedContentTypes = [.audio, .wav, .mp3, .mpeg4Audio]
+                            if panel.runModal() == .OK, let url = panel.url {
+                                vm.setReferenceAudio(from: url)
+                            }
+                        } label: {
+                            Label(
+                                vm.refAudioFileName == nil ? L("选择参考音频", "Select Audio") : L("更换音频", "Replace Audio"),
+                                systemImage: "music.note"
+                            )
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+
+                        if vm.refAudioBase64 != nil {
+                            Button(role: .destructive) {
+                                vm.clearReferenceAudio()
+                            } label: {
+                                Image(systemName: "xmark.circle")
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+                        }
+                    }
+                }
+                .onDrop(of: [.fileURL], isTargeted: nil) { providers in
+                    for provider in providers {
+                        _ = provider.loadObject(ofClass: URL.self) { url, _ in
+                            guard let url else { return }
+                            Task { @MainActor in
+                                let ext = url.pathExtension.lowercased()
+                                if ["wav", "mp3", "m4a", "flac", "ogg", "aac"].contains(ext) {
+                                    vm.setReferenceAudio(from: url)
+                                } else {
+                                    vm.addReferenceImages(from: [url])
+                                }
+                            }
+                        }
+                    }
+                    return true
+                }
+            }
         case "fl2va":
             WorkspaceCard(
                 title: L("首尾关键帧参考图", "Start & End Keyframe Images"),
@@ -1361,8 +1532,102 @@ extension MainStudioView {
         }
     }
 
+    @ViewBuilder
+    func h3CorrectorSection(palette: StudioPalette) -> some View {
+        WorkspaceCard(
+            title: L("s3_corrector 速度残差效果修正器", "s3_corrector Velocity Residual Enhancer"),
+            subtitle: L(
+                "Sulphur-3 专属扩展节点 (ApplyH3Corrector)：补偿无审核推理动态细节与色彩张力",
+                "Dedicated Sulphur-3 node (ApplyH3Corrector): refines motion coherence, contrast, and micro-detail"
+            ),
+            icon: "slider.horizontal.3"
+        ) {
+            VStack(alignment: .leading, spacing: 12) {
+                Toggle(isOn: $vm.h3CorrectorEnabled) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(L("启用 ApplyH3Corrector 效果修正器 (s3_corrector.safetensors)", "Enable ApplyH3Corrector (s3_corrector.safetensors)"))
+                            .font(.callout.weight(.medium))
+                        Text(L("关闭时等价于 strength = 0 直通裸底座", "When disabled, bypasses the corrector completely"))
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .toggleStyle(.switch)
+
+                if vm.h3CorrectorEnabled {
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack {
+                            Text(L("修正器强度 (Strength)", "Corrector Strength"))
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                            Text(String(format: "%.2f", vm.h3CorrectorStrength))
+                                .font(.caption.weight(.semibold))
+                                .monospacedDigit()
+                        }
+                        Slider(value: $vm.h3CorrectorStrength, in: 0.0...1.5, step: 0.05)
+                    }
+
+                    HStack(spacing: 16) {
+                        Stepper(
+                            value: $vm.h3CorrectorStartStep,
+                            in: 0...40
+                        ) {
+                            Text(L("起始步数: \(vm.h3CorrectorStartStep)", "Start Step: \(vm.h3CorrectorStartStep)"))
+                                .font(.caption)
+                                .monospacedDigit()
+                        }
+
+                        Stepper(
+                            value: $vm.h3CorrectorEndStep,
+                            in: -1...40
+                        ) {
+                            let endText = vm.h3CorrectorEndStep < 0
+                                ? L("全程 (-1)", "All (-1)")
+                                : "\(vm.h3CorrectorEndStep)"
+                            Text(L("结束步数: \(endText)", "End Step: \(endText)"))
+                                .font(.caption)
+                                .monospacedDigit()
+                        }
+
+                        Spacer()
+
+                        Button(L("恢复推荐值", "Reset")) {
+                            vm.h3CorrectorStrength = 1.0
+                            vm.h3CorrectorStartStep = 0
+                            vm.h3CorrectorEndStep = -1
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                    }
+                }
+            }
+            .padding(4)
+        }
+    }
+
     var generateActionSection: some View {
         VStack(alignment: .leading, spacing: 10) {
+            if vm.activeModelSpec.modality != .llmVLM {
+                HStack(spacing: 10) {
+                    Toggle(isOn: $vm.autoSleepAfterGenerate) {
+                        Label(
+                            L("完成后自动释放实例休眠（省 CU 额度 · 默认开启）", "Auto-sleep Colab after download completes (saves CU · ON by default)"),
+                            systemImage: vm.autoSleepAfterGenerate ? "moon.zzz.fill" : "moon.zzz"
+                        )
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(vm.autoSleepAfterGenerate ? Color.accentColor : Color.secondary)
+                    }
+                    .toggleStyle(.checkbox)
+                    .help(L(
+                        "勾选后，每次音视频回传至 Mac 完成会自动调用 /minimax_api/disconnect 并释放当前 Colab 算力实例以节省 CU 额度。",
+                        "When checked, automatically disconnects & terminates the Colab GPU runtime once media transfer finishes."
+                    ))
+                    Spacer()
+                }
+                .padding(.horizontal, 2)
+            }
+
             HStack(spacing: 10) {
                 Button {
                     Task { await vm.startGeneration() }

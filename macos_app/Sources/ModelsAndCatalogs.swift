@@ -203,6 +203,83 @@ let OPEN_MODEL_CATALOG: [OpenModelSpec] = [
         ]
     ),
     OpenModelSpec(
+        id: "minimax_h3_10eros_max",
+        nameZh: "10Eros-Max (H3 无限制)",
+        nameEn: "10Eros-Max (H3 Uncensored)",
+        repoId: "TenStrip/10Eros-Max",
+        badgeZh: "无限制 · 9图+声纹 · 39 GB",
+        badgeEn: "Uncensored · 9 Refs + Voice · 39 GB",
+        summaryZh: "TenStrip/10Eros-Max v1.0 无内容限制 8 步极速版 + Heretic 无审核编码器，原生支持 1~9 张参考图 (<Picture 1..9>) 与声纹克隆 (<Audio 1>)",
+        summaryEn: "TenStrip/10Eros-Max v1.0 uncensored 8-step turbo + Heretic encoder. Native 1–9 image refs (<Picture 1..9>) & voice clone (<Audio 1>)",
+        approxSizeGB: 39.1,
+        icon: "photo.stack.fill",
+        modality: .videoAudio,
+        defaultSteps: 8,
+        modes: [
+            TaskModeItem(
+                id: "multiref",
+                titleZh: "多图 + 声纹参考生视频",
+                titleEn: "Multi-Image + Voice to Video",
+                subtitleZh: "最多上传 9 张参考图 (<Picture 1..9>) + 可选参考音频 (<Audio 1>)，8 步锁定人物与声纹",
+                subtitleEn: "Upload 1–9 reference images (<Picture 1..9>) + optional voice seed (<Audio 1>) in 8 steps",
+                icon: "person.2.crop.square.stack"
+            ),
+            TaskModeItem(
+                id: "fl2va",
+                titleZh: "首尾帧生有声视频",
+                titleEn: "First/Last Frame to Video",
+                subtitleZh: "上传首帧或尾帧参考图，8 步极速生成带立体声音效的起止过渡大片",
+                subtitleEn: "Lock start/end keyframes with synchronized 32kHz audio in 8 steps",
+                icon: "photo.on.rectangle.angled"
+            )
+        ],
+        defaultFiles: [
+            ModelFileItem(name: "diffusion_models/10Eros_Max_8stepTurbo_v1.0_hybrid-int8_HQ.safetensors", desc: "10Eros-Max v1.0 8步 Turbo DiT 主干 (21.3 GB)", exists: false, size_gb: 0),
+            ModelFileItem(name: "text_encoders/qwen3vl_32b_heretic_minimax_h3_nvfp4.safetensors", desc: "Heretic 无审核 32B NVFP4 编码器 (14.6 GB)", exists: false, size_gb: 0),
+            ModelFileItem(name: "vae/minimax_h3_video_vae_int8_convrot.safetensors", desc: "MiniMax-H3 视频 VAE int8 (2.6 GB)", exists: false, size_gb: 0),
+            ModelFileItem(name: "vae/minimax_h3_audio_vae_fp32.safetensors", desc: "MiniMax-H3 32kHz 音频 VAE fp32 (0.56 GB)", exists: false, size_gb: 0)
+        ]
+    ),
+    OpenModelSpec(
+        id: "minimax_h3_sulphur3",
+        nameZh: "Sulphur-3 (H3 无限制)",
+        nameEn: "Sulphur-3 (H3 Uncensored)",
+        repoId: "SulphurAI/Sulphur-3",
+        badgeZh: "无限制满血+修正器 · 63 GB",
+        badgeEn: "Uncensored + Corrector · 63 GB",
+        summaryZh: "SulphurAI/Sulphur-3 无限制满血主干 + Heretic 无审核编码器 + s3_corrector 速度残差修正器，动态张力与画质全面强化",
+        summaryEn: "SulphurAI/Sulphur-3 uncensored backbone + Heretic encoder + s3_corrector velocity residual enhancer for cinematic motion",
+        approxSizeGB: 62.7,
+        icon: "wand.and.rays",
+        modality: .videoAudio,
+        defaultSteps: 20,
+        modes: [
+            TaskModeItem(
+                id: "t2va",
+                titleZh: "文生有声视频 (带修正器)",
+                titleEn: "Text-to-Video+Audio (Corrector)",
+                subtitleZh: "纯文本 20 步生成无审核高清音视频，可实时调节 s3_corrector 修正器强度与生效步数",
+                subtitleEn: "20-step uncensored T2VA with tunable s3_corrector strength and step window",
+                icon: "film"
+            ),
+            TaskModeItem(
+                id: "fl2va",
+                titleZh: "首尾帧生有声视频 (带修正器)",
+                titleEn: "First/Last Frame (Corrector)",
+                subtitleZh: "上传首帧/尾帧配合 s3_corrector 残差修正，大幅提升动作幅度与细节稳定性",
+                subtitleEn: "First/last keyframes enhanced by s3_corrector for fluid motion & crisp detail",
+                icon: "photo.on.rectangle.angled"
+            )
+        ],
+        defaultFiles: [
+            ModelFileItem(name: "diffusion_models/s3.safetensors", desc: "Sulphur-3 满血无限制 DiT 主干 (37.5 GB)", exists: false, size_gb: 0),
+            ModelFileItem(name: "h3_correctors/s3_corrector.safetensors", desc: "s3_corrector 速度残差修正器 (7.4 GB)", exists: false, size_gb: 0),
+            ModelFileItem(name: "text_encoders/qwen3vl_32b_heretic_minimax_h3_nvfp4.safetensors", desc: "Heretic 无审核 32B NVFP4 编码器 (14.6 GB)", exists: false, size_gb: 0),
+            ModelFileItem(name: "vae/minimax_h3_video_vae_int8_convrot.safetensors", desc: "MiniMax-H3 视频 VAE int8 (2.6 GB)", exists: false, size_gb: 0),
+            ModelFileItem(name: "vae/minimax_h3_audio_vae_fp32.safetensors", desc: "MiniMax-H3 32kHz 音频 VAE fp32 (0.56 GB)", exists: false, size_gb: 0)
+        ]
+    ),
+    OpenModelSpec(
         id: "minimax_h3_image",
         nameZh: "MiniMax-H3-Image (33B · 4K)",
         nameEn: "MiniMax-H3-Image (33B · 4K)",
@@ -483,8 +560,10 @@ struct ResolutionOption: Identifiable, Hashable {
 
 let VIDEO_RESOLUTIONS: [ResolutionOption] = [
     ResolutionOption(id: "v_832_480", labelZh: "832 × 480 (16:9 横屏标准 · 推荐)", labelEn: "832 × 480 (16:9 Landscape · Recommended)", width: 832, height: 480),
+    ResolutionOption(id: "v_1056_608", labelZh: "1056 × 608 (16:9 H3 无限制黄金画幅 · 推荐)", labelEn: "1056 × 608 (16:9 H3 Uncensored Golden Ratio)", width: 1056, height: 608),
     ResolutionOption(id: "v_480_832", labelZh: "480 × 832 (9:16 竖屏短视频)", labelEn: "480 × 832 (9:16 Vertical Short)", width: 480, height: 832),
     ResolutionOption(id: "v_1280_720", labelZh: "1280 × 720 (16:9 720P 高清)", labelEn: "1280 × 720 (16:9 720P HD)", width: 1280, height: 720),
+    ResolutionOption(id: "v_1344_768", labelZh: "1344 × 768 (16:9 电影高清宽屏)", labelEn: "1344 × 768 (16:9 Cinema HD Widescreen)", width: 1344, height: 768),
     ResolutionOption(id: "v_720_1280", labelZh: "720 × 1280 (9:16 720P 竖屏)", labelEn: "720 × 1280 (9:16 720P Vertical)", width: 720, height: 1280),
     ResolutionOption(id: "v_640_640", labelZh: "640 × 640 (1:1 方形)", labelEn: "640 × 640 (1:1 Square)", width: 640, height: 640)
 ]
@@ -549,6 +628,16 @@ let PRESET_TEMPLATES: [PresetTemplate] = [
         visualEn: "FPV drone shot diving down a majestic Icelandic waterfall surrounded by lush green moss and basalt columns under golden hour sunlight, mist rising into a rainbow.",
         soundscape: "Roaring waterfall rushing water, wind whooshing past the camera, distant seabirds calling.",
         music: "Epic cinematic acoustic guitar and soaring cello."
+    ),
+    PresetTemplate(
+        id: "tpl_10eros_multiref",
+        category: .videoAudio,
+        nameZh: "[多图+声纹] <Picture 1>/<Picture 2> 角色入场与 <Audio 1> 对白",
+        nameEn: "[MultiRef+Voice] <Picture 1>/<Picture 2> Character + <Audio 1>",
+        visualZh: "The character from <Picture 1> walks smoothly into the sunlit setting from <Picture 2>, turning gracefully toward the camera with natural facial expression and cinematic 50mm lens lighting.",
+        visualEn: "The character from <Picture 1> walks smoothly into the sunlit setting from <Picture 2>, turning gracefully toward the camera with natural facial expression and cinematic 50mm lens lighting.",
+        soundscape: "The character speaks in <Audio 1>'s voice, calm and clear: \"Welcome back, let's begin.\" Soft footsteps and gentle ambient breeze.",
+        music: "Warm minimalist piano and subtle cinematic strings."
     ),
     PresetTemplate(
         id: "tpl_cyber_poster",
@@ -700,6 +789,10 @@ struct ComfyPresetPackItem: Codable, Identifiable, Hashable {
             return "LTX-2.3 (22B) · Cinematic Camera Motion First/Last Frame + Audio"
         case "hunyuan15_i2v_1080p":
             return "HunyuanVideo 1.5 · Single-Image Direct 1080P Super-Res Workflow"
+        case "minimax_h3_10eros_max":
+            return "10Eros-Max (Uncensored H3) · Multi-Image Reference + FLF2V 8-Step"
+        case "minimax_h3_sulphur3":
+            return "Sulphur-3 (Uncensored H3) · Full Backbone + H3 Corrector"
         default:
             return localizeServerText(title)
         }
@@ -716,6 +809,10 @@ struct ComfyPresetPackItem: Codable, Identifiable, Hashable {
             return "Cinematic Camera · Only 2 Weights"
         case "hunyuan15_i2v_1080p":
             return "720P + 1080P Dual Output"
+        case "minimax_h3_10eros_max":
+            return "Uncensored · Multi-Ref 8-Step"
+        case "minimax_h3_sulphur3":
+            return "Uncensored · With Corrector"
         default:
             return localizeServerText(badge)
         }
@@ -732,6 +829,10 @@ struct ComfyPresetPackItem: Codable, Identifiable, Hashable {
             return "Optimized for dramatic camera moves between start & end keyframes (e.g. aerial crane dive to low-angle close-up + synthesized soundtrack)"
         case "hunyuan15_i2v_1080p":
             return "Latent super-resolution pipeline enabled by default — upload 1 image to render both 720P base video and 1920×1080 Full HD output"
+        case "minimax_h3_10eros_max":
+            return "Built on TenStrip/10Eros-Max v1.0 & uncensored Heretic encoder for <Picture 1>/<Picture 2> multi-image reference & FLF2V in 8 turbo steps"
+        case "minimax_h3_sulphur3":
+            return "Full SulphurAI/Sulphur-3 backbone + uncensored Heretic encoder + s3_corrector residual network & auto-installed nodes for superior fidelity"
         default:
             return localizeServerText(scenario)
         }
@@ -746,7 +847,11 @@ struct ComfyPresetPackItem: Codable, Identifiable, Hashable {
             "03_MiniMax-H3_极速图生有声视频(单图带立体声)": "03_MiniMax-H3_Fast_I2VA_Stereo",
             "04_MiniMax-H3_首尾帧有声过渡(双图带立体声)": "04_MiniMax-H3_FirstLastFrame_Stereo",
             "05_LTX-2.3_首尾帧电影运镜(双图极速带音效)": "05_LTX-2.3_Cinematic_FLF2V_Audio",
-            "06_Hunyuan1.5_单图直出1080P超清视频": "06_Hunyuan1.5_Direct_1080P_I2V"
+            "06_Hunyuan1.5_单图直出1080P超清视频": "06_Hunyuan1.5_Direct_1080P_I2V",
+            "07_10Eros-Max_无限制多图参考有声视频(8步极速)": "07_10Eros-Max_Uncensored_MultiRef_8Step",
+            "08_10Eros-Max_无限制首尾帧图生有声视频(8步极速)": "08_10Eros-Max_Uncensored_FLF2V_8Step",
+            "09_Sulphur-3_无限制文生有声视频(含H3修正器)": "09_Sulphur-3_Uncensored_T2VA_Corrector",
+            "10_Sulphur-3_无限制图生首尾帧有声视频(含H3修正器)": "10_Sulphur-3_Uncensored_I2VA_Corrector"
         ]
         return map[stripped] ?? stripped
     }
@@ -808,6 +913,36 @@ let DEFAULT_COMFY_PRESET_PACKS: [ComfyPresetPackItem] = [
         ],
         installed_models: 0,
         total_models: 7,
+        workflows_installed: false,
+        ready: false
+    ),
+    ComfyPresetPackItem(
+        id: "minimax_h3_10eros_max",
+        title: "10Eros-Max (MiniMax-H3 无限制) · 多图参考 + 首尾帧 8步极速",
+        badge: "无内容限制 · 多图参考 8步",
+        scenario: "基于 TenStrip/10Eros-Max v1.0 与无审核 Heretic 编码器，强化 <Picture 1>/<Picture 2> 多图参考与首尾帧一致性，内置 8 步 Turbo 加速",
+        approx_size_gb: 39.1,
+        workflows: [
+            "07_10Eros-Max_无限制多图参考有声视频(8步极速).json",
+            "08_10Eros-Max_无限制首尾帧图生有声视频(8步极速).json"
+        ],
+        installed_models: 0,
+        total_models: 4,
+        workflows_installed: false,
+        ready: false
+    ),
+    ComfyPresetPackItem(
+        id: "minimax_h3_sulphur3",
+        title: "Sulphur-3 (MiniMax-H3 无限制) · 满血底座 + H3 效果修正器",
+        badge: "无内容限制 · 含修正器",
+        scenario: "内置 SulphurAI/Sulphur-3 满血主干 + 无审核 Heretic 编码器 + s3_corrector 速度残差修正器与专用节点，支持文生/图生有声视频并大幅增强动态与画质",
+        approx_size_gb: 62.7,
+        workflows: [
+            "09_Sulphur-3_无限制文生有声视频(含H3修正器).json",
+            "10_Sulphur-3_无限制图生首尾帧有声视频(含H3修正器).json"
+        ],
+        installed_models: 0,
+        total_models: 5,
         workflows_installed: false,
         ready: false
     )

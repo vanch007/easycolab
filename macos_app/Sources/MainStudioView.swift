@@ -1591,13 +1591,33 @@ struct MainStudioView: View {
                         .font(.caption.weight(.medium))
                         .monospacedDigit()
                 }
-                Slider(
-                    value: Binding(
-                        get: { vm.inferenceSteps },
-                        set: { vm.inferenceSteps = (($0 / 5).rounded() * 5).clamped(to: 10...60) }
-                    ),
-                    in: 10...60
-                )
+                if vm.selectedModelId == "minimax_h3_10eros_max" {
+                    Slider(
+                        value: Binding(
+                            get: { vm.inferenceSteps.clamped(to: 4...20) },
+                            set: { vm.inferenceSteps = $0.rounded().clamped(to: 4...20) }
+                        ),
+                        in: 4...20,
+                        step: 1
+                    )
+                } else if vm.selectedModelId == "minimax_h3_sulphur3" {
+                    Slider(
+                        value: Binding(
+                            get: { vm.inferenceSteps.clamped(to: 8...40) },
+                            set: { vm.inferenceSteps = $0.rounded().clamped(to: 8...40) }
+                        ),
+                        in: 8...40,
+                        step: 1
+                    )
+                } else {
+                    Slider(
+                        value: Binding(
+                            get: { vm.inferenceSteps },
+                            set: { vm.inferenceSteps = (($0 / 5).rounded() * 5).clamped(to: 10...60) }
+                        ),
+                        in: 10...60
+                    )
+                }
             }
 
             seedAndBatchControls(unitLabelZh: "条")
