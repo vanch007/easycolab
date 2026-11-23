@@ -144,6 +144,9 @@ os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
 import json
 import shutil
+import hashlib
+import tarfile
+import zipfile
 import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -1384,6 +1387,66 @@ MODEL_CATALOG: Dict[str, Dict[str, Any]] = {
         "category": "全模态音视频生成 · BF16 原生满血 · 32kHz 立体声",
         "approx_size_gb": 134.1,
         "files": MINIMAX_H3_BF16_FILES,
+    },
+    "minimax_h3_10eros_max": {
+        "id": "minimax_h3_10eros_max",
+        "name": "10Eros-Max (MiniMax-H3 无限制)",
+        "repo_id": "TenStrip/10Eros-Max",
+        "modality": "video_audio",
+        "pipeline_arch": "comfy_h3_10eros_max",
+        "comfy_pack_id": "minimax_h3_10eros_max",
+        "category": "无内容限制 · 1~9 张多图参考 (<Picture 1..9>) · 声纹克隆 (<Audio 1>) · 8 步极速",
+        "approx_size_gb": 39.1,
+        "files": [
+            (
+                "diffusion_models/10Eros_Max_8stepTurbo_v1.0_hybrid-int8_HQ.safetensors",
+                "10Eros-Max v1.0 无限制 8步 Turbo DiT 主干 (21.3 GB)",
+            ),
+            (
+                "text_encoders/qwen3vl_32b_heretic_minimax_h3_nvfp4.safetensors",
+                "Heretic 无审核 Qwen3-VL 32B NVFP4 编码器 (14.6 GB)",
+            ),
+            (
+                "vae/minimax_h3_video_vae_int8_convrot.safetensors",
+                "MiniMax-H3 视频 VAE int8 (2.6 GB)",
+            ),
+            (
+                "vae/minimax_h3_audio_vae_fp32.safetensors",
+                "MiniMax-H3 32kHz 立体声音频 VAE fp32 (0.56 GB)",
+            ),
+        ],
+    },
+    "minimax_h3_sulphur3": {
+        "id": "minimax_h3_sulphur3",
+        "name": "Sulphur-3 (MiniMax-H3 无限制)",
+        "repo_id": "SulphurAI/Sulphur-3",
+        "modality": "video_audio",
+        "pipeline_arch": "comfy_h3_sulphur3",
+        "comfy_pack_id": "minimax_h3_sulphur3",
+        "category": "无内容限制满血底座 · s3_corrector 速度残差修正器 (动态/画质双强化) · 20 步高质",
+        "approx_size_gb": 62.7,
+        "files": [
+            (
+                "diffusion_models/s3.safetensors",
+                "Sulphur-3 满血无限制 DiT 主干 s3.safetensors (37.5 GB)",
+            ),
+            (
+                "h3_correctors/s3_corrector.safetensors",
+                "S3 速度残差效果修正器 s3_corrector.safetensors (7.4 GB)",
+            ),
+            (
+                "text_encoders/qwen3vl_32b_heretic_minimax_h3_nvfp4.safetensors",
+                "Heretic 无审核 Qwen3-VL 32B NVFP4 编码器 (14.6 GB)",
+            ),
+            (
+                "vae/minimax_h3_video_vae_int8_convrot.safetensors",
+                "MiniMax-H3 视频 VAE int8 (2.6 GB)",
+            ),
+            (
+                "vae/minimax_h3_audio_vae_fp32.safetensors",
+                "MiniMax-H3 32kHz 立体声音频 VAE fp32 (0.56 GB)",
+            ),
+        ],
     },
     "minimax_h3_image": {
         "id": "minimax_h3_image",
@@ -3194,12 +3257,113 @@ def _find_existing_model_file(model_id: str, fname: str, _allow_peer_share: bool
     return None
 
 
+def _find_comfy_pack_model_file(sub: str, fname: str) -> Optional[str]:
+    """查找 ComfyUI 预置模型在 NVMe SSD 或 Drive 持久化目录中的位置"""
+    _, persist_root, _, _, _ = _resolve_comfyui_persistence_paths()
+    nvme_models_root = _get_comfy_nvme_models_root()
+    candidates = []
+    if nvme_models_root:
+        candidates.append(os.path.join(nvme_models_root, sub, fname))
+    candidates.append(os.path.join(persist_root, "models", sub, fname))
+    candidates.append(os.path.join("/content/ComfyUI/models", sub, fname))
+    for cand in candidates:
+        try:
+            if os.path.isfile(cand) and os.path.getsize(cand) > 1024 * 1024:
+                return cand
+        except Exception:
+            pass
+    return None
+
+
+def _check_comfy_pack_model_files_status(target_id: str, spec: Dict[str, Any]) -> Dict[str, Any]:
+    """检查基于 ComfyUI 预置包的原生模型（10Eros-Max / Sulphur-3）权重与扩展节点完整性"""
+    _, persist_root, _, _, _ = _resolve_comfyui_persistence_paths()
+    req_files = spec.get("files", [])
+    pack_id = spec.get("comfy_pack_id", "")
+    pack_obj = next((p for p in COMFY_PRESET_WORKFLOW_PACKS if p["id"] == pack_id), None)
+
+    files_info = []
+    downloaded_count = 0
+    total_size_gb = 0.0
+    for rel, desc in req_files:
+        sub, fn = rel.split("/", 1) if "/" in rel else ("diffusion_models", rel)
+        actual_path = _find_comfy_pack_model_file(sub, fn)
+        if actual_path:
+            size_gb = round(os.path.getsize(actual_path) / (1024 ** 3), 2)
+            total_size_gb += size_gb
+            downloaded_count += 1
+            in_nvme = actual_path.startswith("/tmp/") or actual_path.startswith("/content/ComfyUI_nvme")
+            files_info.append({
+                "name": rel,
+                "desc": desc + (" [NVMe高速盘]" if in_nvme else ""),
+                "exists": True,
+                "size_gb": size_gb,
+            })
+        else:
+            files_info.append({
+                "name": rel,
+                "desc": desc,
+                "exists": False,
+                "size_gb": 0.0,
+            })
+
+    nodes_ok = True
+    total_nodes = 0
+    nodes_ready = 0
+    for node_spec in (pack_obj or {}).get("custom_nodes", []) or []:
+        total_nodes += 1
+        subdir = node_spec.get("subdir") or node_spec.get("name") or ""
+        node_exists = False
+        for base_cn in (
+            os.path.join(persist_root, "custom_nodes", subdir),
+            os.path.join("/content/ComfyUI/custom_nodes", subdir),
+        ):
+            if os.path.isdir(base_cn) and (
+                os.path.isfile(os.path.join(base_cn, "__init__.py"))
+                or os.path.isfile(os.path.join(base_cn, "nodes.py"))
+            ):
+                node_exists = True
+                break
+        if node_exists:
+            nodes_ready += 1
+        else:
+            nodes_ok = False
+        files_info.append({
+            "name": f"custom_nodes/{subdir}",
+            "desc": f"扩展节点包 {subdir} (S3 修正器推理必需)",
+            "exists": node_exists,
+            "size_gb": 0.01 if node_exists else 0.0,
+        })
+
+    all_downloaded = (
+        downloaded_count == len(req_files) and len(req_files) > 0 and nodes_ok
+    )
+    return {
+        "selected_model_id": target_id,
+        "selected_model_name": spec["name"],
+        "selected_model_repo": spec["repo_id"],
+        "selected_model_modality": spec["modality"],
+        "files": files_info,
+        "downloaded_count": downloaded_count + nodes_ready,
+        "total_count": len(req_files) + total_nodes,
+        "all_downloaded": all_downloaded,
+        "total_size_gb": round(total_size_gb, 2),
+        "drive_persisted": DRIVE_MOUNTED or _has_rclone_drive_remote(),
+        "ramdisk_enabled": False,
+        "ram_cached_count": 0,
+        "model_storage_path": os.path.join(persist_root, "models"),
+        "bf16_shards_count": 0,
+    }
+
+
 def check_model_files_status(model_id: Optional[str] = None) -> Dict[str, Any]:
     """检查指定开源模型在内存盘/磁盘/云盘上的权重文件完整性与大小"""
     _refresh_drive_mount_state()
     norm_id = _normalize_builtin_model_alias(model_id)
     target_id = norm_id if (norm_id and norm_id in MODEL_CATALOG) else SELECTED_MODEL_ID
     spec = MODEL_CATALOG[target_id]
+    if spec.get("comfy_pack_id"):
+        return _check_comfy_pack_model_files_status(target_id, spec)
     req_files = spec["files"]
     ram_dir, nvme_dir, drive_dir = _get_model_dirs(target_id)
 
@@ -3587,6 +3751,46 @@ def download_model_weights_core(model_id: Optional[str] = None, hf_token: str = 
         ACTIVE_TQDM_BARS.clear()
 
     try:
+        if spec.get("comfy_pack_id"):
+            stop_sync = threading.Event()
+
+            def _sync_comfy_dl_progress():
+                while not stop_sync.is_set():
+                    try:
+                        cp = float(COMFYUI_STATE.get("progress") or 0.0)
+                        cm = str(COMFYUI_STATE.get("status_message") or "")
+                        if cp > 0:
+                            MODEL_DOWNLOAD_STATE["progress"] = max(0.02, min(0.99, cp))
+                        if cm:
+                            MODEL_DOWNLOAD_STATE["message"] = cm
+                    except Exception:
+                        pass
+                    stop_sync.wait(0.35)
+
+            sync_t = threading.Thread(target=_sync_comfy_dl_progress, daemon=True)
+            sync_t.start()
+            try:
+                ok_pack, msg_pack = install_comfyui_preset_pack_core(
+                    pack_id=spec["comfy_pack_id"],
+                    auto_start=False,
+                    hf_token=hf_token,
+                )
+            finally:
+                stop_sync.set()
+                sync_t.join(timeout=1.0)
+            if not ok_pack:
+                MODEL_DOWNLOAD_STATE["message"] = msg_pack
+                return False, msg_pack
+            MODEL_DOWNLOAD_STATE["progress"] = 1.0
+            status = check_model_files_status(target_id)
+            done_msg = (
+                f"{spec['name']} 全部 {status['downloaded_count']}/{status['total_count']} 个权重/节点已就绪"
+                f"（共 {status['total_size_gb']:.2f} GB），现在可点击「加载到显存」！"
+            )
+            MODEL_DOWNLOAD_STATE["message"] = done_msg
+            print(done_msg)
+            return True, done_msg
+
         if hf_token and hf_token.strip():
             os.environ["HF_TOKEN"] = hf_token.strip()
             from huggingface_hub import login
@@ -4605,6 +4809,12 @@ def _release_pipeline_object(pipe_obj: Any):
     """主动解除 ModularPipeline / ComponentsManager / Accelerate Hook 的循环引用，确保 125GB+ CPU/GPU 权重立即释放"""
     if pipe_obj is None:
         return
+    if isinstance(pipe_obj, dict) and pipe_obj.get("backend") == "comfy_h3":
+        try:
+            free_comfyui_vram_core()
+        except Exception:
+            pass
+        return
     try:
         cm = getattr(pipe_obj, "components_manager", None)
         if cm is not None:
@@ -4848,7 +5058,7 @@ def load_model_to_vram_core(
             elif pipeline_arch in ("qwen38_27b_gguf", "gguf"):
                 q4_kv_gb = (ctx_len / 262144.0) * 4.6
                 required_free_gb = min(max(12.0, approx_gb + 2.0 + q4_kv_gb), max(12.0, total_vram_gb - 1.2))
-            elif pipeline_arch in ("minimax_h3", "minimax_h3_image"):
+            elif pipeline_arch in ("minimax_h3", "minimax_h3_image", "comfy_h3_10eros_max", "comfy_h3_sulphur3"):
                 # BF16 单阶段峰值约 62.5GB；在 G4 (96GB) 上可与 Qwen3.8-GGUF (~21GB) 同时共驻显存
                 required_free_gb = min(65.0, max(24.0, total_vram_gb - 5.0))
             elif pipeline_arch == "transformers":
@@ -4856,7 +5066,11 @@ def load_model_to_vram_core(
             else:
                 required_free_gb = 24.0
 
-            if torch.cuda.mem_get_info("cuda")[0] / (1024 ** 3) < required_free_gb and COMFYUI_STATE.get("is_running"):
+            if (
+                not str(pipeline_arch).startswith("comfy_h3_")
+                and torch.cuda.mem_get_info("cuda")[0] / (1024 ** 3) < required_free_gb
+                and COMFYUI_STATE.get("is_running")
+            ):
                 free_comfyui_vram_core()
             evicted_names = _ensure_vram_for_new_model_locked(target_id, required_free_gb)
             free_before_gb = torch.cuda.mem_get_info("cuda")[0] / (1024 ** 3)
@@ -5252,6 +5466,43 @@ def load_model_to_vram_core(
                     total_weights_gb=approx_gb,
                 )
                 mode_label = new_llm["mode_label"]
+
+            elif pipeline_arch in ("comfy_h3_10eros_max", "comfy_h3_sulphur3"):
+                MODEL_DOWNLOAD_STATE["progress"] = 0.25
+                MODEL_DOWNLOAD_STATE["message"] = f"正在启动并预热 {spec['name']} 无限制 ComfyUI 推理引擎 (--highvram)..."
+                stop_sync = threading.Event()
+
+                def _sync_comfy_boot_progress():
+                    while not stop_sync.is_set():
+                        try:
+                            cp = float(COMFYUI_STATE.get("progress") or 0.0)
+                            cm = str(COMFYUI_STATE.get("status_message") or "")
+                            if cp > 0:
+                                MODEL_DOWNLOAD_STATE["progress"] = max(0.25, min(0.96, cp))
+                            if cm:
+                                MODEL_DOWNLOAD_STATE["message"] = cm
+                        except Exception:
+                            pass
+                        stop_sync.wait(0.35)
+
+                boot_t = threading.Thread(target=_sync_comfy_boot_progress, daemon=True)
+                boot_t.start()
+                try:
+                    ok_start, start_msg = start_comfyui_core(unload_existing=False, force_restart=False)
+                finally:
+                    stop_sync.set()
+                    boot_t.join(timeout=1.0)
+                if not ok_start:
+                    raise RuntimeError(start_msg)
+
+                comfy_port = int(globals().get("COMFY_BACKEND", 28188) or 28188)
+                new_pipe = {
+                    "backend": "comfy_h3",
+                    "arch": pipeline_arch,
+                    "pack_id": spec.get("comfy_pack_id", ""),
+                    "port": comfy_port,
+                }
+                mode_label = f"{spec['name']} · ComfyUI API (--highvram 按需载入 ~{approx_gb:.0f}GB)"
 
             free_after_gb = torch.cuda.mem_get_info("cuda")[0] / (1024 ** 3)
             vram_delta_gb = round(max(0.5, free_before_gb - free_after_gb), 1)
@@ -5761,6 +6012,7 @@ COMFY_STANDARD_MODEL_SUBDIRS = [
     "controlnet",
     "upscale_models",
     "latent_upscale_models",
+    "h3_correctors",
     "audio_encoders",
     "embeddings",
     "style_models",
@@ -5848,6 +6100,49 @@ COMFY_PRESET_WORKFLOW_PACKS: List[Dict[str, Any]] = [
             ("diffusion_models", "hunyuanvideo1.5_1080p_sr_distilled_fp16.safetensors", "Comfy-Org/HunyuanVideo_1.5_repackaged", "split_files/diffusion_models/hunyuanvideo1.5_1080p_sr_distilled_fp16.safetensors", 15.20),
             ("vae", "hunyuanvideo15_vae_fp16.safetensors", "Comfy-Org/HunyuanVideo_1.5_repackaged", "split_files/vae/hunyuanvideo15_vae_fp16.safetensors", 2.35),
             ("diffusion_models", "hunyuanvideo1.5_720p_i2v_fp16.safetensors", "Comfy-Org/HunyuanVideo_1.5_repackaged", "split_files/diffusion_models/hunyuanvideo1.5_720p_i2v_fp16.safetensors", 15.51),
+        ],
+    },
+    {
+        "id": "minimax_h3_10eros_max",
+        "title": "10Eros-Max (MiniMax-H3 无限制) · 多图参考 + 首尾帧 8步极速",
+        "badge": "无内容限制 · 多图参考 8步",
+        "scenario": "基于 TenStrip/10Eros-Max v1.0 与无审核 Heretic 编码器，强化 <Picture 1>/<Picture 2> 多图参考与首尾帧一致性，内置 8 步 Turbo 加速",
+        "approx_size_gb": 39.1,
+        "workflows": [
+            "07_10Eros-Max_无限制多图参考有声视频(8步极速).json",
+            "08_10Eros-Max_无限制首尾帧图生有声视频(8步极速).json",
+        ],
+        "models": [
+            ("vae", "minimax_h3_video_vae_int8_convrot.safetensors", "Comfy-Org/MiniMax-H3", "vae/minimax_h3_video_vae_int8_convrot.safetensors", 2.62),
+            ("vae", "minimax_h3_audio_vae_fp32.safetensors", "Comfy-Org/MiniMax-H3", "vae/minimax_h3_audio_vae_fp32.safetensors", 0.56),
+            ("text_encoders", "qwen3vl_32b_heretic_minimax_h3_nvfp4.safetensors", "Momoking/Qwen3-VL-32B-Heretic-MiniMax-H3-NVFP4", "qwen3vl_32b_heretic_minimax_h3_nvfp4.safetensors", 14.61),
+            ("diffusion_models", "10Eros_Max_8stepTurbo_v1.0_hybrid-int8_HQ.safetensors", "TenStrip/10Eros-Max", "10Eros_Max_8stepTurbo_v1.0_hybrid-int8_HQ.safetensors", 21.32),
+        ],
+    },
+    {
+        "id": "minimax_h3_sulphur3",
+        "title": "Sulphur-3 (MiniMax-H3 无限制) · 满血底座 + H3 效果修正器",
+        "badge": "无内容限制 · 含修正器",
+        "scenario": "内置 SulphurAI/Sulphur-3 满血主干 + 无审核 Heretic 编码器 + s3_corrector 速度残差修正器与专用节点，支持文生/图生有声视频并大幅增强动态与画质",
+        "approx_size_gb": 62.7,
+        "workflows": [
+            "09_Sulphur-3_无限制文生有声视频(含H3修正器).json",
+            "10_Sulphur-3_无限制图生首尾帧有声视频(含H3修正器).json",
+        ],
+        "models": [
+            ("vae", "minimax_h3_video_vae_int8_convrot.safetensors", "Comfy-Org/MiniMax-H3", "vae/minimax_h3_video_vae_int8_convrot.safetensors", 2.62),
+            ("vae", "minimax_h3_audio_vae_fp32.safetensors", "Comfy-Org/MiniMax-H3", "vae/minimax_h3_audio_vae_fp32.safetensors", 0.56),
+            ("text_encoders", "qwen3vl_32b_heretic_minimax_h3_nvfp4.safetensors", "Momoking/Qwen3-VL-32B-Heretic-MiniMax-H3-NVFP4", "qwen3vl_32b_heretic_minimax_h3_nvfp4.safetensors", 14.61),
+            ("diffusion_models", "s3.safetensors", "SulphurAI/Sulphur-3", "s3.safetensors", 37.46),
+            ("h3_correctors", "s3_corrector.safetensors", "SulphurAI/Sulphur-3", "s3_corrector.safetensors", 7.44),
+        ],
+        "custom_nodes": [
+            {
+                "type": "zip",
+                "name": "ComfyUI-H3-Corrector",
+                "url": "https://huggingface.co/SulphurAI/Sulphur-3/resolve/main/S3_ComfyUI.zip",
+                "subdir": "ComfyUI-H3-Corrector",
+            }
         ],
     },
 ]
@@ -6087,6 +6382,986 @@ def _prune_workflow_dangling_links(wf_data: Dict[str, Any]):
         for out in n.get("outputs", []) or []:
             if isinstance(out.get("links"), list):
                 out["links"] = [lid for lid in out["links"] if lid in valid_lids]
+
+
+def _build_10eros_max_workflow(is_multi_ref: bool = True) -> Dict[str, Any]:
+    """构建 TenStrip/10Eros-Max v1.0 无限制 8步极速工作流（多图参考 / 首尾帧）"""
+    if is_multi_ref:
+        prompt_text = (
+            "The woman from <Picture 1> enters the sunlit coastal terrace from <Picture 2>, "
+            "walking smoothly toward the glass railing and turning gracefully as ocean breeze lifts her hair. "
+            "Cinematic 50mm lens, natural skin texture, coherent identity across the shot.\n"
+            "Audio: gentle ocean waves, light coastal wind, soft footsteps on stone tiles, warm ambient acoustic guitar."
+        )
+        cond_node = {
+            "id": 8,
+            "type": "MiniMaxH3ReferenceToVideo",
+            "pos": [460, 260],
+            "size": [430, 520],
+            "flags": {},
+            "order": 7,
+            "mode": 0,
+            "inputs": [
+                {"name": "clip", "type": "CLIP", "link": 4},
+                {"name": "vae", "type": "VAE", "shape": 7, "link": 5},
+                {"name": "audio_vae", "type": "VAE", "shape": 7, "link": 6},
+                {"label": "ref_image_0", "name": "ref_images.ref_image_0", "type": "IMAGE", "shape": 7, "link": 7},
+                {"label": "ref_image_1", "name": "ref_images.ref_image_1", "type": "IMAGE", "shape": 7, "link": 8},
+                {"label": "ref_image_2", "name": "ref_images.ref_image_2", "type": "IMAGE", "shape": 7, "link": None},
+                {"label": "ref_audio_0", "name": "ref_audios.ref_audio_0", "type": "AUDIO", "shape": 7, "link": None},
+                {"name": "prompt", "type": "STRING", "widget": {"name": "prompt"}, "link": None},
+                {"name": "width", "type": "INT", "widget": {"name": "width"}, "link": None},
+                {"name": "height", "type": "INT", "widget": {"name": "height"}, "link": None},
+                {"name": "length", "type": "INT", "widget": {"name": "length"}, "link": None},
+                {"name": "ref_image_size", "type": "COMBO", "widget": {"name": "ref_image_size"}, "link": None},
+            ],
+            "outputs": [
+                {"name": "positive", "type": "CONDITIONING", "links": [9]},
+                {"name": "LATENT", "type": "LATENT", "links": [10]},
+            ],
+            "title": "③ 多图参考 (<Picture 1>/<Picture 2>) + 提示词与画幅",
+            "properties": {"Node name for S&R": "MiniMaxH3ReferenceToVideo"},
+            "widgets_values": [prompt_text, 1056, 608, 124, "match"],
+            "widgets_values_named": {
+                "prompt": prompt_text,
+                "width": 1056,
+                "height": 608,
+                "length": 124,
+                "ref_image_size": "match",
+            },
+        }
+        save_prefix = "video/10Eros_Max_多图参考"
+        note_id = 507
+        note_title = "【EasyColab · 10Eros-Max 无限制多图参考工作流指南】"
+        note_md = (
+            "## 10Eros-Max v1.0 · 多图参考 + 声纹锁定（无内容限制 · 8步极速）\n\n"
+            "1. **上传多张参考图**：在左侧 **「① 参考图 1」**、**「② 参考图 2」** 上传角色定妆照、服装或场景图（节点支持扩展至 `ref_image_0..8`）。\n"
+            "2. **引用标记**：提示词中用 `<Picture 1>`、`<Picture 2>` 对应参考图顺序；如需声音克隆，可接 LoadAudio 到 `ref_audio_0` 并在提示词写 `<Audio 1>`。\n"
+            "3. **推荐采样参数**：`LCM / simple` **8~12 步**，Shift `12/3`；帧数按 `17k+5` 规律（`56≈2秒`、`124≈5秒`、`243≈10秒`）。"
+        )
+        vae_audio_links = [6, 18]
+    else:
+        prompt_text = (
+            "Smooth continuous camera push-in transitioning from <Picture 1> to <Picture 2>. "
+            "Natural human motion and expressive lighting, crisp film grain, realistic textures.\n"
+            "Audio: immersive ambient atmosphere matching the scene transition with gentle cinematic score."
+        )
+        cond_node = {
+            "id": 8,
+            "type": "MiniMaxH3ImageToVideo",
+            "pos": [460, 260],
+            "size": [430, 420],
+            "flags": {},
+            "order": 7,
+            "mode": 0,
+            "inputs": [
+                {"name": "clip", "type": "CLIP", "link": 4},
+                {"name": "vae", "type": "VAE", "link": 5},
+                {"name": "first_frame", "type": "IMAGE", "shape": 7, "link": 7},
+                {"name": "last_frame", "type": "IMAGE", "shape": 7, "link": 8},
+                {"name": "prompt", "type": "STRING", "widget": {"name": "prompt"}, "link": None},
+                {"name": "width", "type": "INT", "widget": {"name": "width"}, "link": None},
+                {"name": "height", "type": "INT", "widget": {"name": "height"}, "link": None},
+                {"name": "length", "type": "INT", "widget": {"name": "length"}, "link": None},
+            ],
+            "outputs": [
+                {"name": "positive", "type": "CONDITIONING", "links": [9]},
+                {"name": "LATENT", "type": "LATENT", "links": [10]},
+            ],
+            "title": "③ 首尾帧图生有声视频 + 提示词与画幅",
+            "properties": {"Node name for S&R": "MiniMaxH3ImageToVideo"},
+            "widgets_values": [prompt_text, 1056, 608, 124],
+            "widgets_values_named": {
+                "prompt": prompt_text,
+                "width": 1056,
+                "height": 608,
+                "length": 124,
+            },
+        }
+        save_prefix = "video/10Eros_Max_首尾帧"
+        note_id = 508
+        note_title = "【EasyColab · 10Eros-Max 无限制首尾帧工作流指南】"
+        note_md = (
+            "## 10Eros-Max v1.0 · 首尾帧图生有声视频（无内容限制 · 8步极速）\n\n"
+            "1. **传图**：在 **「① 起始首帧」** 和 **「② 结束尾帧」** 上传图片（若仅做单图生视频，断开 `last_frame` 连线即可）。\n"
+            "2. **推荐采样**：内置 8-step Turbo 融合权重，默认 `LCM / simple` **8 步** + `SigmaShift(12, 3)`。\n"
+            "3. **G4 96GB 优化**：已启用无审核 `Qwen3-VL-32B-Heretic NVFP4` 编码器与本地 NVMe 热加载。"
+        )
+        vae_audio_links = [18]
+
+    nodes = [
+        {
+            "id": 1,
+            "type": "UNETLoader",
+            "pos": [0, 0],
+            "size": [400, 82],
+            "flags": {},
+            "order": 0,
+            "mode": 0,
+            "inputs": [
+                {"name": "unet_name", "type": "COMBO", "widget": {"name": "unet_name"}, "link": None},
+                {"name": "weight_dtype", "type": "COMBO", "widget": {"name": "weight_dtype"}, "link": None},
+            ],
+            "outputs": [{"name": "MODEL", "type": "MODEL", "links": [1]}],
+            "title": "加载 10Eros-Max v1.0 (8步Turbo混合)",
+            "properties": {"Node name for S&R": "UNETLoader"},
+            "widgets_values": ["10Eros_Max_8stepTurbo_v1.0_hybrid-int8_HQ.safetensors", "default"],
+            "widgets_values_named": {
+                "unet_name": "10Eros_Max_8stepTurbo_v1.0_hybrid-int8_HQ.safetensors",
+                "weight_dtype": "default",
+            },
+        },
+        {
+            "id": 2,
+            "type": "MiniMaxH3SigmaShift",
+            "pos": [460, 0],
+            "size": [320, 82],
+            "flags": {},
+            "order": 6,
+            "mode": 0,
+            "inputs": [
+                {"name": "model", "type": "MODEL", "link": 1},
+                {"name": "shift_video", "type": "FLOAT", "widget": {"name": "shift_video"}, "link": None},
+                {"name": "shift_audio", "type": "FLOAT", "widget": {"name": "shift_audio"}, "link": None},
+            ],
+            "outputs": [{"name": "MODEL", "type": "MODEL", "links": [2, 3]}],
+            "title": "Sigma Shift (12 视频 / 3 音频)",
+            "properties": {"Node name for S&R": "MiniMaxH3SigmaShift"},
+            "widgets_values": [12.0, 3.0],
+            "widgets_values_named": {"shift_video": 12.0, "shift_audio": 3.0},
+        },
+        {
+            "id": 3,
+            "type": "CLIPLoader",
+            "pos": [0, 140],
+            "size": [400, 106],
+            "flags": {},
+            "order": 1,
+            "mode": 0,
+            "inputs": [
+                {"name": "clip_name", "type": "COMBO", "widget": {"name": "clip_name"}, "link": None},
+                {"name": "type", "type": "COMBO", "widget": {"name": "type"}, "link": None},
+                {"name": "device", "type": "COMBO", "shape": 7, "widget": {"name": "device"}, "link": None},
+            ],
+            "outputs": [{"name": "CLIP", "type": "CLIP", "links": [4]}],
+            "title": "无审核 Heretic Qwen3-VL 32B NVFP4 编码器",
+            "properties": {"Node name for S&R": "CLIPLoader"},
+            "widgets_values": ["qwen3vl_32b_heretic_minimax_h3_nvfp4.safetensors", "minimax", "default"],
+            "widgets_values_named": {
+                "clip_name": "qwen3vl_32b_heretic_minimax_h3_nvfp4.safetensors",
+                "type": "minimax",
+                "device": "default",
+            },
+        },
+        {
+            "id": 4,
+            "type": "VAELoader",
+            "pos": [0, 290],
+            "size": [400, 58],
+            "flags": {},
+            "order": 2,
+            "mode": 0,
+            "inputs": [{"name": "vae_name", "type": "COMBO", "widget": {"name": "vae_name"}, "link": None}],
+            "outputs": [{"name": "VAE", "type": "VAE", "links": [5, 16]}],
+            "title": "加载 MiniMax-H3 视频 VAE",
+            "properties": {"Node name for S&R": "VAELoader"},
+            "widgets_values": ["minimax_h3_video_vae_int8_convrot.safetensors"],
+            "widgets_values_named": {"vae_name": "minimax_h3_video_vae_int8_convrot.safetensors"},
+        },
+        {
+            "id": 5,
+            "type": "VAELoader",
+            "pos": [0, 390],
+            "size": [400, 58],
+            "flags": {},
+            "order": 3,
+            "mode": 0,
+            "inputs": [{"name": "vae_name", "type": "COMBO", "widget": {"name": "vae_name"}, "link": None}],
+            "outputs": [{"name": "VAE", "type": "VAE", "links": vae_audio_links}],
+            "title": "加载 MiniMax-H3 音频 VAE (32kHz)",
+            "properties": {"Node name for S&R": "VAELoader"},
+            "widgets_values": ["minimax_h3_audio_vae_fp32.safetensors"],
+            "widgets_values_named": {"vae_name": "minimax_h3_audio_vae_fp32.safetensors"},
+        },
+        {
+            "id": 6,
+            "type": "LoadImage",
+            "pos": [0, 500],
+            "size": [320, 314],
+            "flags": {},
+            "order": 4,
+            "mode": 0,
+            "inputs": [],
+            "outputs": [
+                {"name": "IMAGE", "type": "IMAGE", "links": [7]},
+                {"name": "MASK", "type": "MASK", "links": None},
+            ],
+            "title": "① 参考图 1 (<Picture 1> 主体/角色)" if is_multi_ref else "① 点击上传起始首帧 (First Frame)",
+            "properties": {"Node name for S&R": "LoadImage"},
+            "widgets_values": ["easycolab_sample_start.png", "image"],
+            "widgets_values_named": {"image": "easycolab_sample_start.png", "upload": "image"},
+        },
+        {
+            "id": 7,
+            "type": "LoadImage",
+            "pos": [0, 860],
+            "size": [320, 314],
+            "flags": {},
+            "order": 5,
+            "mode": 0,
+            "inputs": [],
+            "outputs": [
+                {"name": "IMAGE", "type": "IMAGE", "links": [8]},
+                {"name": "MASK", "type": "MASK", "links": None},
+            ],
+            "title": "② 参考图 2 (<Picture 2> 场景/第二主体)" if is_multi_ref else "② 点击上传结束尾帧 (可选 Last Frame)",
+            "properties": {"Node name for S&R": "LoadImage"},
+            "widgets_values": ["easycolab_sample_end.png", "image"],
+            "widgets_values_named": {"image": "easycolab_sample_end.png", "upload": "image"},
+        },
+        cond_node,
+        {
+            "id": 9,
+            "type": "BasicScheduler",
+            "pos": [960, 0],
+            "size": [300, 106],
+            "flags": {},
+            "order": 8,
+            "mode": 0,
+            "inputs": [
+                {"name": "model", "type": "MODEL", "link": 2},
+                {"name": "scheduler", "type": "COMBO", "widget": {"name": "scheduler"}, "link": None},
+                {"name": "steps", "type": "INT", "widget": {"name": "steps"}, "link": None},
+                {"name": "denoise", "type": "FLOAT", "widget": {"name": "denoise"}, "link": None},
+            ],
+            "outputs": [{"name": "SIGMAS", "type": "SIGMAS", "links": [14]}],
+            "title": "调度器 (simple · 8步极速)",
+            "properties": {"Node name for S&R": "BasicScheduler"},
+            "widgets_values": ["simple", 8, 1.0],
+            "widgets_values_named": {"scheduler": "simple", "steps": 8, "denoise": 1.0},
+        },
+        {
+            "id": 10,
+            "type": "KSamplerSelect",
+            "pos": [960, 150],
+            "size": [300, 58],
+            "flags": {},
+            "order": 9,
+            "mode": 0,
+            "inputs": [{"name": "sampler_name", "type": "COMBO", "widget": {"name": "sampler_name"}, "link": None}],
+            "outputs": [{"name": "SAMPLER", "type": "SAMPLER", "links": [13]}],
+            "title": "采样器 (LCM · 最佳音画Turbo)",
+            "properties": {"Node name for S&R": "KSamplerSelect"},
+            "widgets_values": ["lcm"],
+            "widgets_values_named": {"sampler_name": "lcm"},
+        },
+        {
+            "id": 11,
+            "type": "RandomNoise",
+            "pos": [960, 250],
+            "size": [300, 82],
+            "flags": {},
+            "order": 10,
+            "mode": 0,
+            "inputs": [{"name": "noise_seed", "type": "INT", "widget": {"name": "noise_seed"}, "link": None}],
+            "outputs": [{"name": "NOISE", "type": "NOISE", "links": [11]}],
+            "title": "随机种子",
+            "properties": {"Node name for S&R": "RandomNoise"},
+            "widgets_values": [42, "randomize"],
+        },
+        {
+            "id": 12,
+            "type": "BasicGuider",
+            "pos": [960, 380],
+            "size": [300, 60],
+            "flags": {},
+            "order": 11,
+            "mode": 0,
+            "inputs": [
+                {"name": "model", "type": "MODEL", "link": 3},
+                {"name": "conditioning", "type": "CONDITIONING", "link": 9},
+            ],
+            "outputs": [{"name": "GUIDER", "type": "GUIDER", "links": [12]}],
+            "title": "BasicGuider (CFG=1 蒸馏直出)",
+            "properties": {"Node name for S&R": "BasicGuider"},
+            "widgets_values": [],
+        },
+        {
+            "id": 13,
+            "type": "SamplerCustomAdvanced",
+            "pos": [1320, 160],
+            "size": [320, 140],
+            "flags": {},
+            "order": 12,
+            "mode": 0,
+            "inputs": [
+                {"name": "noise", "type": "NOISE", "link": 11},
+                {"name": "guider", "type": "GUIDER", "link": 12},
+                {"name": "sampler", "type": "SAMPLER", "link": 13},
+                {"name": "sigmas", "type": "SIGMAS", "link": 14},
+                {"name": "latent_image", "type": "LATENT", "link": 10},
+            ],
+            "outputs": [
+                {"name": "output", "type": "LATENT", "links": [15, 17]},
+                {"name": "denoised_output", "type": "LATENT", "links": None},
+            ],
+            "title": "音视频联合扩散采样器",
+            "properties": {"Node name for S&R": "SamplerCustomAdvanced"},
+            "widgets_values": [],
+        },
+        {
+            "id": 14,
+            "type": "VAEDecode",
+            "pos": [1700, 120],
+            "size": [220, 46],
+            "flags": {},
+            "order": 13,
+            "mode": 0,
+            "inputs": [
+                {"name": "samples", "type": "LATENT", "link": 15},
+                {"name": "vae", "type": "VAE", "link": 16},
+            ],
+            "outputs": [{"name": "IMAGE", "type": "IMAGE", "links": [19]}],
+            "title": "视频 VAE 解码",
+            "properties": {"Node name for S&R": "VAEDecode"},
+            "widgets_values": [],
+        },
+        {
+            "id": 15,
+            "type": "VAEDecodeAudio",
+            "pos": [1700, 240],
+            "size": [220, 46],
+            "flags": {},
+            "order": 14,
+            "mode": 0,
+            "inputs": [
+                {"name": "samples", "type": "LATENT", "link": 17},
+                {"name": "vae", "type": "VAE", "link": 18},
+            ],
+            "outputs": [{"name": "AUDIO", "type": "AUDIO", "links": [20]}],
+            "title": "音频 VAE 解码",
+            "properties": {"Node name for S&R": "VAEDecodeAudio"},
+            "widgets_values": [],
+        },
+        {
+            "id": 16,
+            "type": "CreateVideo",
+            "pos": [1980, 160],
+            "size": [260, 120],
+            "flags": {},
+            "order": 15,
+            "mode": 0,
+            "inputs": [
+                {"name": "images", "type": "IMAGE", "link": 19},
+                {"name": "audio", "type": "AUDIO", "shape": 7, "link": 20},
+            ],
+            "outputs": [{"name": "VIDEO", "type": "VIDEO", "links": [21]}],
+            "title": "封装 24fps 有声视频",
+            "properties": {"Node name for S&R": "CreateVideo"},
+            "widgets_values": [24, "auto", "sRGB", "none"],
+        },
+        {
+            "id": 17,
+            "type": "SaveVideo",
+            "pos": [2300, 160],
+            "size": [380, 420],
+            "flags": {},
+            "order": 16,
+            "mode": 0,
+            "inputs": [{"name": "video", "type": "VIDEO", "link": 21}],
+            "outputs": [{"name": "video", "type": "VIDEO", "links": []}],
+            "title": "④ 有声视频预览与自动保存",
+            "properties": {"Node name for S&R": "SaveVideo"},
+            "widgets_values": [save_prefix, "auto", "auto"],
+            "widgets_values_named": {
+                "filename_prefix": save_prefix,
+                "format": "auto",
+                "codec": "auto",
+            },
+        },
+        _make_zh_guide_note(note_id, [-470, 0], note_title, note_md),
+    ]
+
+    links = [
+        [1, 1, 0, 2, 0, "MODEL"],
+        [2, 2, 0, 9, 0, "MODEL"],
+        [3, 2, 0, 12, 0, "MODEL"],
+        [4, 3, 0, 8, 0, "CLIP"],
+        [5, 4, 0, 8, 1, "VAE"],
+        [7, 6, 0, 8, 3 if is_multi_ref else 2, "IMAGE"],
+        [8, 7, 0, 8, 4 if is_multi_ref else 3, "IMAGE"],
+        [9, 8, 0, 12, 1, "CONDITIONING"],
+        [10, 8, 1, 13, 4, "LATENT"],
+        [11, 11, 0, 13, 0, "NOISE"],
+        [12, 12, 0, 13, 1, "GUIDER"],
+        [13, 10, 0, 13, 2, "SAMPLER"],
+        [14, 9, 0, 13, 3, "SIGMAS"],
+        [15, 13, 0, 14, 0, "LATENT"],
+        [16, 4, 0, 14, 1, "VAE"],
+        [17, 13, 0, 15, 0, "LATENT"],
+        [18, 5, 0, 15, 1, "VAE"],
+        [19, 14, 0, 16, 0, "IMAGE"],
+        [20, 15, 0, 16, 1, "AUDIO"],
+        [21, 16, 0, 17, 0, "VIDEO"],
+    ]
+    if is_multi_ref:
+        links.append([6, 5, 0, 8, 2, "VAE"])
+
+    wf = {
+        "last_node_id": 510,
+        "last_link_id": 25,
+        "nodes": nodes,
+        "links": links,
+        "groups": [],
+        "config": {},
+        "extra": {"ds": {"scale": 0.68, "offset": [520, 80]}},
+        "version": 0.4,
+    }
+    _prune_workflow_dangling_links(wf)
+    return wf
+
+
+def _build_sulphur3_workflow(is_i2v: bool = False) -> Dict[str, Any]:
+    """构建 SulphurAI/Sulphur-3 无限制底座 + s3_corrector 效果修正器工作流（文生 / 首尾帧图生）"""
+    nodes: List[Dict[str, Any]] = [
+        {
+            "id": 1,
+            "type": "UNETLoader",
+            "pos": [0, 0],
+            "size": [420, 82],
+            "flags": {},
+            "order": 0,
+            "mode": 0,
+            "inputs": [
+                {"name": "unet_name", "type": "COMBO", "widget": {"name": "unet_name"}, "link": None},
+                {"name": "weight_dtype", "type": "COMBO", "widget": {"name": "weight_dtype"}, "link": None},
+            ],
+            "outputs": [{"name": "MODEL", "type": "MODEL", "links": [1]}],
+            "title": "加载 Sulphur-3 无限制主干 (s3.safetensors)",
+            "properties": {"Node name for S&R": "UNETLoader"},
+            "widgets_values": ["s3.safetensors", "default"],
+            "widgets_values_named": {"unet_name": "s3.safetensors", "weight_dtype": "default"},
+        },
+        {
+            "id": 2,
+            "type": "MiniMaxH3SigmaShift",
+            "pos": [480, 0],
+            "size": [320, 82],
+            "flags": {},
+            "order": 6,
+            "mode": 0,
+            "inputs": [
+                {"name": "model", "type": "MODEL", "link": 1},
+                {"name": "shift_video", "type": "FLOAT", "widget": {"name": "shift_video"}, "link": None},
+                {"name": "shift_audio", "type": "FLOAT", "widget": {"name": "shift_audio"}, "link": None},
+            ],
+            "outputs": [{"name": "MODEL", "type": "MODEL", "links": [4, 17]}],
+            "title": "Sigma Shift (12 视频 / 3 音频)",
+            "properties": {"Node name for S&R": "MiniMaxH3SigmaShift"},
+            "widgets_values": [12, 3],
+            "widgets_values_named": {"shift_video": 12, "shift_audio": 3},
+        },
+        {
+            "id": 3,
+            "type": "CLIPLoader",
+            "pos": [0, 140],
+            "size": [420, 106],
+            "flags": {},
+            "order": 1,
+            "mode": 0,
+            "inputs": [
+                {"name": "clip_name", "type": "COMBO", "widget": {"name": "clip_name"}, "link": None},
+                {"name": "type", "type": "COMBO", "widget": {"name": "type"}, "link": None},
+                {"name": "device", "type": "COMBO", "shape": 7, "widget": {"name": "device"}, "link": None},
+            ],
+            "outputs": [{"name": "CLIP", "type": "CLIP", "links": [2, 3]}],
+            "title": "无审核 Heretic Qwen3-VL 32B NVFP4 编码器",
+            "properties": {"Node name for S&R": "CLIPLoader"},
+            "widgets_values": ["qwen3vl_32b_heretic_minimax_h3_nvfp4.safetensors", "minimax", "default"],
+            "widgets_values_named": {
+                "clip_name": "qwen3vl_32b_heretic_minimax_h3_nvfp4.safetensors",
+                "type": "minimax",
+                "device": "default",
+            },
+        },
+        {
+            "id": 4,
+            "type": "VAELoader",
+            "pos": [0, 295],
+            "size": [420, 58],
+            "flags": {},
+            "order": 2,
+            "mode": 0,
+            "inputs": [{"name": "vae_name", "type": "COMBO", "widget": {"name": "vae_name"}, "link": None}],
+            "outputs": [{"name": "VAE", "type": "VAE", "links": [11, 22] if is_i2v else [11]}],
+            "title": "加载 MiniMax-H3 视频 VAE",
+            "properties": {"Node name for S&R": "VAELoader"},
+            "widgets_values": ["minimax_h3_video_vae_int8_convrot.safetensors"],
+            "widgets_values_named": {"vae_name": "minimax_h3_video_vae_int8_convrot.safetensors"},
+        },
+        {
+            "id": 5,
+            "type": "VAELoader",
+            "pos": [0, 395],
+            "size": [420, 58],
+            "flags": {},
+            "order": 3,
+            "mode": 0,
+            "inputs": [{"name": "vae_name", "type": "COMBO", "widget": {"name": "vae_name"}, "link": None}],
+            "outputs": [{"name": "VAE", "type": "VAE", "links": [13]}],
+            "title": "加载 MiniMax-H3 音频 VAE (32kHz)",
+            "properties": {"Node name for S&R": "VAELoader"},
+            "widgets_values": ["minimax_h3_audio_vae_fp32.safetensors"],
+            "widgets_values_named": {"vae_name": "minimax_h3_audio_vae_fp32.safetensors"},
+        },
+        {
+            "id": 7,
+            "type": "CLIPTextEncode",
+            "pos": [0, 860],
+            "size": [420, 120],
+            "flags": {},
+            "order": 5,
+            "mode": 0,
+            "inputs": [
+                {"name": "clip", "type": "CLIP", "link": 3},
+                {"name": "text", "type": "STRING", "widget": {"name": "text"}, "link": None},
+            ],
+            "outputs": [{"name": "CONDITIONING", "type": "CONDITIONING", "links": [21]}],
+            "title": "反向提示词 (CFG=1 时忽略)",
+            "properties": {"Node name for S&R": "CLIPTextEncode"},
+            "widgets_values": [""],
+        },
+        {
+            "id": 9,
+            "type": "BasicScheduler",
+            "pos": [940, 0],
+            "size": [300, 106],
+            "flags": {},
+            "order": 9,
+            "mode": 0,
+            "inputs": [
+                {"name": "model", "type": "MODEL", "link": 4},
+                {"name": "scheduler", "type": "COMBO", "widget": {"name": "scheduler"}, "link": None},
+                {"name": "steps", "type": "INT", "widget": {"name": "steps"}, "link": None},
+                {"name": "denoise", "type": "FLOAT", "widget": {"name": "denoise"}, "link": None},
+            ],
+            "outputs": [{"name": "SIGMAS", "type": "SIGMAS", "links": [8]}],
+            "title": "调度器 (simple · 20步标准)",
+            "properties": {"Node name for S&R": "BasicScheduler"},
+            "widgets_values": ["simple", 20, 1],
+            "widgets_values_named": {"scheduler": "simple", "steps": 20, "denoise": 1},
+        },
+        {
+            "id": 10,
+            "type": "KSamplerSelect",
+            "pos": [940, 145],
+            "size": [300, 58],
+            "flags": {},
+            "order": 10,
+            "mode": 0,
+            "inputs": [{"name": "sampler_name", "type": "COMBO", "widget": {"name": "sampler_name"}, "link": None}],
+            "outputs": [{"name": "SAMPLER", "type": "SAMPLER", "links": [7]}],
+            "title": "采样器 (Euler)",
+            "properties": {"Node name for S&R": "KSamplerSelect"},
+            "widgets_values": ["euler"],
+            "widgets_values_named": {"sampler_name": "euler"},
+        },
+        {
+            "id": 11,
+            "type": "RandomNoise",
+            "pos": [940, 240],
+            "size": [300, 82],
+            "flags": {},
+            "order": 11,
+            "mode": 0,
+            "inputs": [{"name": "noise_seed", "type": "INT", "widget": {"name": "noise_seed"}, "link": None}],
+            "outputs": [{"name": "NOISE", "type": "NOISE", "links": [5]}],
+            "title": "随机种子",
+            "properties": {"Node name for S&R": "RandomNoise"},
+            "widgets_values": [60, "randomize"],
+        },
+        {
+            "id": 17,
+            "type": "LoadH3Corrector",
+            "pos": [480, 140],
+            "size": [340, 70],
+            "flags": {},
+            "order": 4,
+            "mode": 0,
+            "inputs": [{"name": "corrector", "type": "COMBO", "widget": {"name": "corrector"}, "link": None}],
+            "outputs": [{"name": "H3_CORRECTOR", "type": "H3_CORRECTOR", "links": [18]}],
+            "title": "加载 S3 效果修正器 (fp32 ~8GB)",
+            "properties": {"Node name for S&R": "LoadH3Corrector"},
+            "widgets_values": ["s3_corrector.safetensors"],
+            "widgets_values_named": {"corrector": "s3_corrector.safetensors"},
+        },
+        {
+            "id": 18,
+            "type": "ApplyH3Corrector",
+            "pos": [480, 250],
+            "size": [340, 180],
+            "flags": {},
+            "order": 7,
+            "mode": 0,
+            "inputs": [
+                {"name": "model", "type": "MODEL", "link": 17},
+                {"name": "corrector", "type": "H3_CORRECTOR", "link": 18},
+                {"name": "strength", "type": "FLOAT", "widget": {"name": "strength"}, "link": None},
+                {"name": "budget_fraction", "type": "FLOAT", "widget": {"name": "budget_fraction"}, "link": None},
+                {"name": "velocity_floor", "type": "FLOAT", "widget": {"name": "velocity_floor"}, "link": None},
+                {"name": "start_step", "type": "INT", "widget": {"name": "start_step"}, "link": None},
+                {"name": "end_step", "type": "INT", "widget": {"name": "end_step"}, "link": None},
+            ],
+            "outputs": [{"name": "MODEL", "type": "MODEL", "links": [19]}],
+            "title": "应用 H3 效果修正器 (strength=0 可关闭)",
+            "properties": {"Node name for S&R": "ApplyH3Corrector"},
+            "widgets_values": [1.0, 0.5, 0.001, 0, -1],
+            "widgets_values_named": {
+                "strength": 1.0,
+                "budget_fraction": 0.5,
+                "velocity_floor": 0.001,
+                "start_step": 0,
+                "end_step": -1,
+            },
+        },
+        {
+            "id": 19,
+            "type": "CFGGuider",
+            "pos": [940, 360],
+            "size": [300, 98],
+            "flags": {},
+            "order": 8,
+            "mode": 0,
+            "inputs": [
+                {"name": "model", "type": "MODEL", "link": 19},
+                {"name": "positive", "type": "CONDITIONING", "link": 20},
+                {"name": "negative", "type": "CONDITIONING", "link": 21},
+                {"name": "cfg", "type": "FLOAT", "widget": {"name": "cfg"}, "link": None},
+            ],
+            "outputs": [{"name": "GUIDER", "type": "GUIDER", "links": [6]}],
+            "title": "CFG Guider (Sulphur-3 蒸馏固定 CFG=1)",
+            "properties": {"Node name for S&R": "CFGGuider"},
+            "widgets_values": [1.0],
+        },
+        {
+            "id": 12,
+            "type": "SamplerCustomAdvanced",
+            "pos": [1320, 140],
+            "size": [320, 140],
+            "flags": {},
+            "order": 12,
+            "mode": 0,
+            "inputs": [
+                {"name": "noise", "type": "NOISE", "link": 5},
+                {"name": "guider", "type": "GUIDER", "link": 6},
+                {"name": "sampler", "type": "SAMPLER", "link": 7},
+                {"name": "sigmas", "type": "SIGMAS", "link": 8},
+                {"name": "latent_image", "type": "LATENT", "link": 9},
+            ],
+            "outputs": [
+                {"name": "output", "type": "LATENT", "links": [10, 12]},
+                {"name": "denoised_output", "type": "LATENT", "links": None},
+            ],
+            "title": "音视频联合扩散采样器",
+            "properties": {"Node name for S&R": "SamplerCustomAdvanced"},
+            "widgets_values": [],
+        },
+        {
+            "id": 13,
+            "type": "VAEDecode",
+            "pos": [1700, 110],
+            "size": [220, 46],
+            "flags": {},
+            "order": 13,
+            "mode": 0,
+            "inputs": [
+                {"name": "samples", "type": "LATENT", "link": 10},
+                {"name": "vae", "type": "VAE", "link": 11},
+            ],
+            "outputs": [{"name": "IMAGE", "type": "IMAGE", "links": [14]}],
+            "title": "视频 VAE 解码",
+            "properties": {"Node name for S&R": "VAEDecode"},
+            "widgets_values": [],
+        },
+        {
+            "id": 14,
+            "type": "VAEDecodeAudio",
+            "pos": [1700, 230],
+            "size": [220, 46],
+            "flags": {},
+            "order": 14,
+            "mode": 0,
+            "inputs": [
+                {"name": "samples", "type": "LATENT", "link": 12},
+                {"name": "vae", "type": "VAE", "link": 13},
+            ],
+            "outputs": [{"name": "AUDIO", "type": "AUDIO", "links": [15]}],
+            "title": "音频 VAE 解码",
+            "properties": {"Node name for S&R": "VAEDecodeAudio"},
+            "widgets_values": [],
+        },
+        {
+            "id": 15,
+            "type": "CreateVideo",
+            "pos": [1980, 150],
+            "size": [260, 120],
+            "flags": {},
+            "order": 15,
+            "mode": 0,
+            "inputs": [
+                {"name": "images", "type": "IMAGE", "link": 14},
+                {"name": "audio", "type": "AUDIO", "shape": 7, "link": 15},
+            ],
+            "outputs": [{"name": "VIDEO", "type": "VIDEO", "links": [16]}],
+            "title": "封装 24fps 有声视频",
+            "properties": {"Node name for S&R": "CreateVideo"},
+            "widgets_values": [24, "auto", "sRGB", "none"],
+        },
+        {
+            "id": 16,
+            "type": "SaveVideo",
+            "pos": [2300, 150],
+            "size": [380, 420],
+            "flags": {},
+            "order": 16,
+            "mode": 0,
+            "inputs": [{"name": "video", "type": "VIDEO", "link": 16}],
+            "outputs": [{"name": "video", "type": "VIDEO", "links": []}],
+            "title": "③ 成片预览与自动保存",
+            "properties": {"Node name for S&R": "SaveVideo"},
+            "widgets_values": [
+                "video/Sulphur3_图生首尾帧_修正器" if is_i2v else "video/Sulphur3_文生有声_修正器",
+                "auto",
+                "auto",
+            ],
+            "widgets_values_named": {
+                "filename_prefix": "video/Sulphur3_图生首尾帧_修正器" if is_i2v else "video/Sulphur3_文生有声_修正器",
+                "format": "auto",
+                "codec": "auto",
+            },
+        },
+    ]
+
+    links: List[List[Any]] = [
+        [1, 1, 0, 2, 0, "MODEL"],
+        [3, 3, 0, 7, 0, "CLIP"],
+        [4, 2, 0, 9, 0, "MODEL"],
+        [5, 11, 0, 12, 0, "NOISE"],
+        [6, 19, 0, 12, 1, "GUIDER"],
+        [7, 10, 0, 12, 2, "SAMPLER"],
+        [8, 9, 0, 12, 3, "SIGMAS"],
+        [10, 12, 0, 13, 0, "LATENT"],
+        [11, 4, 0, 13, 1, "VAE"],
+        [12, 12, 0, 14, 0, "LATENT"],
+        [13, 5, 0, 14, 1, "VAE"],
+        [14, 13, 0, 15, 0, "IMAGE"],
+        [15, 14, 0, 15, 1, "AUDIO"],
+        [16, 15, 0, 16, 0, "VIDEO"],
+        [17, 2, 0, 18, 0, "MODEL"],
+        [18, 17, 0, 18, 1, "H3_CORRECTOR"],
+        [19, 18, 0, 19, 0, "MODEL"],
+        [21, 7, 0, 19, 2, "CONDITIONING"],
+    ]
+
+    if is_i2v:
+        i2v_prompt = (
+            "Fluid cinematic transition from <Picture 1> to <Picture 2>, natural motion, "
+            "crisp film lighting and realistic textures.\n"
+            "Audio: rich ambient soundscape and subtle atmospheric score synchronized with the movement."
+        )
+        nodes.extend([
+            {
+                "id": 20,
+                "type": "LoadImage",
+                "pos": [0, 500],
+                "size": [320, 314],
+                "flags": {},
+                "order": 4,
+                "mode": 0,
+                "inputs": [],
+                "outputs": [
+                    {"name": "IMAGE", "type": "IMAGE", "links": [23]},
+                    {"name": "MASK", "type": "MASK", "links": None},
+                ],
+                "title": "① 点击上传起始首帧 (First Frame)",
+                "properties": {"Node name for S&R": "LoadImage"},
+                "widgets_values": ["easycolab_sample_start.png", "image"],
+                "widgets_values_named": {"image": "easycolab_sample_start.png", "upload": "image"},
+            },
+            {
+                "id": 21,
+                "type": "LoadImage",
+                "pos": [0, 1020],
+                "size": [320, 314],
+                "flags": {},
+                "order": 4,
+                "mode": 0,
+                "inputs": [],
+                "outputs": [
+                    {"name": "IMAGE", "type": "IMAGE", "links": [24]},
+                    {"name": "MASK", "type": "MASK", "links": None},
+                ],
+                "title": "② 点击上传结束尾帧 (可选 Last Frame)",
+                "properties": {"Node name for S&R": "LoadImage"},
+                "widgets_values": ["easycolab_sample_end.png", "image"],
+                "widgets_values_named": {"image": "easycolab_sample_end.png", "upload": "image"},
+            },
+            {
+                "id": 8,
+                "type": "MiniMaxH3ImageToVideo",
+                "pos": [480, 480],
+                "size": [420, 360],
+                "flags": {},
+                "order": 7,
+                "mode": 0,
+                "inputs": [
+                    {"name": "clip", "type": "CLIP", "link": 2},
+                    {"name": "vae", "type": "VAE", "link": 22},
+                    {"name": "first_frame", "type": "IMAGE", "shape": 7, "link": 23},
+                    {"name": "last_frame", "type": "IMAGE", "shape": 7, "link": 24},
+                    {"name": "prompt", "type": "STRING", "widget": {"name": "prompt"}, "link": None},
+                    {"name": "width", "type": "INT", "widget": {"name": "width"}, "link": None},
+                    {"name": "height", "type": "INT", "widget": {"name": "height"}, "link": None},
+                    {"name": "length", "type": "INT", "widget": {"name": "length"}, "link": None},
+                ],
+                "outputs": [
+                    {"name": "positive", "type": "CONDITIONING", "links": [20]},
+                    {"name": "LATENT", "type": "LATENT", "links": [9]},
+                ],
+                "title": "② 图生/首尾帧提示词与画幅",
+                "properties": {"Node name for S&R": "MiniMaxH3ImageToVideo"},
+                "widgets_values": [i2v_prompt, 1056, 608, 124],
+                "widgets_values_named": {"prompt": i2v_prompt, "width": 1056, "height": 608, "length": 124},
+            },
+            _make_zh_guide_note(
+                510,
+                [-470, 0],
+                "【EasyColab · Sulphur-3 图生视频 + H3 修正器指南】",
+                "## Sulphur-3 满血底座 + S3 效果修正器（无内容限制）\n\n"
+                "1. **传图**：在 **「① 起始首帧」** 与 **「② 结束尾帧」** 传图（单图模式可断开 `last_frame` 连线）。\n"
+                "2. **H3 效果修正器 (`ApplyH3Corrector`)**：\n"
+                "   - `strength = 1.0` 启用全部 20 步残差修正，显著提升画面质感与动态稳定性；设为 `0` 可关闭。\n"
+                "   - `budget_fraction = 0.5` 为官方训练默认预算上限；修正器强制保持 fp32（约占 8GB 显存）。\n"
+                "3. **采样参数**：`Euler / simple` **20 步**，`CFG = 1.0`，`17k+5` 帧律（`124≈5秒`）。",
+            ),
+        ])
+        links.extend([
+            [2, 3, 0, 8, 0, "CLIP"],
+            [9, 8, 1, 12, 4, "LATENT"],
+            [20, 8, 0, 19, 1, "CONDITIONING"],
+            [22, 4, 0, 8, 1, "VAE"],
+            [23, 20, 0, 8, 2, "IMAGE"],
+            [24, 21, 0, 8, 3, "IMAGE"],
+        ])
+    else:
+        t2v_prompt = json.dumps(
+            {
+                "subjects": [
+                    {
+                        "label": "woman",
+                        "appearance": "adult, late twenties, natural skin pores, wearing a crisp linen shirt",
+                        "position": "center of frame, medium shot in a warm studio",
+                        "motion": "turns smoothly toward the window and smiles naturally",
+                        "interaction": "soft eye contact and relaxed posture",
+                    }
+                ],
+                "objects": [],
+                "environment": {
+                    "setting": "sunlit architectural loft",
+                    "layout": "tall industrial windows and warm timber table",
+                    "background": "softly defocused city skyline",
+                    "foreground": "ceramic coffee cup on the wooden table",
+                },
+                "camera": {
+                    "framing": "cinematic 50mm medium shot",
+                    "angle": "eye level",
+                    "movement": "slow smooth dolly push-in",
+                },
+                "temporal": {
+                    "overall_action": "she turns toward the window light and speaks softly",
+                    "motion_sequence": [
+                        "she gazes thoughtfully out the window",
+                        "she turns gently with a subtle smile",
+                    ],
+                },
+                "audio_context": [
+                    "warm room tone and distant street ambience",
+                    "soft acoustic piano notes",
+                ],
+                "salient_details": [
+                    "natural film grain, realistic skin detail, no subtitles",
+                ],
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+        nodes.extend([
+            {
+                "id": 6,
+                "type": "CLIPTextEncode",
+                "pos": [0, 500],
+                "size": [420, 320],
+                "flags": {},
+                "order": 4,
+                "mode": 0,
+                "inputs": [
+                    {"name": "clip", "type": "CLIP", "link": 2},
+                    {"name": "text", "type": "STRING", "widget": {"name": "text"}, "link": None},
+                ],
+                "outputs": [{"name": "CONDITIONING", "type": "CONDITIONING", "links": [20]}],
+                "title": "① 正向提示词 (支持结构化 JSON 或自然语言)",
+                "properties": {"Node name for S&R": "CLIPTextEncode"},
+                "widgets_values": [t2v_prompt],
+            },
+            {
+                "id": 8,
+                "type": "EmptyMiniMaxH3LatentAV",
+                "pos": [480, 480],
+                "size": [340, 120],
+                "flags": {},
+                "order": 4,
+                "mode": 0,
+                "inputs": [
+                    {"name": "width", "type": "INT", "widget": {"name": "width"}, "link": None},
+                    {"name": "height", "type": "INT", "widget": {"name": "height"}, "link": None},
+                    {"name": "length", "type": "INT", "widget": {"name": "length"}, "link": None},
+                ],
+                "outputs": [{"name": "LATENT", "type": "LATENT", "links": [9]}],
+                "title": "② 视频画幅与帧数 (1056×608 · 124帧≈5秒)",
+                "properties": {"Node name for S&R": "EmptyMiniMaxH3LatentAV"},
+                "widgets_values": [1056, 608, 124],
+                "widgets_values_named": {"width": 1056, "height": 608, "length": 124},
+            },
+            _make_zh_guide_note(
+                509,
+                [-470, 0],
+                "【EasyColab · Sulphur-3 文生有声视频 + H3 修正器指南】",
+                "## Sulphur-3 满血底座 + S3 效果修正器（无内容限制）\n\n"
+                "1. **提示词 (`CLIPTextEncode`)**：既可使用官方推荐的 **结构化 JSON**，也可直接写中英文自然语言描述。\n"
+                "2. **H3 效果修正器 (`ApplyH3Corrector`)**：\n"
+                "   - 在每步采样后对视频速度场做残差修正，提升细节与动作合理性；`strength=0` 可关闭对比效果。\n"
+                "   - `start_step / end_step` 可控制修正步数区间（`0 / -1` 为全程启用）。\n"
+                "3. **G4 96GB 显存说明**：`s3.safetensors` (~37.5GB) + `s3_corrector` (fp32 ~8GB) + `Heretic NVFP4` (~15GB) 可在 96GB G4 稳妥运行。",
+            ),
+        ])
+        links.extend([
+            [2, 3, 0, 6, 0, "CLIP"],
+            [9, 8, 0, 12, 4, "LATENT"],
+            [20, 6, 0, 19, 1, "CONDITIONING"],
+        ])
+
+    wf = {
+        "last_node_id": 512,
+        "last_link_id": 28,
+        "nodes": nodes,
+        "links": links,
+        "groups": [],
+        "config": {},
+        "extra": {"ds": {"scale": 0.66, "offset": [520, 80]}},
+        "version": 0.4,
+    }
+    _prune_workflow_dangling_links(wf)
+    return wf
 
 
 def _build_and_install_comfy_preset_workflows(
@@ -6462,10 +7737,40 @@ def _build_and_install_comfy_preset_workflows(
         except Exception as e:
             print(f"[ComfyUI 工作流生成] Hunyuan 1.5 模板处理异常: {e}")
 
+    # 5. TenStrip/10Eros-Max (无限制 · 多图参考 + 首尾帧 8步极速)
+    if "minimax_h3_10eros_max" in target_set:
+        try:
+            out_7 = os.path.join(wf_dir, "07_10Eros-Max_无限制多图参考有声视频(8步极速).json")
+            with open(out_7, "w", encoding="utf-8") as wf:
+                json.dump(_build_10eros_max_workflow(is_multi_ref=True), wf, ensure_ascii=False, indent=2)
+            installed_files.append(os.path.basename(out_7))
+
+            out_8 = os.path.join(wf_dir, "08_10Eros-Max_无限制首尾帧图生有声视频(8步极速).json")
+            with open(out_8, "w", encoding="utf-8") as wf:
+                json.dump(_build_10eros_max_workflow(is_multi_ref=False), wf, ensure_ascii=False, indent=2)
+            installed_files.append(os.path.basename(out_8))
+        except Exception as e:
+            print(f"[ComfyUI 工作流生成] 10Eros-Max 模板处理异常: {e}")
+
+    # 6. SulphurAI/Sulphur-3 + H3 Corrector (无限制 · 满血底座 + 修正器)
+    if "minimax_h3_sulphur3" in target_set:
+        try:
+            out_9 = os.path.join(wf_dir, "09_Sulphur-3_无限制文生有声视频(含H3修正器).json")
+            with open(out_9, "w", encoding="utf-8") as wf:
+                json.dump(_build_sulphur3_workflow(is_i2v=False), wf, ensure_ascii=False, indent=2)
+            installed_files.append(os.path.basename(out_9))
+
+            out_10 = os.path.join(wf_dir, "10_Sulphur-3_无限制图生首尾帧有声视频(含H3修正器).json")
+            with open(out_10, "w", encoding="utf-8") as wf:
+                json.dump(_build_sulphur3_workflow(is_i2v=True), wf, ensure_ascii=False, indent=2)
+            installed_files.append(os.path.basename(out_10))
+        except Exception as e:
+            print(f"[ComfyUI 工作流生成] Sulphur-3 模板处理异常: {e}")
+
     if installed_files:
         try:
-            with open(os.path.join(wf_dir, ".easycolab_wf_schema_v2"), "w", encoding="utf-8") as sf:
-                sf.write("v2")
+            with open(os.path.join(wf_dir, ".easycolab_wf_schema_v3"), "w", encoding="utf-8") as sf:
+                sf.write("v3")
             ptr_path = os.path.join(persist_root, "user", "default", "easycolab_active_preset.json")
             if (pack_ids and len(pack_ids) == 1) or not os.path.isfile(ptr_path):
                 with open(ptr_path, "w", encoding="utf-8") as pf:
@@ -6479,17 +7784,37 @@ def _build_and_install_comfy_preset_workflows(
 
 def _get_comfy_preset_packs_status(persist_root: str) -> List[Dict[str, Any]]:
     wf_dir = os.path.join(persist_root, "user", "default", "workflows")
+    comfy_root, _, mode, _, _ = _resolve_comfyui_persistence_paths()
+    nvme_models_root = _get_comfy_nvme_models_root(mode)
     results: List[Dict[str, Any]] = []
     for pack in COMFY_PRESET_WORKFLOW_PACKS:
         models = pack["models"]
         installed_m = 0
         for sub, fname, _, _, _ in models:
             p = os.path.join(persist_root, "models", sub, fname)
-            if os.path.isfile(p) and os.path.getsize(p) > 1024 * 1024:
+            nvme_p = os.path.join(nvme_models_root, sub, fname) if nvme_models_root else ""
+            if (os.path.isfile(p) and os.path.getsize(p) > 1024 * 1024) or (
+                nvme_p and os.path.isfile(nvme_p) and os.path.getsize(nvme_p) > 1024 * 1024
+            ):
                 installed_m += 1
+        req_nodes = pack.get("custom_nodes") or []
+        nodes_ok = True
+        for cn in req_nodes:
+            cname = str(cn.get("name") or "").strip()
+            if not cname:
+                continue
+            local_ok = os.path.isfile(os.path.join(comfy_root, "custom_nodes", cname, "__init__.py")) or os.path.isfile(
+                os.path.join(comfy_root, "custom_nodes", cname, "nodes.py")
+            )
+            persist_ok = os.path.isfile(os.path.join(persist_root, "custom_nodes", cname, "__init__.py")) or os.path.isfile(
+                os.path.join(persist_root, "custom_nodes", cname, "nodes.py")
+            )
+            if not (local_ok or persist_ok):
+                nodes_ok = False
+                break
         wfs = pack["workflows"]
         installed_wf = sum(1 for w in wfs if os.path.isfile(os.path.join(wf_dir, w)))
-        ready = (installed_m == len(models)) and (installed_wf == len(wfs))
+        ready = (installed_m == len(models)) and (installed_wf == len(wfs)) and nodes_ok
         results.append({
             "id": pack["id"],
             "title": pack["title"],
@@ -6542,6 +7867,398 @@ def _safe_symlink_dir(target_dir: str, link_path: str):
     elif os.path.exists(link_path):
         os.remove(link_path)
     os.symlink(target_dir, link_path)
+
+
+def _get_comfy_nvme_models_root(mode: str) -> Optional[str]:
+    """在 Google Drive FUSE 软链模式下启用本地高速 NVMe 混合模型缓存目录，避免 4KB 随机读盘卡死"""
+    if mode == "drive_symlink" and os.path.exists("/content"):
+        return "/content/fast_comfy_models"
+    return None
+
+
+def _build_comfyui_launch_cmd(
+    comfy_root: str,
+    port: int,
+    mode: str,
+    total_vram_gb: float,
+) -> List[str]:
+    """根据显存容量与持久化模式生成 ComfyUI 启动参数（G4 96GB / A100 80GB 启用 --highvram --disable-mmap --fast）"""
+    cmd = [
+        sys.executable, "-u", os.path.join(comfy_root, "main.py"),
+        "--listen", "127.0.0.1",
+        "--port", str(port),
+        "--preview-method", "auto",
+    ]
+    if float(total_vram_gb or 0.0) >= 64.0:
+        cmd.extend(["--highvram", "--disable-mmap", "--fast"])
+    elif mode == "drive_symlink":
+        cmd.append("--disable-mmap")
+    return cmd
+
+
+def _wire_comfyui_hybrid_models_dir(
+    comfy_root: str,
+    persist_root: str,
+    nvme_models_root: Optional[str],
+    extra_subdirs: Optional[List[str]] = None,
+) -> None:
+    """构建 ComfyUI/models/* 映射：非 FUSE 模式沿用目录软链；FUSE 模式采用文件级混合软链（优先本地 NVMe，缺失回退 Drive）"""
+    subdirs = set(COMFY_STANDARD_MODEL_SUBDIRS)
+    for base_root in (
+        os.path.join(persist_root, "models"),
+        nvme_models_root if nvme_models_root else "",
+    ):
+        if base_root and os.path.isdir(base_root):
+            try:
+                for entry in os.listdir(base_root):
+                    if not entry.startswith(".") and os.path.isdir(os.path.join(base_root, entry)):
+                        subdirs.add(entry)
+            except Exception:
+                pass
+    for sub in extra_subdirs or ():
+        if sub and not sub.startswith("."):
+            subdirs.add(sub)
+
+    os.makedirs(os.path.join(persist_root, "models"), exist_ok=True)
+    if not nvme_models_root:
+        for sub in sorted(subdirs):
+            _safe_symlink_dir(
+                os.path.join(persist_root, "models", sub),
+                os.path.join(comfy_root, "models", sub),
+            )
+        return
+
+    os.makedirs(nvme_models_root, exist_ok=True)
+    comfy_models_root = os.path.join(comfy_root, "models")
+    os.makedirs(comfy_models_root, exist_ok=True)
+
+    for sub in sorted(subdirs):
+        persist_sub = os.path.join(persist_root, "models", sub)
+        nvme_sub = os.path.join(nvme_models_root, sub)
+        comfy_sub = os.path.join(comfy_models_root, sub)
+        os.makedirs(persist_sub, exist_ok=True)
+        os.makedirs(nvme_sub, exist_ok=True)
+
+        if os.path.islink(comfy_sub):
+            os.unlink(comfy_sub)
+        elif os.path.isfile(comfy_sub):
+            os.remove(comfy_sub)
+        os.makedirs(comfy_sub, exist_ok=True)
+
+        # 迁移用户直接在 ComfyUI/models/<sub> 放入的真实文件至持久化/NVMe 池，避免数据丢失
+        for fn in list(os.listdir(comfy_sub)):
+            full_p = os.path.join(comfy_sub, fn)
+            if os.path.islink(full_p):
+                if not os.path.exists(full_p):
+                    os.unlink(full_p)
+                continue
+            if os.path.isfile(full_p) and not fn.startswith(".") and not fn.endswith((".part", ".tmp", ".staging")):
+                nvme_dst = os.path.join(nvme_sub, fn)
+                if not os.path.exists(nvme_dst):
+                    try:
+                        shutil.move(full_p, nvme_dst)
+                    except Exception:
+                        pass
+                persist_dst = os.path.join(persist_sub, fn)
+                if os.path.isfile(nvme_dst) and not os.path.exists(persist_dst):
+                    try:
+                        shutil.copy2(nvme_dst, persist_dst)
+                        _flush_drive_file(persist_dst)
+                    except Exception:
+                        pass
+
+        preferred: Dict[str, str] = {}
+        for src_dir in (persist_sub, nvme_sub):
+            try:
+                for fn in os.listdir(src_dir):
+                    if fn.startswith(".") or fn.endswith((".part", ".tmp", ".staging", ".syncing")):
+                        continue
+                    cand = os.path.join(src_dir, fn)
+                    if os.path.isfile(cand) and os.path.getsize(cand) > 0:
+                        preferred[fn] = cand
+            except Exception:
+                pass
+
+        for fn, target_p in preferred.items():
+            link_p = os.path.join(comfy_sub, fn)
+            if os.path.islink(link_p):
+                try:
+                    if os.path.abspath(os.readlink(link_p)) == os.path.abspath(target_p):
+                        continue
+                except Exception:
+                    pass
+                os.unlink(link_p)
+            elif os.path.exists(link_p):
+                continue
+            os.symlink(target_p, link_p)
+
+
+def _stage_comfy_file_to_nvme(
+    persist_file: str,
+    sub: str,
+    fname: str,
+    nvme_models_root: Optional[str],
+    min_free_gb: float = 22.0,
+) -> str:
+    """将 Google Drive FUSE 中的单文件模型顺序拷贝至本地高速 NVMe SSD，防止 mmap 随机读假死"""
+    if not nvme_models_root or not persist_file or not os.path.isfile(persist_file):
+        return persist_file
+    try:
+        src_size = os.path.getsize(persist_file)
+        nvme_sub = os.path.join(nvme_models_root, sub)
+        os.makedirs(nvme_sub, exist_ok=True)
+        nvme_target = os.path.join(nvme_sub, fname)
+        if os.path.isfile(nvme_target) and os.path.getsize(nvme_target) == src_size:
+            return nvme_target
+        free_bytes = shutil.disk_usage(nvme_models_root).free
+        if free_bytes <= src_size + int(min_free_gb * (1024 ** 3)):
+            print(f"ℹ️ [NVMe 预热跳过] 本地盘剩余空间不足 ({free_bytes / (1024**3):.1f} GB)，继续使用云盘路径: {fname}")
+            return persist_file
+        tmp_dst = nvme_target + ".staging"
+        with open(persist_file, "rb") as rf, open(tmp_dst, "wb") as wf:
+            shutil.copyfileobj(rf, wf, length=32 * 1024 * 1024)
+        os.replace(tmp_dst, nvme_target)
+        return nvme_target
+    except Exception as e:
+        print(f"ℹ️ [NVMe 预热回退] {fname}: {e}")
+        return persist_file
+
+
+def _custom_nodes_fingerprint(cn_local: str) -> str:
+    """计算 custom_nodes 目录的轻量确定性指纹（跳过 .git / __pycache__ / easycolab_preset_helper）"""
+    if not os.path.isdir(cn_local):
+        return ""
+    parts: List[str] = []
+    for entry in sorted(os.listdir(cn_local)):
+        if entry.startswith(".") or entry in ("__pycache__", "easycolab_preset_helper"):
+            continue
+        node_dir = os.path.join(cn_local, entry)
+        if not os.path.isdir(node_dir):
+            continue
+        file_cnt = 0
+        max_mtime = 0
+        for root_d, dirnames, fnames in os.walk(node_dir):
+            dirnames[:] = [d for d in dirnames if d not in (".git", "__pycache__")]
+            rel_d = os.path.relpath(root_d, node_dir)
+            depth = 0 if rel_d == "." else rel_d.count(os.sep) + 1
+            if depth > 2:
+                dirnames[:] = []
+                continue
+            for fn in fnames:
+                if fn.endswith((".pyc", ".pyo")):
+                    continue
+                file_cnt += 1
+                try:
+                    mt = int(os.stat(os.path.join(root_d, fn)).st_mtime)
+                    if mt > max_mtime:
+                        max_mtime = mt
+                except Exception:
+                    pass
+        parts.append(f"{entry}:{file_cnt}:{max_mtime}")
+    return "|".join(parts)
+
+
+def _build_custom_nodes_bundle_archive(cn_local: str, persist_root: str) -> bool:
+    """将本地 custom_nodes 打包为单文件 custom_nodes_bundle.tar.gz，下次开机 1.5s 单流解压替代 FUSE 遍历"""
+    if not os.path.isdir(cn_local):
+        return False
+    fp = _custom_nodes_fingerprint(cn_local)
+    if not fp:
+        return False
+    archive_dst = os.path.join(persist_root, "custom_nodes_bundle.tar.gz")
+    fp_path = os.path.join(persist_root, ".custom_nodes_bundle.fp")
+    try:
+        if os.path.isfile(archive_dst) and os.path.isfile(fp_path):
+            if open(fp_path, "r", encoding="utf-8").read().strip() == fp:
+                return True
+    except Exception:
+        pass
+
+    tmp_local = "/tmp/easycolab_custom_nodes_bundle.tar.gz"
+    try:
+        os.makedirs(persist_root, exist_ok=True)
+
+        def _tar_filter(ti: tarfile.TarInfo) -> Optional[tarfile.TarInfo]:
+            norm = ti.name.replace("\\", "/").lstrip("./")
+            segs = [s for s in norm.split("/") if s]
+            if not segs:
+                return ti
+            if segs[0] == "easycolab_preset_helper":
+                return None
+            if any(s in (".git", "__pycache__") for s in segs):
+                return None
+            if norm.endswith((".pyc", ".pyo")):
+                return None
+            return ti
+
+        with tarfile.open(tmp_local, "w:gz") as tf:
+            for entry in sorted(os.listdir(cn_local)):
+                if entry.startswith(".") or entry in ("__pycache__", "easycolab_preset_helper"):
+                    continue
+                full_p = os.path.join(cn_local, entry)
+                if os.path.isdir(full_p):
+                    tf.add(full_p, arcname=entry, filter=_tar_filter)
+
+        tmp_dst = archive_dst + ".tmp"
+        shutil.copy2(tmp_local, tmp_dst)
+        os.replace(tmp_dst, archive_dst)
+        _flush_drive_file(archive_dst)
+        with open(fp_path, "w", encoding="utf-8") as ff:
+            ff.write(fp)
+        return True
+    except Exception as e:
+        print(f"[ComfyUI 插件归档] 打包跳过: {e}")
+        return False
+    finally:
+        if os.path.exists(tmp_local):
+            try:
+                os.remove(tmp_local)
+            except Exception:
+                pass
+
+
+def _restore_custom_nodes_from_bundle(cn_local: str, persist_root: str) -> int:
+    """从单文件归档 custom_nodes_bundle.tar.gz 极速恢复自定义节点至本地 NVMe"""
+    archive_src = os.path.join(persist_root, "custom_nodes_bundle.tar.gz")
+    if not os.path.isfile(archive_src):
+        return 0
+    tmp_local = "/tmp/easycolab_custom_nodes_restore.tar.gz"
+    restored_top: set = set()
+    try:
+        os.makedirs(cn_local, exist_ok=True)
+        shutil.copy2(archive_src, tmp_local)
+        base_abs = os.path.abspath(cn_local)
+        with tarfile.open(tmp_local, "r:gz") as tf:
+            for member in tf.getmembers():
+                raw_name = member.name.replace("\\", "/")
+                if raw_name.startswith("/") or ".." in raw_name.split("/"):
+                    continue
+                clean_name = raw_name.lstrip("./")
+                if not clean_name:
+                    continue
+                top = clean_name.split("/", 1)[0]
+                if not top or top == "easycolab_preset_helper" or top.startswith("."):
+                    continue
+                if member.issym() or member.islnk():
+                    continue
+                target_p = os.path.abspath(os.path.join(cn_local, clean_name))
+                if target_p != base_abs and not target_p.startswith(base_abs + os.sep):
+                    continue
+                tf.extract(member, path=cn_local, filter="data") if sys.version_info >= (3, 12) else tf.extract(member, path=cn_local)
+                restored_top.add(top)
+        return len(restored_top)
+    except Exception as e:
+        print(f"[ComfyUI 插件恢复] 单包解压回退常规目录同步: {e}")
+        return 0
+    finally:
+        if os.path.exists(tmp_local):
+            try:
+                os.remove(tmp_local)
+            except Exception:
+                pass
+
+
+def _pip_install_cmd(req_args: List[str]) -> List[str]:
+    """优先使用 uv pip 极速安装依赖，未安装 uv 时自动回退 python -m pip"""
+    uv_bin = shutil.which("uv")
+    if uv_bin:
+        return [uv_bin, "pip", "install", "--python", sys.executable, "-q", *req_args]
+    return [sys.executable, "-m", "pip", "install", "-q", *req_args]
+
+
+def _install_comfy_pack_custom_nodes(
+    comfy_root: str,
+    persist_root: str,
+    custom_nodes_spec: List[Dict[str, Any]],
+    hf_token: str = "",
+) -> bool:
+    """为预置工作流包自动安装缺失的 ComfyUI 自定义节点（如 ComfyUI-H3-Corrector），并同步持久化"""
+    if not custom_nodes_spec:
+        return False
+    cn_local = os.path.join(comfy_root, "custom_nodes")
+    cn_persist = os.path.join(persist_root, "custom_nodes")
+    os.makedirs(cn_local, exist_ok=True)
+    os.makedirs(cn_persist, exist_ok=True)
+
+    installed_any = False
+    token = (hf_token or os.environ.get("HF_TOKEN") or "").strip()
+
+    for spec in custom_nodes_spec:
+        node_name = str(spec.get("name") or "").strip()
+        src_type = str(spec.get("type") or "zip").strip().lower()
+        src_url = str(spec.get("url") or "").strip()
+        subdir = str(spec.get("subdir") or node_name).strip().strip("/")
+        if not node_name or not src_url:
+            continue
+
+        local_dir = os.path.join(cn_local, node_name)
+        persist_dir = os.path.join(cn_persist, node_name)
+
+        def _has_node_entry(d: str) -> bool:
+            return os.path.isfile(os.path.join(d, "__init__.py")) or os.path.isfile(os.path.join(d, "nodes.py"))
+
+        if _has_node_entry(local_dir):
+            if not _has_node_entry(persist_dir):
+                shutil.copytree(local_dir, persist_dir, dirs_exist_ok=True, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+            continue
+
+        if _has_node_entry(persist_dir):
+            shutil.copytree(persist_dir, local_dir, dirs_exist_ok=True, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+            installed_any = True
+            continue
+
+        if src_type == "zip":
+            tmp_zip = f"/tmp/easycolab_node_{node_name}.zip"
+            try:
+                headers = {"User-Agent": "EasyColab/2.0"}
+                parsed = urllib.parse.urlsplit(src_url)
+                if token and parsed.hostname == "huggingface.co":
+                    headers["Authorization"] = f"Bearer {token}"
+                req = urllib.request.Request(src_url, headers=headers)
+                with urllib.request.build_opener(_StripAuthRedirectHandler()).open(req, timeout=60) as resp, open(tmp_zip, "wb") as wf:
+                    shutil.copyfileobj(resp, wf, length=4 * 1024 * 1024)
+
+                os.makedirs(local_dir, exist_ok=True)
+                base_abs = os.path.abspath(local_dir)
+                prefix = f"{subdir}/" if subdir else ""
+                with zipfile.ZipFile(tmp_zip, "r") as zf:
+                    for info in zf.infolist():
+                        raw_m = info.filename.replace("\\", "/")
+                        if raw_m.startswith("__MACOSX/") or raw_m.startswith("/") or ".." in raw_m.split("/"):
+                            continue
+                        rel_m = raw_m[len(prefix):] if (prefix and raw_m.startswith(prefix)) else raw_m
+                        rel_m = rel_m.lstrip("/")
+                        if not rel_m:
+                            continue
+                        dst_p = os.path.abspath(os.path.join(local_dir, rel_m))
+                        if dst_p != base_abs and not dst_p.startswith(base_abs + os.sep):
+                            continue
+                        if info.is_dir():
+                            os.makedirs(dst_p, exist_ok=True)
+                        else:
+                            os.makedirs(os.path.dirname(dst_p), exist_ok=True)
+                            with zf.open(info, "r") as src_f, open(dst_p, "wb") as dst_f:
+                                shutil.copyfileobj(src_f, dst_f)
+
+                if _has_node_entry(local_dir):
+                    shutil.copytree(local_dir, persist_dir, dirs_exist_ok=True, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+                    installed_any = True
+                    print(f"[ComfyUI 节点安装] 已安装 {node_name} -> custom_nodes/{node_name}")
+            finally:
+                if os.path.exists(tmp_zip):
+                    try:
+                        os.remove(tmp_zip)
+                    except Exception:
+                        pass
+        elif src_type == "git":
+            subprocess.run(["git", "clone", "--depth", "1", src_url, local_dir], check=True)
+            shutil.copytree(local_dir, persist_dir, dirs_exist_ok=True, ignore=shutil.ignore_patterns(".git", "__pycache__", "*.pyc"))
+            installed_any = True
+            print(f"[ComfyUI 节点安装] 已克隆 {node_name} -> custom_nodes/{node_name}")
+
+    if installed_any:
+        _build_custom_nodes_bundle_archive(cn_local, persist_root)
+    return installed_any
 
 
 def _scan_comfyui_counts_and_outputs() -> Tuple[Tuple[int, int, int], List[Dict[str, Any]]]:
@@ -6829,16 +8546,40 @@ def sync_comfyui_to_drive_core(quiet: bool = False) -> Tuple[bool, str]:
         os.makedirs(os.path.join(persist_root, "output"), exist_ok=True)
         os.makedirs(os.path.join(persist_root, "input"), exist_ok=True)
 
-        # 1. 自动接管自定义节点在 models/ 下新建的非软链目录，迁移至持久化目录并建立软链
+        # 1. 自动接管自定义节点在 models/ 下新建的非软链目录/文件，持久化至云盘并维护混合高速软链
+        nvme_models_root = _get_comfy_nvme_models_root(mode)
         models_dir = os.path.join(comfy_root, "models")
         if os.path.isdir(models_dir):
-            for entry in os.listdir(models_dir):
-                if entry in ("configs", "__pycache__") or entry.startswith("."):
-                    continue
-                local_sub = os.path.join(models_dir, entry)
-                if os.path.isdir(local_sub) and not os.path.islink(local_sub):
+            if nvme_models_root:
+                _wire_comfyui_hybrid_models_dir(comfy_root, persist_root, nvme_models_root)
+                for entry in os.listdir(models_dir):
+                    if entry in ("configs", "__pycache__") or entry.startswith("."):
+                        continue
+                    nvme_sub = os.path.join(nvme_models_root, entry)
                     persist_sub = os.path.join(persist_root, "models", entry)
-                    _safe_symlink_dir(persist_sub, local_sub)
+                    if os.path.isdir(nvme_sub):
+                        os.makedirs(persist_sub, exist_ok=True)
+                        for fn in os.listdir(nvme_sub):
+                            if fn.startswith(".") or fn.endswith((".part", ".tmp", ".staging", ".syncing")):
+                                continue
+                            src_f = os.path.join(nvme_sub, fn)
+                            dst_f = os.path.join(persist_sub, fn)
+                            if os.path.isfile(src_f) and (not os.path.exists(dst_f) or os.path.getsize(dst_f) != os.path.getsize(src_f)):
+                                try:
+                                    tmp_f = dst_f + ".syncing"
+                                    shutil.copy2(src_f, tmp_f)
+                                    os.replace(tmp_f, dst_f)
+                                    _flush_drive_file(dst_f)
+                                except Exception:
+                                    pass
+            else:
+                for entry in os.listdir(models_dir):
+                    if entry in ("configs", "__pycache__") or entry.startswith("."):
+                        continue
+                    local_sub = os.path.join(models_dir, entry)
+                    if os.path.isdir(local_sub) and not os.path.islink(local_sub):
+                        persist_sub = os.path.join(persist_root, "models", entry)
+                        _safe_symlink_dir(persist_sub, local_sub)
 
         # 2. 将本地高速 NVMe 上的 custom_nodes 增量镜像同步到持久化目录，并记录 Git 源清单
         cn_local = os.path.join(comfy_root, "custom_nodes")
@@ -6883,6 +8624,7 @@ def sync_comfyui_to_drive_core(quiet: bool = False) -> Tuple[bool, str]:
 
             with open(manifest_path, "w", encoding="utf-8") as mf:
                 json.dump(manifest, mf, ensure_ascii=False, indent=2)
+            _build_custom_nodes_bundle_archive(cn_local, persist_root)
 
         # 3. 若处于 rclone 云盘镜像模式，通过 Google Cloud 内网 8 并发同步至 Google Drive
         if mode == "rclone_drive_sync" and _has_rclone_drive_remote():
@@ -6990,7 +8732,7 @@ def _install_persisted_custom_node_requirements(comfy_root: str):
     tmp_req = "/tmp/easycolab_comfy_merged_reqs.txt"
     with open(tmp_req, "w", encoding="utf-8") as wf:
         wf.write("\n".join(collected_reqs) + "\n")
-    rc = subprocess.call([sys.executable, "-m", "pip", "install", "-q", "-r", tmp_req])
+    rc = subprocess.call(_pip_install_cmd(["-r", tmp_req]))
     if rc == 0:
         with open(stamp_file, "w") as sf:
             sf.write(digest)
@@ -7105,47 +8847,44 @@ def start_comfyui_core(unload_existing: bool = False, force_restart: bool = Fals
             tmp_core_req = "/tmp/comfy_core_safe_reqs.txt"
             with open(tmp_core_req, "w", encoding="utf-8") as wf:
                 wf.write("\n".join(safe_reqs) + "\n")
-            subprocess.run([sys.executable, "-m", "pip", "install", "-q", "-r", tmp_core_req], check=True)
+            subprocess.run(_pip_install_cmd(["-r", tmp_core_req]), check=True)
             subprocess.run(
-                [sys.executable, "-m", "pip", "install", "-q", "gguf", "opencv-python-headless", "imageio-ffmpeg", "gitpython", "toml"],
+                _pip_install_cmd(["gguf", "opencv-python-headless", "imageio-ffmpeg", "gitpython", "toml"]),
                 check=False,
             )
 
-        # 3. 建立 Google Drive 软链体系：models/* 各子目录、user 工作流配置、output 成片输出全部自动软链至持久化根目录
+        # 3. 建立 Google Drive 软链体系：models/* 采用本地 NVMe 混合高速软链、user/output 持久化至云盘
         COMFYUI_STATE["progress"] = 0.48
         COMFYUI_STATE["status_message"] = f"正在建立 {label} 目录软链 (models / workflows / output)..."
-        os.makedirs(os.path.join(persist_root, "models"), exist_ok=True)
-        all_model_subdirs = set(COMFY_STANDARD_MODEL_SUBDIRS)
-        for existing_sub in os.listdir(os.path.join(persist_root, "models")):
-            if not existing_sub.startswith(".") and os.path.isdir(os.path.join(persist_root, "models", existing_sub)):
-                all_model_subdirs.add(existing_sub)
-        for sub in sorted(all_model_subdirs):
-            _safe_symlink_dir(
-                os.path.join(persist_root, "models", sub),
-                os.path.join(comfy_root, "models", sub),
-            )
+        nvme_models_root = _get_comfy_nvme_models_root(mode)
+        _wire_comfyui_hybrid_models_dir(comfy_root, persist_root, nvme_models_root)
         _safe_symlink_dir(os.path.join(persist_root, "user"), os.path.join(comfy_root, "user"))
         _safe_symlink_dir(os.path.join(persist_root, "output"), os.path.join(comfy_root, "output"))
         _ensure_comfyui_beginner_assets(comfy_root, persist_root)
 
-        # 若云盘中已有任何预置包的全部权重，但缺少中文工作流文件或工作流版本尚未升级至 v2 (修复 widgets_values_named 兼容)，自动重新生成
+        # 若云盘中已有任何预置包的全部权重，但缺少中文工作流文件或工作流版本尚未升级至 v3，自动重新生成
         wf_dir_chk = os.path.join(persist_root, "user", "default", "workflows")
-        schema_v2_ok = os.path.isfile(os.path.join(wf_dir_chk, ".easycolab_wf_schema_v2"))
+        schema_v3_ok = os.path.isfile(os.path.join(wf_dir_chk, ".easycolab_wf_schema_v3"))
         for pk in COMFY_PRESET_WORKFLOW_PACKS:
             if all(
                 os.path.isfile(os.path.join(persist_root, "models", sub, fn))
+                or (nvme_models_root and os.path.isfile(os.path.join(nvme_models_root, sub, fn)))
                 for sub, fn, _, _, _ in pk["models"]
             ):
-                if (not schema_v2_ok) or (not all(os.path.isfile(os.path.join(wf_dir_chk, w)) for w in pk["workflows"])):
+                if (not schema_v3_ok) or (not all(os.path.isfile(os.path.join(wf_dir_chk, w)) for w in pk["workflows"])):
                     _build_and_install_comfy_preset_workflows(persist_root, [pk["id"]])
 
-        # 4. 恢复已持久化的自定义节点至本地高速 NVMe，并预装 ComfyUI-Manager 与 VideoHelperSuite 视频核心节点
+        # 4. 优先通过单文件归档包极速恢复自定义节点至本地高速 NVMe，缺失节点再逐目录补齐
         COMFYUI_STATE["progress"] = 0.58
-        COMFYUI_STATE["status_message"] = "正在恢复已持久化的自定义节点并配置 ComfyUI-Manager..."
+        COMFYUI_STATE["status_message"] = "正在极速恢复已持久化的自定义节点并配置 ComfyUI-Manager..."
         cn_local = os.path.join(comfy_root, "custom_nodes")
         cn_persist = os.path.join(persist_root, "custom_nodes")
         os.makedirs(cn_local, exist_ok=True)
         os.makedirs(cn_persist, exist_ok=True)
+
+        restored_cnt = _restore_custom_nodes_from_bundle(cn_local, persist_root)
+        if restored_cnt > 0:
+            print(f"[ComfyUI] 已从单包归档极速解压 {restored_cnt} 套自定义节点至本地 NVMe")
 
         for entry in sorted(os.listdir(cn_persist)):
             if entry.startswith(".") or entry in ("__pycache__", "easycolab_preset_helper"):
@@ -7197,12 +8936,13 @@ def start_comfyui_core(unload_existing: bool = False, force_restart: bool = Fals
         time.sleep(0.6)
 
         port = int(COMFYUI_STATE.get("local_port") or COMFY_BACKEND)
-        comfy_cmd = [
-            sys.executable, "-u", os.path.join(comfy_root, "main.py"),
-            "--listen", "127.0.0.1",
-            "--port", str(port),
-            "--preview-method", "auto",
-        ]
+        total_vram_gb = 0.0
+        try:
+            if torch.cuda.is_available():
+                total_vram_gb = torch.cuda.mem_get_info("cuda")[1] / (1024 ** 3)
+        except Exception:
+            total_vram_gb = 0.0
+        comfy_cmd = _build_comfyui_launch_cmd(comfy_root, port, mode, total_vram_gb)
         comfy_proc = subprocess.Popen(
             comfy_cmd,
             cwd=comfy_root,
@@ -7325,10 +9065,11 @@ def download_comfyui_model_core(
 
     clean_sub = re.sub(r"[^a-zA-Z0-9_.-]", "", (subfolder or "diffusion_models").strip()) or "diffusion_models"
     comfy_root, persist_root, mode, label, _ = _resolve_comfyui_persistence_paths()
+    nvme_models_root = _get_comfy_nvme_models_root(mode)
     dest_dir = os.path.join(persist_root, "models", clean_sub)
     os.makedirs(dest_dir, exist_ok=True)
     if os.path.isdir(comfy_root):
-        _safe_symlink_dir(dest_dir, os.path.join(comfy_root, "models", clean_sub))
+        _wire_comfyui_hybrid_models_dir(comfy_root, persist_root, nvme_models_root, extra_subdirs=[clean_sub])
 
     COMFYUI_STATE["is_downloading_weight"] = True
     COMFYUI_STATE["progress"] = 0.05
@@ -7388,6 +9129,10 @@ def download_comfyui_model_core(
 
         if mode == "rclone_drive_sync":
             sync_comfyui_to_drive_core(quiet=True)
+        elif nvme_models_root:
+            _stage_comfy_file_to_nvme(final_path, clean_sub, base_name, nvme_models_root)
+        if os.path.isdir(comfy_root):
+            _wire_comfyui_hybrid_models_dir(comfy_root, persist_root, nvme_models_root, extra_subdirs=[clean_sub])
         _COMFY_STATUS_CACHE["ts"] = 0.0
         sz_gb = os.path.getsize(final_path) / (1024 ** 3)
         msg = f"权重 {base_name} ({sz_gb:.2f} GB) 已下载至 models/{clean_sub} 并持久化到 {label}（在画布按 R 键即可刷新选用）"
@@ -7419,8 +9164,11 @@ def install_comfyui_preset_pack_core(
         return False, "当前已有模型或工作流包正在高速下载配齐中，请稍候..."
 
     comfy_root, persist_root, mode, label, _ = _resolve_comfyui_persistence_paths()
+    nvme_models_root = _get_comfy_nvme_models_root(mode)
     models_list = target_pack["models"]
     total_m = len(models_list)
+    need_restart_running = False
+    wf_names_str = "、".join(target_pack["workflows"])
 
     COMFYUI_STATE["is_downloading_weight"] = True
     COMFYUI_STATE["installing_pack_id"] = pack_id
@@ -7449,21 +9197,53 @@ def install_comfyui_preset_pack_core(
                 pf.write("1")
 
         _ensure_comfyui_beginner_assets(comfy_root, persist_root)
+        if os.path.isdir(comfy_root):
+            _wire_comfyui_hybrid_models_dir(
+                comfy_root,
+                persist_root,
+                nvme_models_root,
+                extra_subdirs=[sub for sub, _, _, _, _ in models_list],
+            )
 
         for idx, (sub, fname, repo_id, repo_rel_path, approx_gb) in enumerate(models_list, start=1):
             touch_activity()
-            dest_dir = os.path.join(persist_root, "models", sub)
-            os.makedirs(dest_dir, exist_ok=True)
-            if os.path.isdir(comfy_root):
-                _safe_symlink_dir(dest_dir, os.path.join(comfy_root, "models", sub))
+            persist_sub_dir = os.path.join(persist_root, "models", sub)
+            os.makedirs(persist_sub_dir, exist_ok=True)
+            persist_final = os.path.join(persist_sub_dir, fname)
+            nvme_sub_dir = os.path.join(nvme_models_root, sub) if nvme_models_root else ""
+            nvme_final = os.path.join(nvme_sub_dir, fname) if nvme_sub_dir else ""
 
-            final_path = os.path.join(dest_dir, fname)
-            base_prog = 0.05 + 0.80 * ((idx - 1) / float(max(1, total_m)))
+            base_prog = 0.05 + 0.78 * ((idx - 1) / float(max(1, total_m)))
             COMFYUI_STATE["progress"] = round(base_prog, 3)
 
-            if os.path.isfile(final_path) and os.path.getsize(final_path) > 1024 * 1024:
-                print(f"[ComfyUI 预置包] ({idx}/{total_m}) 已存在跳过: models/{sub}/{fname}")
+            if nvme_final and os.path.isfile(nvme_final) and os.path.getsize(nvme_final) > 1024 * 1024:
+                print(f"[ComfyUI 预置包] ({idx}/{total_m}) 本地 NVMe 已就绪跳过: models/{sub}/{fname}")
                 continue
+
+            if os.path.isfile(persist_final) and os.path.getsize(persist_final) > 1024 * 1024:
+                if nvme_models_root:
+                    COMFYUI_STATE["status_message"] = (
+                        f"[{idx}/{total_m}] 正在将云盘已有权重 {fname} 预热至本地 NVMe SSD..."
+                    )
+                    _stage_comfy_file_to_nvme(persist_final, sub, fname, nvme_models_root)
+                else:
+                    print(f"[ComfyUI 预置包] ({idx}/{total_m}) 已存在跳过: models/{sub}/{fname}")
+                continue
+
+            # FUSE 模式下优先直达本地 NVMe SSD 下载，再异步备份回 Google Drive，彻底避免写入 FUSE 拖慢速度
+            dl_to_nvme = False
+            dest_dir = persist_sub_dir
+            final_path = persist_final
+            if nvme_models_root:
+                try:
+                    os.makedirs(nvme_sub_dir, exist_ok=True)
+                    free_nvme_gb = shutil.disk_usage(nvme_models_root).free / (1024 ** 3)
+                    if free_nvme_gb > float(approx_gb) + 22.0:
+                        dl_to_nvme = True
+                        dest_dir = nvme_sub_dir
+                        final_path = nvme_final
+                except Exception:
+                    dl_to_nvme = False
 
             COMFYUI_STATE["status_message"] = (
                 f"[{idx}/{total_m}] 正在 8 线程极速下载 {fname} (约 {approx_gb:.1f} GB)..."
@@ -7487,10 +9267,37 @@ def install_comfyui_preset_pack_core(
                     except Exception:
                         pass
 
-        COMFYUI_STATE["progress"] = 0.88
+            if dl_to_nvme:
+                threading.Thread(
+                    target=_async_backup_to_drive,
+                    args=(final_path, persist_sub_dir, fname),
+                    daemon=True,
+                ).start()
+
+        installed_new_nodes = False
+        req_custom_nodes = target_pack.get("custom_nodes") or []
+        if req_custom_nodes:
+            COMFYUI_STATE["progress"] = 0.85
+            COMFYUI_STATE["status_message"] = f"正在安装「{target_pack['title']}」所需专用 ComfyUI 节点..."
+            installed_new_nodes = _install_comfy_pack_custom_nodes(
+                comfy_root,
+                persist_root,
+                req_custom_nodes,
+                hf_token=token,
+            )
+            if installed_new_nodes:
+                _install_persisted_custom_node_requirements(comfy_root)
+
+        COMFYUI_STATE["progress"] = 0.89
         COMFYUI_STATE["status_message"] = f"正在生成「{target_pack['title']}」全中文三步傻瓜注释工作流..."
         installed_wfs = _build_and_install_comfy_preset_workflows(persist_root, [pack_id])
         if os.path.isdir(comfy_root):
+            _wire_comfyui_hybrid_models_dir(
+                comfy_root,
+                persist_root,
+                nvme_models_root,
+                extra_subdirs=[sub for sub, _, _, _, _ in models_list],
+            )
             _safe_symlink_dir(os.path.join(persist_root, "user"), os.path.join(comfy_root, "user"))
             _safe_symlink_dir(os.path.join(persist_root, "output"), os.path.join(comfy_root, "output"))
             _ensure_comfyui_beginner_assets(comfy_root, persist_root)
@@ -7503,20 +9310,22 @@ def install_comfyui_preset_pack_core(
         _COMFY_STATUS_CACHE["ts"] = 0.0
         wf_names_str = "、".join(installed_wfs) if installed_wfs else "、".join(target_pack["workflows"])
 
-        # 若 ComfyUI 正在运行，主动轻触 /object_info 刷新模型下拉缓存；若尚未启动且开启了 auto_start，直接自动拉起画布
         if COMFYUI_STATE.get("is_running"):
-            try:
-                port = int(COMFYUI_STATE.get("local_port") or COMFY_BACKEND)
-                opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-                with opener.open(f"http://127.0.0.1:{port}/object_info/UNETLoader", timeout=3.0) as _:
+            if installed_new_nodes:
+                need_restart_running = True
+            else:
+                try:
+                    port = int(COMFYUI_STATE.get("local_port") or COMFY_BACKEND)
+                    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+                    with opener.open(f"http://127.0.0.1:{port}/object_info/UNETLoader", timeout=3.0) as _:
+                        pass
+                except Exception:
                     pass
-            except Exception:
-                pass
-            COMFYUI_STATE["progress"] = 1.0
-            ok_msg = f"「{target_pack['title']}」已全部配齐！打开画布左侧「工作流」点击 {wf_names_str} 即可直接传图运行"
-            COMFYUI_STATE["status_message"] = ok_msg
-            print(f"[ComfyUI 预置包] {ok_msg}")
-            return True, ok_msg
+                COMFYUI_STATE["progress"] = 1.0
+                ok_msg = f"「{target_pack['title']}」已全部配齐！打开画布左侧「工作流」点击 {wf_names_str} 即可直接传图运行"
+                COMFYUI_STATE["status_message"] = ok_msg
+                print(f"[ComfyUI 预置包] {ok_msg}")
+                return True, ok_msg
     except Exception as e:
         err = f"配齐预置工作流包失败: {e}"
         COMFYUI_STATE["progress"] = 0.0
@@ -7527,6 +9336,16 @@ def install_comfyui_preset_pack_core(
         COMFYUI_STATE["is_downloading_weight"] = False
         COMFYUI_STATE["installing_pack_id"] = ""
         touch_activity()
+
+    # 若新安装了自定义节点且 ComfyUI 已在运行，在释放下载锁后自动热重启以加载新节点
+    if need_restart_running:
+        print("[ComfyUI 预置包] 检测到新安装专用自定义节点，正在重启 ComfyUI 画布以加载新节点...")
+        ok_r, msg_r = start_comfyui_core(unload_existing=False, force_restart=True)
+        if ok_r:
+            final_msg = f"「{target_pack['title']}」已配齐并自动重启加载新节点！打开画布左侧「工作流」点击 {wf_names_str} 即可运行"
+            COMFYUI_STATE["status_message"] = final_msg
+            return True, final_msg
+        return False, msg_r
 
     # 若尚未拉起 ComfyUI，在释放下载锁后自动拉起云端画布隧道
     if auto_start and not COMFYUI_STATE.get("is_running") and not COMFYUI_STATE.get("is_starting"):
@@ -7656,6 +9475,15 @@ class GenerateVideoRequest(BaseModel):
     repeat_penalty: float = 1.0
     reasoning_effort: str = "medium"
     chat_messages: Optional[List[Dict[str, str]]] = None
+    ref_images_base64: Optional[List[str]] = None
+    ref_audio_base64: Optional[str] = None
+    ref_audio_filename: Optional[str] = None
+    ref_image_size: str = "match"
+    corrector_enabled: bool = True
+    corrector_strength: float = 1.0
+    corrector_budget_fraction: float = 0.5
+    corrector_start_step: int = 0
+    corrector_end_step: int = -1
 
 
 def decode_base64_image(b64_str: Optional[str]) -> Optional[Image.Image]:
@@ -8083,6 +9911,402 @@ def _pipeline_job_execution_guard(
                 pass
 
 
+def _snap_h3_frames(num_frames: int) -> int:
+    """将 MiniMax-H3 视频总帧数吸附至合法的 17k + 5 网格（最低 22 帧）"""
+    n = max(22, int(num_frames or 124))
+    k = max(1, round((n - 5) / 17.0))
+    return 17 * k + 5
+
+
+def _comfy_api_json_request(url: str, payload: Optional[Dict[str, Any]] = None, timeout: float = 15.0) -> Dict[str, Any]:
+    """直连本机 ComfyUI 后端端口（绕过代理）"""
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    if payload is not None:
+        raw = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        req_obj = urllib.request.Request(
+            url,
+            data=raw,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+    else:
+        req_obj = urllib.request.Request(url, method="GET")
+    with opener.open(req_obj, timeout=timeout) as resp:
+        body = resp.read().decode("utf-8", errors="replace").strip()
+        return json.loads(body) if body else {}
+
+
+def _build_comfy_h3_api_prompt_for_request(
+    pipeline_arch: str,
+    req: GenerateVideoRequest,
+    seed: int,
+    ref_image_filenames: List[str],
+    ref_audio_filename: Optional[str] = None,
+    first_frame_filename: Optional[str] = None,
+    last_frame_filename: Optional[str] = None,
+    save_prefix: str = "video/EasyColab_H3",
+) -> Dict[str, Any]:
+    """构建可直接提交至 ComfyUI /prompt 接口的 10Eros-Max / Sulphur-3 无头有声视频节点图"""
+    full_prompt = build_structured_prompt(
+        req.visual_prompt, req.soundscape_prompt, req.music_prompt
+    )
+    width = max(256, (int(req.width or 1056) // 32) * 32)
+    height = max(256, (int(req.height or 608) // 32) * 32)
+    length = _snap_h3_frames(int(req.num_frames or 124))
+    fps = max(12, min(60, int(req.fps or 24)))
+    steps = max(4, min(60, int(req.num_inference_steps or (8 if pipeline_arch == "comfy_h3_10eros_max" else 20))))
+
+    is_eros = pipeline_arch == "comfy_h3_10eros_max"
+    unet_name = (
+        "10Eros_Max_8stepTurbo_v1.0_hybrid-int8_HQ.safetensors"
+        if is_eros
+        else "s3.safetensors"
+    )
+    sampler_name = "lcm" if is_eros else "euler"
+
+    prompt: Dict[str, Any] = {
+        "1": {
+            "class_type": "UNETLoader",
+            "inputs": {"unet_name": unet_name, "weight_dtype": "default"},
+        },
+        "2": {
+            "class_type": "MiniMaxH3SigmaShift",
+            "inputs": {"model": ["1", 0], "shift_video": 12.0, "shift_audio": 3.0},
+        },
+        "3": {
+            "class_type": "CLIPLoader",
+            "inputs": {
+                "clip_name": "qwen3vl_32b_heretic_minimax_h3_nvfp4.safetensors",
+                "type": "minimax",
+                "device": "default",
+            },
+        },
+        "4": {
+            "class_type": "VAELoader",
+            "inputs": {"vae_name": "minimax_h3_video_vae_int8_convrot.safetensors"},
+        },
+        "5": {
+            "class_type": "VAELoader",
+            "inputs": {"vae_name": "minimax_h3_audio_vae_fp32.safetensors"},
+        },
+    }
+
+    node_seq = 20
+    if is_eros and req.task_mode == "multiref":
+        cond_inputs: Dict[str, Any] = {
+            "clip": ["3", 0],
+            "vae": ["4", 0],
+            "audio_vae": ["5", 0],
+            "prompt": full_prompt,
+            "width": width,
+            "height": height,
+            "length": length,
+            "ref_image_size": (
+                req.ref_image_size
+                if getattr(req, "ref_image_size", "match") in ("match", "max")
+                else "match"
+            ),
+        }
+        for idx, fn in enumerate(ref_image_filenames[:9]):
+            nid = str(node_seq)
+            node_seq += 1
+            prompt[nid] = {
+                "class_type": "LoadImage",
+                "inputs": {"image": fn, "upload": "image"},
+            }
+            cond_inputs[f"ref_images.ref_image_{idx}"] = [nid, 0]
+        if ref_audio_filename:
+            aid = str(node_seq)
+            node_seq += 1
+            prompt[aid] = {
+                "class_type": "LoadAudio",
+                "inputs": {"audio": ref_audio_filename},
+            }
+            cond_inputs["ref_audios.ref_audio_0"] = [aid, 0]
+        prompt["8"] = {"class_type": "MiniMaxH3ReferenceToVideo", "inputs": cond_inputs}
+    elif req.task_mode == "fl2va":
+        i2v_inputs: Dict[str, Any] = {
+            "clip": ["3", 0],
+            "vae": ["4", 0],
+            "prompt": full_prompt,
+            "width": width,
+            "height": height,
+            "length": length,
+        }
+        if first_frame_filename:
+            nid = str(node_seq)
+            node_seq += 1
+            prompt[nid] = {
+                "class_type": "LoadImage",
+                "inputs": {"image": first_frame_filename, "upload": "image"},
+            }
+            i2v_inputs["first_frame"] = [nid, 0]
+        if last_frame_filename:
+            nid = str(node_seq)
+            node_seq += 1
+            prompt[nid] = {
+                "class_type": "LoadImage",
+                "inputs": {"image": last_frame_filename, "upload": "image"},
+            }
+            i2v_inputs["last_frame"] = [nid, 0]
+        prompt["8"] = {"class_type": "MiniMaxH3ImageToVideo", "inputs": i2v_inputs}
+    else:
+        prompt["8"] = {
+            "class_type": "MiniMaxH3TextToVideo",
+            "inputs": {
+                "clip": ["3", 0],
+                "prompt": full_prompt,
+                "width": width,
+                "height": height,
+                "length": length,
+            },
+        }
+
+    prompt["9"] = {
+        "class_type": "BasicScheduler",
+        "inputs": {"model": ["2", 0], "scheduler": "simple", "steps": steps, "denoise": 1.0},
+    }
+    prompt["10"] = {"class_type": "KSamplerSelect", "inputs": {"sampler_name": sampler_name}}
+    prompt["11"] = {"class_type": "RandomNoise", "inputs": {"noise_seed": int(seed)}}
+
+    if is_eros:
+        prompt["12"] = {
+            "class_type": "BasicGuider",
+            "inputs": {"model": ["2", 0], "conditioning": ["8", 0]},
+        }
+    else:
+        prompt["7"] = {
+            "class_type": "CLIPTextEncode",
+            "inputs": {"clip": ["3", 0], "text": (req.negative_prompt or "").strip()},
+        }
+        use_corr = bool(getattr(req, "corrector_enabled", True)) and float(getattr(req, "corrector_strength", 1.0) or 0.0) > 0.0
+        guider_model_ref: List[Any] = ["2", 0]
+        if use_corr:
+            prompt["17"] = {
+                "class_type": "LoadH3Corrector",
+                "inputs": {"corrector": "s3_corrector.safetensors"},
+            }
+            prompt["18"] = {
+                "class_type": "ApplyH3Corrector",
+                "inputs": {
+                    "model": ["2", 0],
+                    "corrector": ["17", 0],
+                    "strength": float(getattr(req, "corrector_strength", 1.0)),
+                    "budget_fraction": float(getattr(req, "corrector_budget_fraction", 0.5) or 0.5),
+                    "velocity_floor": 0.001,
+                    "start_step": int(getattr(req, "corrector_start_step", 0) or 0),
+                    "end_step": int(getattr(req, "corrector_end_step", -1) if getattr(req, "corrector_end_step", -1) is not None else -1),
+                },
+            }
+            guider_model_ref = ["18", 0]
+        prompt["12"] = {
+            "class_type": "CFGGuider",
+            "inputs": {
+                "model": guider_model_ref,
+                "positive": ["8", 0],
+                "negative": ["7", 0],
+                "cfg": 1.0,
+            },
+        }
+
+    prompt["13"] = {
+        "class_type": "SamplerCustomAdvanced",
+        "inputs": {
+            "noise": ["11", 0],
+            "guider": ["12", 0],
+            "sampler": ["10", 0],
+            "sigmas": ["9", 0],
+            "latent_image": ["8", 1],
+        },
+    }
+    prompt["14"] = {"class_type": "VAEDecode", "inputs": {"samples": ["13", 0], "vae": ["4", 0]}}
+    prompt["15"] = {"class_type": "VAEDecodeAudio", "inputs": {"samples": ["13", 0], "vae": ["5", 0]}}
+    prompt["16"] = {
+        "class_type": "CreateVideo",
+        "inputs": {"images": ["14", 0], "audio": ["15", 0], "fps": fps},
+    }
+    prompt["19"] = {
+        "class_type": "SaveVideo",
+        "inputs": {
+            "video": ["16", 0],
+            "filename_prefix": save_prefix,
+            "format": "auto",
+            "codec": "auto",
+        },
+    }
+    return prompt
+
+
+def _save_b64_to_comfy_input(b64_str: str, dest_name: str, input_dir: str) -> str:
+    os.makedirs(input_dir, exist_ok=True)
+    raw_b64 = b64_str.split(",", 1)[1] if "," in b64_str else b64_str
+    raw_bytes = base64.b64decode(raw_b64)
+    out_p = os.path.join(input_dir, dest_name)
+    with open(out_p, "wb") as f:
+        f.write(raw_bytes)
+    return dest_name
+
+
+def _execute_comfy_h3_api_job(
+    job_id: str,
+    pipeline_arch: str,
+    active_pipe: Dict[str, Any],
+    req: GenerateVideoRequest,
+    seed: int,
+    timestamp: str,
+    first_img: Optional[Image.Image],
+    last_img: Optional[Image.Image],
+    raw_ref_imgs: List[str],
+    job_cancel_event: threading.Event,
+    start_time: float,
+    base_prog: float,
+    span_prog: float,
+    prefix: str,
+    model_name: str,
+) -> Tuple[str, str]:
+    """通过本机 ComfyUI /prompt API 执行 10Eros-Max / Sulphur-3 无限制音视频推理并回收成片至 DEFAULT_OUTPUT_DIR"""
+    comfy_port = int((active_pipe or {}).get("port") or globals().get("COMFY_BACKEND", 28188) or 28188)
+    base_url = f"http://127.0.0.1:{comfy_port}"
+    comfy_root, persist_root, _, _, _ = _resolve_comfyui_persistence_paths()
+    input_dir = os.path.join(comfy_root, "input")
+    os.makedirs(input_dir, exist_ok=True)
+
+    ref_image_filenames: List[str] = []
+    if req.task_mode == "multiref":
+        for idx, b64_item in enumerate(raw_ref_imgs[:9]):
+            img_obj = decode_base64_image(b64_item)
+            if img_obj is not None:
+                fn = f"easycolab_{job_id}_ref_{idx}.png"
+                img_obj.save(os.path.join(input_dir, fn))
+                ref_image_filenames.append(fn)
+        if not ref_image_filenames:
+            for idx, fallback_img in enumerate([first_img, last_img]):
+                if fallback_img is not None:
+                    fn = f"easycolab_{job_id}_ref_{idx}.png"
+                    fallback_img.save(os.path.join(input_dir, fn))
+                    ref_image_filenames.append(fn)
+
+    ref_audio_filename: Optional[str] = None
+    raw_audio_b64 = getattr(req, "ref_audio_base64", None)
+    if raw_audio_b64:
+        orig_audio_name = str(getattr(req, "ref_audio_filename", "") or "voice_seed.wav")
+        ext = os.path.splitext(orig_audio_name)[1].lower()
+        if ext not in (".wav", ".mp3", ".m4a", ".flac", ".ogg", ".aac"):
+            ext = ".wav"
+        ref_audio_filename = _save_b64_to_comfy_input(
+            raw_audio_b64, f"easycolab_{job_id}_voice{ext}", input_dir
+        )
+
+    first_fn: Optional[str] = None
+    last_fn: Optional[str] = None
+    if req.task_mode == "fl2va":
+        if first_img is not None:
+            first_fn = f"easycolab_{job_id}_first.png"
+            first_img.save(os.path.join(input_dir, first_fn))
+        if last_img is not None:
+            last_fn = f"easycolab_{job_id}_last.png"
+            last_img.save(os.path.join(input_dir, last_fn))
+
+    save_prefix = f"video/{pipeline_arch}_{job_id}_{seed}"
+    api_prompt = _build_comfy_h3_api_prompt_for_request(
+        pipeline_arch=pipeline_arch,
+        req=req,
+        seed=seed,
+        ref_image_filenames=ref_image_filenames,
+        ref_audio_filename=ref_audio_filename,
+        first_frame_filename=first_fn,
+        last_frame_filename=last_fn,
+        save_prefix=save_prefix,
+    )
+
+    try:
+        enqueue_resp = _comfy_api_json_request(
+            f"{base_url}/prompt",
+            payload={"prompt": api_prompt, "client_id": f"easycolab_{job_id}"},
+            timeout=25.0,
+        )
+    except urllib.error.HTTPError as he:
+        err_body = ""
+        try:
+            err_body = he.read().decode("utf-8", errors="replace")[:500]
+        except Exception:
+            pass
+        raise RuntimeError(f"ComfyUI 节点图校验失败 ({he.code}): {err_body or he.reason}")
+
+    prompt_id = enqueue_resp.get("prompt_id")
+    if not prompt_id:
+        raise RuntimeError(f"ComfyUI 未返回 prompt_id: {enqueue_resp}")
+
+    JOBS[job_id]["progress"] = round(base_prog + 0.12 * span_prog, 3)
+    JOBS[job_id]["message"] = f"{prefix}{model_name} 已入队 ComfyUI 高速渲染引擎，正在加载权重并生成..."
+    t_wait_start = time.time()
+
+    saved_file_info: Optional[Dict[str, Any]] = None
+    while True:
+        if job_cancel_event.is_set() or ABORT_GENERATION_EVENT.is_set():
+            try:
+                _comfy_api_json_request(f"{base_url}/interrupt", payload={}, timeout=4.0)
+            except Exception:
+                pass
+            raise GenerationAbortedError("已手动停止当前推理任务")
+
+        time.sleep(1.2)
+        elapsed_run = time.time() - start_time
+        JOBS[job_id]["elapsed"] = round(elapsed_run, 1)
+
+        hist = _comfy_api_json_request(f"{base_url}/history/{prompt_id}", timeout=10.0)
+        entry = hist.get(prompt_id) if isinstance(hist, dict) else None
+        if entry:
+            status_obj = entry.get("status") or {}
+            if status_obj.get("status_str") == "error":
+                msgs = status_obj.get("messages") or []
+                raise RuntimeError(f"ComfyUI 推理执行失败: {msgs}")
+            outputs = entry.get("outputs") or {}
+            for node_out in outputs.values():
+                if not isinstance(node_out, dict):
+                    continue
+                for media_key in ("videos", "images", "gifs"):
+                    for item in node_out.get(media_key, []) or []:
+                        fn = str(item.get("filename") or "")
+                        if fn.lower().endswith((".mp4", ".webm", ".mov", ".mkv")):
+                            saved_file_info = item
+                            break
+                    if saved_file_info:
+                        break
+                if saved_file_info:
+                    break
+            if saved_file_info or status_obj.get("completed"):
+                break
+
+        # 依据实际运行时间平滑更新进度，避免长时间无变化
+        est_total = 45.0 if pipeline_arch == "comfy_h3_10eros_max" else 135.0
+        local_frac = min(0.88, 0.14 + 0.74 * ((time.time() - t_wait_start) / est_total))
+        JOBS[job_id]["progress"] = round(base_prog + local_frac * span_prog, 3)
+        JOBS[job_id]["message"] = f"{prefix}{model_name} 联合音视频扩散采样中 ({elapsed_run:.0f}s)..."
+        touch_activity()
+
+    if not saved_file_info:
+        raise RuntimeError("ComfyUI 已完成但未在 outputs 中找到生成的有声视频文件")
+
+    sub = str(saved_file_info.get("subfolder") or "").strip("/")
+    src_fn = str(saved_file_info["filename"])
+    src_candidates = [
+        os.path.join(comfy_root, "output", sub, src_fn) if sub else os.path.join(comfy_root, "output", src_fn),
+        os.path.join(persist_root, "output", sub, src_fn) if sub else os.path.join(persist_root, "output", src_fn),
+    ]
+    src_path = next((p for p in src_candidates if os.path.isfile(p) and os.path.getsize(p) > 256), None)
+    if not src_path:
+        raise RuntimeError(f"未在 ComfyUI output 目录找到输出文件: {src_candidates[0]}")
+
+    out_ext = os.path.splitext(src_fn)[1] or ".mp4"
+    filename = f"{pipeline_arch}_{req.task_mode}_{timestamp}_seed{seed}{out_ext}"
+    output_path = os.path.join(DEFAULT_OUTPUT_DIR, filename)
+    shutil.copy2(src_path, output_path)
+    JOBS[job_id]["progress"] = round(base_prog + 0.96 * span_prog, 3)
+    JOBS[job_id]["message"] = f"{prefix}已采集 ComfyUI 成片并准备回传至 Mac (96%)..."
+    return filename, output_path
+
+
 def _run_async_generation_job(job_id: str, req: GenerateVideoRequest):
     touch_activity()
     job_cancel_event = _JOB_CANCEL_EVENTS.setdefault(job_id, threading.Event())
@@ -8138,10 +10362,11 @@ def _run_async_generation_job(job_id: str, req: GenerateVideoRequest):
 
         first_img = decode_base64_image(req.first_frame_base64)
         last_img = decode_base64_image(req.last_frame_base64)
+        raw_ref_imgs = list(getattr(req, "ref_images_base64", None) or [])[:9]
 
         keyframes = []
         keyframe_indices = []
-        if pipeline_arch == "minimax_h3" and req.task_mode == "fl2va":
+        if pipeline_arch in ("minimax_h3", "comfy_h3_10eros_max", "comfy_h3_sulphur3") and req.task_mode == "fl2va":
             if first_img is not None:
                 keyframes.append(first_img)
                 keyframe_indices.append(0)
@@ -8151,6 +10376,11 @@ def _run_async_generation_job(job_id: str, req: GenerateVideoRequest):
             if not keyframes:
                 JOBS[job_id]["status"] = "failed"
                 JOBS[job_id]["message"] = "首尾帧模式下请至少提供首帧或尾帧图片"
+                return
+        elif pipeline_arch == "comfy_h3_10eros_max" and req.task_mode == "multiref":
+            if not raw_ref_imgs and first_img is None and last_img is None and not getattr(req, "ref_audio_base64", None):
+                JOBS[job_id]["status"] = "failed"
+                JOBS[job_id]["message"] = "多图参考模式下请至少提供 1 张参考图 (<Picture 1>) 或声纹参考音频 (<Audio 1>)"
                 return
         elif modality == "image" and req.task_mode == "i2i_edit" and first_img is None and last_img is None:
             JOBS[job_id]["status"] = "failed"
@@ -8205,18 +10435,41 @@ def _run_async_generation_job(job_id: str, req: GenerateVideoRequest):
                 touch_activity()
                 _reclaim_transient_gpu_memory()
 
-                with _pipeline_job_execution_guard(
-                    pipe=active_pipe,
-                    job_id=job_id,
-                    job_cancel_event=job_cancel_event,
-                    start_time=start_time,
-                    base_prog=base_prog,
-                    span_prog=span_prog,
-                    prefix=prefix,
-                    model_name=spec["name"],
-                    media_type=media_type,
-                ) as step_progress_bar:
-                    if pipeline_arch == "minimax_h3":
+                _guard_ctx = (
+                    contextlib.nullcontext()
+                    if pipeline_arch in ("comfy_h3_10eros_max", "comfy_h3_sulphur3")
+                    else _pipeline_job_execution_guard(
+                        pipe=active_pipe,
+                        job_id=job_id,
+                        job_cancel_event=job_cancel_event,
+                        start_time=start_time,
+                        base_prog=base_prog,
+                        span_prog=span_prog,
+                        prefix=prefix,
+                        model_name=spec["name"],
+                        media_type=media_type,
+                    )
+                )
+                with _guard_ctx as step_progress_bar:
+                    if pipeline_arch in ("comfy_h3_10eros_max", "comfy_h3_sulphur3"):
+                        filename, output_path = _execute_comfy_h3_api_job(
+                            job_id=job_id,
+                            pipeline_arch=pipeline_arch,
+                            active_pipe=active_pipe,
+                            req=req,
+                            seed=current_seed,
+                            timestamp=timestamp,
+                            first_img=first_img,
+                            last_img=last_img,
+                            raw_ref_imgs=raw_ref_imgs,
+                            job_cancel_event=job_cancel_event,
+                            start_time=start_time,
+                            base_prog=base_prog,
+                            span_prog=span_prog,
+                            prefix=prefix,
+                            model_name=spec["name"],
+                        )
+                    elif pipeline_arch == "minimax_h3":
                         from diffsynth.utils.data.audio_video import write_video_audio
                         full_prompt = build_structured_prompt(
                             req.visual_prompt, req.soundscape_prompt, req.music_prompt
