@@ -530,6 +530,8 @@ data class ComfyPresetPackItem(
                 "minimax_h3_i2v_flf2v" -> "MiniMax-H3 Turbo · I2VA + Keyframes"
                 "ltx23_flf2v" -> "LTX-2.3 (22B) · Cinematic Camera + Audio"
                 "hunyuan15_i2v_1080p" -> "HunyuanVideo 1.5 · Direct 1080P Super-Res"
+                "minimax_h3_10eros_max" -> "10Eros-Max (Uncensored H3) · Multi-Ref + FLF2V"
+                "minimax_h3_sulphur3" -> "Sulphur-3 (Uncensored H3) · Backbone + Corrector"
                 else -> localizeServerText(title)
             }
         }
@@ -542,6 +544,8 @@ data class ComfyPresetPackItem(
                 "minimax_h3_i2v_flf2v" -> "Stereo Audio · 8-Step"
                 "ltx23_flf2v" -> "Camera Motion · 2 Weights"
                 "hunyuan15_i2v_1080p" -> "720P + 1080P Dual"
+                "minimax_h3_10eros_max" -> "Uncensored · Multi-Ref 8-Step"
+                "minimax_h3_sulphur3" -> "Uncensored · With Corrector"
                 else -> localizeServerText(badge)
             }
         }
@@ -554,6 +558,8 @@ data class ComfyPresetPackItem(
                 "minimax_h3_i2v_flf2v" -> "HD dynamic video + synchronized stereo SFX, speech & music in one pass"
                 "ltx23_flf2v" -> "Optimized for sweeping camera motion between start & end keyframes with audio"
                 "hunyuan15_i2v_1080p" -> "Upload 1 image to render both 720P base video and 1920×1080 Full HD output"
+                "minimax_h3_10eros_max" -> "TenStrip/10Eros-Max v1.0 + uncensored Heretic encoder for <Picture 1>/<Picture 2> multi-ref & FLF2V"
+                "minimax_h3_sulphur3" -> "Full Sulphur-3 backbone + uncensored Heretic encoder + s3_corrector residual network"
                 else -> localizeServerText(scenario)
             }
         }
@@ -563,7 +569,9 @@ val DEFAULT_COMFY_PRESET_PACKS: List<ComfyPresetPackItem> = listOf(
     ComfyPresetPackItem("wan22_i2v_flf2v", "万相 Wan2.2 14B · 图生视频 + 首尾帧双工作流", "新手首选 · 4步极速", "含「单图动起来」与「首尾双图丝滑过渡」2 套中文画布，G4 约 25 秒出片", 35.4, 0, 6, false),
     ComfyPresetPackItem("minimax_h3_i2v_flf2v", "MiniMax-H3 Turbo · 图生有声视频 + 首尾帧", "立体声音效 · 8步加速", "一次生成高清动态画面 + 同步环境音效/配乐/对白", 39.1, 0, 5, false),
     ComfyPresetPackItem("ltx23_flf2v", "LTX-2.3 (22B) · 首尾帧电影级运镜有声工作流", "电影推拉摇移 · 仅 2 权重", "专为首尾关键帧大幅度镜头运动优化 + 自动合成配乐音轨", 36.3, 0, 2, false),
-    ComfyPresetPackItem("hunyuan15_i2v_1080p", "混元 HunyuanVideo 1.5 · 单图直出 1080P 超分", "720P + 1080P 双路超清", "默认激活潜空间超分管线，传 1 张图自动渲染 720P 与 1080P 成片", 43.5, 0, 7, false)
+    ComfyPresetPackItem("hunyuan15_i2v_1080p", "混元 HunyuanVideo 1.5 · 单图直出 1080P 超分", "720P + 1080P 双路超清", "默认激活潜空间超分管线，传 1 张图自动渲染 720P 与 1080P 成片", 43.5, 0, 7, false),
+    ComfyPresetPackItem("minimax_h3_10eros_max", "10Eros-Max (MiniMax-H3 无限制) · 多图参考 + 首尾帧 8步极速", "无内容限制 · 多图参考 8步", "基于 TenStrip/10Eros-Max v1.0 与无审核 Heretic 编码器，强化 <Picture 1>/<Picture 2> 多图参考", 39.1, 0, 4, false),
+    ComfyPresetPackItem("minimax_h3_sulphur3", "Sulphur-3 (MiniMax-H3 无限制) · 满血底座 + H3 效果修正器", "无内容限制 · 含修正器", "内置 SulphurAI/Sulphur-3 满血主干 + 无审核 Heretic 编码器 + s3_corrector 效果修正器", 62.7, 0, 5, false)
 )
 
 data class LocalMediaItem(

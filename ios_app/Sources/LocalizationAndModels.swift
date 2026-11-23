@@ -798,6 +798,8 @@ struct ComfyPresetPackItem: Codable, Identifiable, Hashable {
         case "minimax_h3_i2v_flf2v": return "MiniMax-H3 Turbo · I2VA + Keyframes"
         case "ltx23_flf2v": return "LTX-2.3 (22B) · Cinematic Camera + Audio"
         case "hunyuan15_i2v_1080p": return "HunyuanVideo 1.5 · Direct 1080P Super-Res"
+        case "minimax_h3_10eros_max": return "10Eros-Max (Uncensored H3) · Multi-Ref + FLF2V"
+        case "minimax_h3_sulphur3": return "Sulphur-3 (Uncensored H3) · Backbone + Corrector"
         default: return localizeServerText(title)
         }
     }
@@ -809,6 +811,8 @@ struct ComfyPresetPackItem: Codable, Identifiable, Hashable {
         case "minimax_h3_i2v_flf2v": return "Stereo Audio · 8-Step"
         case "ltx23_flf2v": return "Camera Motion · 2 Weights"
         case "hunyuan15_i2v_1080p": return "720P + 1080P Dual"
+        case "minimax_h3_10eros_max": return "Uncensored · Multi-Ref 8-Step"
+        case "minimax_h3_sulphur3": return "Uncensored · With Corrector"
         default: return localizeServerText(badge)
         }
     }
@@ -820,6 +824,8 @@ struct ComfyPresetPackItem: Codable, Identifiable, Hashable {
         case "minimax_h3_i2v_flf2v": return "HD dynamic video + synchronized stereo SFX, speech & music in one pass"
         case "ltx23_flf2v": return "Optimized for sweeping camera motion between start & end keyframes with audio"
         case "hunyuan15_i2v_1080p": return "Upload 1 image to render both 720P base video and 1920×1080 Full HD output"
+        case "minimax_h3_10eros_max": return "TenStrip/10Eros-Max v1.0 + uncensored Heretic encoder for <Picture 1>/<Picture 2> multi-ref & FLF2V in 8 steps"
+        case "minimax_h3_sulphur3": return "Full Sulphur-3 backbone + uncensored Heretic encoder + s3_corrector residual network for higher fidelity"
         default: return localizeServerText(scenario)
         }
     }
@@ -861,6 +867,24 @@ let DEFAULT_COMFY_PRESET_PACKS: [ComfyPresetPackItem] = [
         approx_size_gb: 43.5,
         workflows: ["06_Hunyuan1.5_单图直出1080P超清视频.json"],
         installed_models: 0, total_models: 7, workflows_installed: false, ready: false
+    ),
+    ComfyPresetPackItem(
+        id: "minimax_h3_10eros_max",
+        title: "10Eros-Max (MiniMax-H3 无限制) · 多图参考 + 首尾帧 8步极速",
+        badge: "无内容限制 · 多图参考 8步",
+        scenario: "基于 TenStrip/10Eros-Max v1.0 与无审核 Heretic 编码器，强化 <Picture 1>/<Picture 2> 多图参考与首尾帧一致性",
+        approx_size_gb: 39.1,
+        workflows: ["07_10Eros-Max_无限制多图参考有声视频(8步极速).json", "08_10Eros-Max_无限制首尾帧图生有声视频(8步极速).json"],
+        installed_models: 0, total_models: 4, workflows_installed: false, ready: false
+    ),
+    ComfyPresetPackItem(
+        id: "minimax_h3_sulphur3",
+        title: "Sulphur-3 (MiniMax-H3 无限制) · 满血底座 + H3 效果修正器",
+        badge: "无内容限制 · 含修正器",
+        scenario: "内置 SulphurAI/Sulphur-3 满血主干 + 无审核 Heretic 编码器 + s3_corrector 速度残差修正器",
+        approx_size_gb: 62.7,
+        workflows: ["09_Sulphur-3_无限制文生有声视频(含H3修正器).json", "10_Sulphur-3_无限制图生首尾帧有声视频(含H3修正器).json"],
+        installed_models: 0, total_models: 5, workflows_installed: false, ready: false
     )
 ]
 

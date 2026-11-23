@@ -555,6 +555,22 @@ _COMFY_PACK_I18N: Dict[str, Tuple[str, str, str, str, str, str]] = {
         "已默认激活潜空间超分管线，传 1 张图一键自动渲染 720P 原片与 1920×1080 超高清成片",
         "Latent super-resolution pipeline enabled by default — upload 1 image to render both 720P base and crisp 1920×1080 HD video",
     ),
+    "minimax_h3_10eros_max": (
+        "10Eros-Max (MiniMax-H3 无限制) · 多图参考 + 首尾帧 8步极速",
+        "10Eros-Max (Uncensored H3) · Multi-Image Reference + FLF2V 8-Step",
+        "无内容限制 · 多图参考 8步",
+        "Uncensored · Multi-Ref 8-Step",
+        "基于 TenStrip/10Eros-Max v1.0 与无审核 Heretic 编码器，强化 <Picture 1>/<Picture 2> 多图参考与首尾帧一致性，内置 8 步 Turbo 加速",
+        "Built on TenStrip/10Eros-Max v1.0 & uncensored Heretic encoder for <Picture 1>/<Picture 2> multi-image reference & FLF2V in 8 turbo steps",
+    ),
+    "minimax_h3_sulphur3": (
+        "Sulphur-3 (MiniMax-H3 无限制) · 满血底座 + H3 效果修正器",
+        "Sulphur-3 (Uncensored H3) · Full Backbone + H3 Corrector",
+        "无内容限制 · 含修正器",
+        "Uncensored · With Corrector",
+        "内置 SulphurAI/Sulphur-3 满血主干 + 无审核 Heretic 编码器 + s3_corrector 速度残差修正器与专用节点，支持文生/图生有声视频并大幅增强动态与画质",
+        "Full SulphurAI/Sulphur-3 backbone + uncensored Heretic encoder + s3_corrector residual network & auto-installed nodes for superior fidelity",
+    ),
 }
 
 
@@ -1132,6 +1148,32 @@ def build_default_comfy_preset_packs() -> List[ComfyPresetPackItem]:
             installed_models=0,
             total_models=7,
         ),
+        ComfyPresetPackItem(
+            id="minimax_h3_10eros_max",
+            _title="10Eros-Max (MiniMax-H3 无限制) · 多图参考 + 首尾帧 8步极速",
+            _badge="无内容限制 · 多图参考 8步",
+            _scenario="基于 TenStrip/10Eros-Max v1.0 与无审核 Heretic 编码器，强化 <Picture 1>/<Picture 2> 多图参考与首尾帧一致性，内置 8 步 Turbo 加速",
+            approx_size_gb=39.1,
+            workflows=[
+                "07_10Eros-Max_无限制多图参考有声视频(8步极速).json",
+                "08_10Eros-Max_无限制首尾帧图生有声视频(8步极速).json",
+            ],
+            installed_models=0,
+            total_models=4,
+        ),
+        ComfyPresetPackItem(
+            id="minimax_h3_sulphur3",
+            _title="Sulphur-3 (MiniMax-H3 无限制) · 满血底座 + H3 效果修正器",
+            _badge="无内容限制 · 含修正器",
+            _scenario="内置 SulphurAI/Sulphur-3 满血主干 + 无审核 Heretic 编码器 + s3_corrector 速度残差修正器与专用节点，支持文生/图生有声视频并大幅增强动态与画质",
+            approx_size_gb=62.7,
+            workflows=[
+                "09_Sulphur-3_无限制文生有声视频(含H3修正器).json",
+                "10_Sulphur-3_无限制图生首尾帧有声视频(含H3修正器).json",
+            ],
+            installed_models=0,
+            total_models=5,
+        ),
     ]
 
 
@@ -1144,6 +1186,7 @@ COMFY_WEIGHT_SUBFOLDERS: List[str] = [
     "clip_vision",
     "controlnet",
     "upscale_models",
+    "h3_correctors",
     "audio_encoders",
     "gguf",
 ]
