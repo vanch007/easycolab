@@ -460,6 +460,81 @@ class ExternalCLILogBusTests(unittest.TestCase):
             for t in toks:
                 self.assertIn(t, txt, f"missing {t} in {sp}")
 
+    def test_scoped_account_isolation_and_full_email_display(self):
+        with open(os.path.join(REPO_ROOT, "colab_bridge.py"), "r", encoding="utf-8") as f:
+            bridge_src = f.read()
+
+        import ast
+        import hashlib
+        import time
+
+        tree = ast.parse(bridge_src, filename="colab_bridge.py")
+        wanted_funcs = {
+            "_account_token_filename",
+            "_load_accounts_index",
+            "_save_accounts_index",
+            "_write_secure_file",
+            "_save_token_to_vault",
+            "_activate_scoped_account_context",
+        }
+        selected = [
+            n for n in tree.body
+            if isinstance(n, ast.FunctionDef) and n.name in wanted_funcs
+        ]
+        mod = ast.Module(body=selected, type_ignores=[])
+        ast.fix_missing_locations(mod)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            acc_dir = os.path.join(tmp, "accounts")
+            idx_path = os.path.join(acc_dir, "index.json")
+            default_tok = os.path.join(tmp, "default_token.json")
+            fake_auth_mod = SimpleNamespace(TOKEN_CONFIG_PATH=default_tok)
+            fake_state = SimpleNamespace(config_path=None, _store="old", _client="old", _sessions="old")
+            ns = {
+                "os": os,
+                "json": json,
+                "time": time,
+                "hashlib": hashlib,
+                "TOKEN_CONFIG_PATH": default_tok,
+                "ACCOUNT_PROFILE_CACHE_PATH": os.path.join(tmp, "default_profile.json"),
+                "ACCOUNTS_DIR": acc_dir,
+                "ACCOUNTS_INDEX_PATH": idx_path,
+                "_colab_auth": fake_auth_mod,
+                "state": fake_state,
+            }
+            exec(compile(mod, "colab_bridge.py", "exec"), ns)
+
+            ns["_save_token_to_vault"]("vanch.alpha@gmail.com", json.dumps({"tok": "A"}))
+            ns["_save_token_to_vault"]("vanch.beta@gmail.com", json.dumps({"tok": "B"}))
+
+            canonical = ns["_activate_scoped_account_context"]("VANCH.ALPHA@GMAIL.COM")
+            self.assertEqual(canonical, "vanch.alpha@gmail.com")
+            self.assertEqual(fake_auth_mod.TOKEN_CONFIG_PATH, ns["TOKEN_CONFIG_PATH"])
+            self.assertIn(acc_dir, ns["TOKEN_CONFIG_PATH"])
+            self.assertTrue(fake_state.config_path.endswith("_sessions.json"))
+            self.assertIsNone(fake_state._client)
+
+            with self.assertRaises(RuntimeError):
+                ns["_activate_scoped_account_context"]("missing@example.com")
+
+        # Full email must NOT be masked with "•••"
+        vm_txt = open(os.path.join(REPO_ROOT, "macos_app", "Sources", "StudioViewModel.swift"), "r", encoding="utf-8").read()
+        self.assertIn("func formattedAccountEmail", vm_txt)
+        fn_block = vm_txt.split("func formattedAccountEmail", 1)[1].split("var displayAccountLabel", 1)[0]
+        self.assertNotIn("•••", fn_block)
+
+        multi_checks = {
+            os.path.join(REPO_ROOT, "macos_app", "EasyColabStudio.swift"): ["account-workspace", "boundAccountEmail"],
+            os.path.join(REPO_ROOT, "macos_app", "Sources", "StudioViewModel.swift"): ["boundAccountEmail", "activeBridgeAccountEmail", "perAccountURLDefaultsKey"],
+            os.path.join(REPO_ROOT, "macos_app", "Sources", "StudioViewModel+Services.swift"): ["EASYCOLAB_ACCOUNT", "scopedAccount"],
+            os.path.join(REPO_ROOT, "macos_app", "Sources", "MainStudioView.swift"): ["openWindow", "account-workspace", "boundAccountEmail"],
+            os.path.join(REPO_ROOT, "skills", "colab-minimax-h3", "scripts", "colab_h3_cli.py"): ["--account", "EASYCOLAB_ACCOUNT"],
+        }
+        for sp, toks in multi_checks.items():
+            txt = open(sp, "r", encoding="utf-8").read()
+            for t in toks:
+                self.assertIn(t, txt, f"missing {t} in {sp}")
+
 
 if __name__ == "__main__":
     unittest.main()
