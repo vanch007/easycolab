@@ -23,16 +23,18 @@ import hashlib
 import argparse
 import tempfile
 import threading
+import subprocess
 import contextlib
 import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 from importlib import resources
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests
 import websocket
 from websocket import ABNF
-from google.auth.transport.requests import Request
+from google.auth.transport.requests import Request, AuthorizedSession
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 
@@ -96,6 +98,8 @@ import colab_cli.auth as _colab_auth
 from colab_cli.common import state
 from colab_cli.client import (
     Accelerator,
+    Client,
+    Prod,
     Variant,
     Shape,
     resolve_assign_shape,
@@ -401,6 +405,9 @@ def _save_token_to_vault(
     paid_balance: float | None = None,
     burn_rate_hourly: float | None = None,
     active_assignments: int | None = None,
+    accelerators: list[str] | None = None,
+    status_ok: bool | None = None,
+    error: str | None = None,
     set_active: bool = True,
 ) -> None:
     norm = (email or "").strip().lower()
@@ -419,6 +426,9 @@ def _save_token_to_vault(
         "paid_balance": existing.get("paid_balance") if paid_balance is None else paid_balance,
         "burn_rate_hourly": existing.get("burn_rate_hourly") if burn_rate_hourly is None else burn_rate_hourly,
         "active_assignments": existing.get("active_assignments") if active_assignments is None else active_assignments,
+        "accelerators": existing.get("accelerators", []) if accelerators is None else list(accelerators),
+        "status_ok": existing.get("status_ok", True) if status_ok is None else bool(status_ok),
+        "error": (None if status_ok else error) if status_ok is not None else existing.get("error"),
         "updated_at": round(time.time(), 3),
     }
     idx["accounts"][norm] = entry
@@ -432,6 +442,9 @@ def _backup_current_token_to_vault(
     paid_balance: float | None = None,
     burn_rate_hourly: float | None = None,
     active_assignments: int | None = None,
+    accelerators: list[str] | None = None,
+    status_ok: bool | None = None,
+    error: str | None = None,
     set_active: bool = True,
 ) -> str:
     if not os.path.isfile(TOKEN_CONFIG_PATH):
@@ -450,6 +463,9 @@ def _backup_current_token_to_vault(
             paid_balance=paid_balance,
             burn_rate_hourly=burn_rate_hourly,
             active_assignments=active_assignments,
+            accelerators=accelerators,
+            status_ok=status_ok,
+            error=error,
             set_active=set_active,
         )
         return resolved
@@ -469,16 +485,117 @@ def _list_saved_accounts(active_email: str = "") -> list[dict]:
         if not os.path.isfile(tok_path):
             continue
         em = str(meta.get("email") or norm).strip()
+        accels = meta.get("accelerators")
         items.append({
             "email": em,
             "is_active": bool(active_norm and em.lower() == active_norm),
             "paid_balance": meta.get("paid_balance"),
             "burn_rate_hourly": meta.get("burn_rate_hourly"),
             "active_assignments": meta.get("active_assignments"),
+            "accelerators": list(accels) if isinstance(accels, list) else [],
+            "status_ok": meta.get("status_ok", True),
+            "error": meta.get("error"),
             "updated_at": meta.get("updated_at") or 0.0,
         })
-    items.sort(key=lambda x: (not x["is_active"], -(x.get("updated_at") or 0.0), x["email"].lower()))
+    items.sort(
+        key=lambda x: (
+            not x["is_active"],
+            0 if int(x.get("active_assignments") or 0) > 0 else 1,
+            -(x.get("updated_at") or 0.0),
+            x["email"].lower(),
+        )
+    )
     return items
+
+
+def _probe_saved_account_live(email: str, tok_path: str) -> dict:
+    """线程隔离地查询单个已保存账号的实时 CU 余额、消耗速率、活跃 VM 数与 GPU 型号，绝不切换全局状态或改动实例。"""
+    try:
+        creds = Credentials.from_authorized_user_file(tok_path, PUBLIC_SCOPES)
+        if creds and creds.expired and creds.refresh_token:
+            creds.refresh(Request())
+            _write_secure_file(tok_path, creds.to_json())
+        if not creds or not creds.valid:
+            return {
+                "email": email,
+                "status_ok": False,
+                "error": "OAuth credentials invalid or expired",
+            }
+        client = Client(Prod(), AuthorizedSession(creds))
+        info = client.get_consumption_user_info()
+        try:
+            assignments = client.list_assignments()
+        except Exception:
+            assignments = []
+        accels = [
+            a.accelerator.value
+            for a in assignments
+            if getattr(a, "accelerator", None) is not None
+        ]
+        vms = max(int(getattr(info, "assignments_count", 0) or 0), len(assignments))
+        return {
+            "email": email,
+            "paid_balance": round(float(info.paid_compute_units_balance), 2),
+            "burn_rate_hourly": round(float(info.consumption_rate_hourly), 2),
+            "active_assignments": vms,
+            "accelerators": accels,
+            "status_ok": True,
+            "error": None,
+        }
+    except Exception as exc:
+        return {
+            "email": email,
+            "status_ok": False,
+            "error": str(exc),
+        }
+
+
+def _refresh_all_saved_accounts_live(active_email: str = "") -> list[dict]:
+    """并发探测保险箱内所有已保存账号的实时云端状态并回写索引（单账号失败不影响其余账号）。"""
+    idx = _load_accounts_index()
+    accounts_map = idx.get("accounts") or {}
+    targets: list[tuple[str, str, str]] = []
+    for norm, meta in accounts_map.items():
+        if not isinstance(meta, dict):
+            continue
+        tok_file = str(meta.get("token_file") or _account_token_filename(norm))
+        tok_path = os.path.join(ACCOUNTS_DIR, tok_file)
+        if not os.path.isfile(tok_path):
+            continue
+        em = str(meta.get("email") or norm).strip()
+        targets.append((norm, em, tok_path))
+
+    if not targets:
+        return []
+
+    probed_by_norm: dict[str, dict] = {}
+    with ThreadPoolExecutor(max_workers=min(6, max(1, len(targets)))) as pool:
+        future_map = {
+            pool.submit(_probe_saved_account_live, em, tok_path): norm
+            for norm, em, tok_path in targets
+        }
+        for fut in as_completed(future_map):
+            norm = future_map[fut]
+            try:
+                probed_by_norm[norm] = fut.result()
+            except Exception as exc:
+                probed_by_norm[norm] = {"status_ok": False, "error": str(exc)}
+
+    now_ts = round(time.time(), 3)
+    for norm, res in probed_by_norm.items():
+        meta = accounts_map.get(norm)
+        if not isinstance(meta, dict):
+            continue
+        meta["updated_at"] = now_ts
+        meta["status_ok"] = bool(res.get("status_ok"))
+        meta["error"] = res.get("error")
+        if res.get("status_ok"):
+            meta["paid_balance"] = res.get("paid_balance")
+            meta["burn_rate_hourly"] = res.get("burn_rate_hourly")
+            meta["active_assignments"] = res.get("active_assignments")
+            meta["accelerators"] = list(res.get("accelerators") or [])
+    _save_accounts_index(idx)
+    return _list_saved_accounts(active_email)
 
 
 def _activate_scoped_account_context(account_email: str) -> str:
@@ -714,12 +831,19 @@ def cmd_auth_status():
         bal = round(float(info.paid_compute_units_balance), 2)
         rate = round(float(info.consumption_rate_hourly), 2)
         vms = int(info.assignments_count)
+        accels = [
+            a.accelerator.value
+            for a in assignments
+            if getattr(a, "accelerator", None) is not None
+        ]
         if email:
             _backup_current_token_to_vault(
                 email=email,
                 paid_balance=bal,
                 burn_rate_hourly=rate,
                 active_assignments=vms,
+                accelerators=accels,
+                status_ok=True,
                 set_active=True,
             )
         print(json.dumps({
@@ -743,6 +867,41 @@ def cmd_auth_status():
             "accounts": _list_saved_accounts(email),
             "error": str(e),
         }))
+
+
+def cmd_auth_status_all():
+    """免切号并发查询所有已保存 Google 账号的实时 CU 余额、消耗速率与在线 GPU 实例状态。"""
+    scoped_env = os.environ.get("EASYCOLAB_ACCOUNT", "").strip()
+    focus_email = ""
+    if _has_valid_token():
+        focus_email = _backup_current_token_to_vault(set_active=not bool(scoped_env)) or _get_account_email()
+    if scoped_env:
+        focus_email = focus_email or scoped_env
+
+    accounts = _refresh_all_saved_accounts_live(active_email=focus_email)
+    focus_norm = (focus_email or "").strip().lower()
+    focus_item = next(
+        (a for a in accounts if (a.get("email") or "").strip().lower() == focus_norm),
+        None,
+    )
+
+    total_active_vms = sum(int(a.get("active_assignments") or 0) for a in accounts)
+    total_burn_rate = round(sum(float(a.get("burn_rate_hourly") or 0.0) for a in accounts), 2)
+    total_paid_balance = round(sum(float(a.get("paid_balance") or 0.0) for a in accounts), 2)
+
+    print(json.dumps({
+        "ok": True,
+        "logged_in": bool(focus_item) or _has_valid_token(),
+        "email": (focus_item.get("email") if focus_item else focus_email) or "",
+        "paid_balance": focus_item.get("paid_balance") if focus_item else None,
+        "burn_rate_hourly": focus_item.get("burn_rate_hourly") if focus_item else None,
+        "active_assignments": focus_item.get("active_assignments") if focus_item else 0,
+        "accounts": accounts,
+        "total_active_vms": total_active_vms,
+        "total_burn_rate_hourly": total_burn_rate,
+        "total_paid_balance": total_paid_balance,
+        "checked_at": round(time.time(), 3),
+    }))
 
 
 ADC_PUBLIC_CLIENT_PREFIX = "764086051850-"
@@ -902,6 +1061,60 @@ def cmd_stop_all():
         }))
     except Exception as e:
         print(json.dumps({"ok": False, "error": str(e)}))
+
+
+def _build_bridge_subcommand(args: list[str]) -> list[str]:
+    """Build subprocess argv targeting colab_bridge CLI in both source and frozen builds."""
+    if getattr(sys, "frozen", False):
+        return [sys.executable, "--bridge-cli", *args]
+    return [sys.executable, os.path.abspath(__file__), *args]
+
+
+def cmd_unassign_endpoint(endpoint: str):
+    """Unassign only a single specified Colab endpoint without touching other VMs on the account."""
+    ep = (endpoint or "").strip()
+    if not ep:
+        print(json.dumps({"ok": False, "error": "endpoint is empty"}))
+        return
+    if not _has_valid_token():
+        print(json.dumps({"ok": False, "error": "尚未登录 Google Colab CLI"}))
+        return
+    try:
+        try:
+            with _quiet_colab_cli():
+                local_sessions, _ = _safe_sync_sessions()
+                for s in list(local_sessions.values()):
+                    if getattr(s, "endpoint", None) == ep:
+                        state.store.remove(s.name)
+        except Exception:
+            pass
+        stopped_count = _unassign_endpoints_and_wait_quota_release([ep], wait_s=5.0)
+        print(json.dumps({"ok": True, "endpoint": ep, "stopped_count": stopped_count}))
+    except Exception as e:
+        print(json.dumps({"ok": False, "endpoint": ep, "error": str(e)}))
+
+
+def _unassign_single_endpoint_for_account(account_email: str, endpoint: str) -> None:
+    """Best-effort cleanup for a duplicate VM allocated during a multi-account race."""
+    ep = (endpoint or "").strip()
+    acct = (account_email or "").strip()
+    if not ep or not acct:
+        return
+    env = os.environ.copy()
+    env["EASYCOLAB_ACCOUNT"] = acct
+    env["EASYCOLAB_SUPPRESS_BRIDGE_LOG"] = "1"
+    env.pop("EASYCOLAB_FROM_APP", None)
+    try:
+        subprocess.run(
+            _build_bridge_subcommand(["--account", acct, "unassign_endpoint", ep]),
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=20,
+            check=False,
+        )
+    except Exception as exc:
+        print(f"WAKE_LOG: ⚠️ [{acct}] 清理并发多余实例 ({ep[:16]}...) 异常: {exc}", flush=True)
 
 
 def _wait_for_runtime_ready(session: SessionState, timeout_s: int = 45) -> bool:
@@ -1288,6 +1501,7 @@ def cmd_wake(
                 print(f"WAKE_LOG: ⚠️ 旧实例 ({a.endpoint[:18]}...) 已失效或正在销毁，准备清理...", flush=True)
                 dead_matching_eps.append(a.endpoint)
 
+        newly_allocated = (target_session is None)
         if target_session is not None:
             # 已复用目标型号实例：顺带释放重复同型号孤儿实例及本地记录过的旧异构实例，防止双倍扣费
             extra_eps = list(dead_matching_eps)
@@ -1336,6 +1550,9 @@ def cmd_wake(
             if not _wait_for_runtime_ready(target_session, timeout_s=50):
                 print("WAKE_LOG: ⏳ 容器仍在初始化，继续尝试连接内核...", flush=True)
 
+        if getattr(target_session, "endpoint", None):
+            sig_prefix = "WAKE_NEW_ALLOCATED" if newly_allocated else "WAKE_ALLOCATED"
+            print(f"{sig_prefix}: {target_session.endpoint}", flush=True)
         print("WAKE_LOG: 正在上传最新多模型开源服务端代码 (app.py)...", flush=True)
         contents = ContentsClient(target_session)
         for up_attempt in range(4):
@@ -1541,6 +1758,209 @@ else:
 
     except Exception as e:
         print(f"WAKE_ERROR: {str(e)}", flush=True)
+
+
+def cmd_recover_tunnel(app_py_path: str, restart_server: bool = False):
+    """
+    无损探测并恢复运行中 Colab 实例的 EasyColab 公网隧道与本地连接状态。
+    严禁创建、销毁或释放任何远端 GPU 实例，且绝不误杀 ComfyUI 进程。
+    """
+    if not _has_valid_token():
+        print("RECOVER_ERROR: 尚未授权登录 Google 账号", flush=True)
+        return
+
+    try:
+        local_sessions, assignments = _safe_sync_sessions()
+        if not assignments:
+            try:
+                info = state.client.get_consumption_user_info()
+                vms = int(getattr(info, "assignments_count", 0) or 0)
+                rate = float(getattr(info, "consumption_rate_hourly", 0.0) or 0.0)
+            except Exception:
+                vms = 0
+                rate = 0.0
+            if vms == 0:
+                print("RECOVER_RELEASED: 云端已无运行中实例 (0 VM, 0.00 CU/h)，实例已确认释放。", flush=True)
+                return
+            print(
+                f"RECOVER_ERROR: 账本显示仍有 {vms} 台实例 ({rate:.2f} CU/h)，但未获取到活跃运行时端点，请稍后重试或手动释放。",
+                flush=True,
+            )
+            return
+
+        ep_to_local = {s.endpoint: s for s in local_sessions.values() if getattr(s, "endpoint", None)}
+        a = assignments[0]
+        existing_local = ep_to_local.get(a.endpoint)
+        session_name = existing_local.name if (existing_local and getattr(existing_local, "name", None)) else "easycolab"
+        target_session = _session_from_listed_assignment(a, session_name=session_name, existing=existing_local)
+        with _quiet_colab_cli():
+            state.store.add(target_session)
+
+        print(
+            f"WAKE_LOG: 🔍 检测到云端 {a.accelerator.value} 实例仍在运行 ({a.endpoint[:18]}...)，正在探测容器与隧道状态...",
+            flush=True,
+        )
+        if not _wait_for_runtime_ready(target_session, timeout_s=18):
+            print(
+                "RECOVER_ERROR: 云端账本仍有实例记录，但容器 Jupyter 内核不可达（可能正在重启或刚被冻结），请稍后再试或点击「释放」清理。",
+                flush=True,
+            )
+            return
+
+        def _exec_on_session(code: str, timeout: int = 120):
+            def _on_kid(kid):
+                target_session.kernel_id = kid
+                state.store.add(target_session)
+
+            def _on_sid(sid):
+                target_session.session_id = sid
+                state.store.add(target_session)
+
+            def _run(use_saved: bool):
+                rt = ColabRuntime(
+                    target_session.url,
+                    target_session.token,
+                    session_name=target_session.name,
+                    history=state.history,
+                    kernel_id=target_session.kernel_id if use_saved else None,
+                    session_id=target_session.session_id if use_saved else None,
+                    on_kernel_started=_on_kid,
+                    on_session_started=_on_sid,
+                )
+                try:
+                    return rt.execute_code(code, allow_stdin=False, timeout=timeout)
+                finally:
+                    try:
+                        rt.stop()
+                    except Exception:
+                        pass
+
+            try:
+                return _run(True)
+            except Exception:
+                target_session.kernel_id = None
+                target_session.session_id = None
+                return _run(False)
+
+        if not restart_server:
+            probe_code = r"""
+import os, re, subprocess, urllib.request, urllib.error
+
+pg = subprocess.run(["pgrep", "-f", "/content/app.py"], capture_output=True, text=True)
+app_alive = (pg.returncode == 0 and bool(pg.stdout.strip()))
+log_path = "/content/easycolab_server.log"
+found_url = ""
+if os.path.exists(log_path):
+    txt = open(log_path, "r", errors="replace").read()
+    matches = re.findall(r"^EasyColab URL:\s*(https://[a-zA-Z0-9-]+\.gradio\.live)\s*$", txt, flags=re.MULTILINE)
+    if matches:
+        found_url = matches[-1].strip()
+
+tunnel_alive = False
+if app_alive and found_url:
+    try:
+        req = urllib.request.Request(found_url.rstrip("/") + "/minimax_api/status", method="GET")
+        with urllib.request.urlopen(req, timeout=6) as resp:
+            tunnel_alive = (resp.status in (200, 401))
+    except urllib.error.HTTPError as err:
+        tunnel_alive = (err.code in (200, 401))
+    except Exception:
+        tunnel_alive = False
+
+if tunnel_alive and found_url:
+    print("RECOVER_URL:" + found_url, flush=True)
+else:
+    print(f"PROBE_MISS:app_alive={int(app_alive)} has_url={int(bool(found_url))}", flush=True)
+"""
+            outputs = _exec_on_session(probe_code, timeout=45)
+            probe_text = "\n".join(out.get("text", "") for out in outputs if "text" in out)
+            m_rec = re.search(r"^RECOVER_URL:(https://[a-zA-Z0-9-]+\.gradio\.live)\s*$", probe_text, flags=re.MULTILINE)
+            if m_rec:
+                rec_url = m_rec.group(1).strip()
+                print(f"RECOVER_URL:{rec_url}", flush=True)
+                print("WAKE_LOG: ✅ 云端服务端与公网隧道均在线，正在重新连接...", flush=True)
+                return
+
+        password = os.environ.pop("EASYCOLAB_ADMIN_PASSWORD", "")
+        if not password:
+            print("RECOVER_NEED_RESTART: 云端 GPU 实例存活，但 app.py 或公网隧道已断开，需要重建隧道。", flush=True)
+            return
+
+        raw_idle_min = os.environ.get("EASYCOLAB_IDLE_TIMEOUT_MINUTES", "").strip()
+        try:
+            initial_idle_minutes = int(raw_idle_min) if raw_idle_min != "" else None
+        except ValueError:
+            initial_idle_minutes = None
+
+        print("WAKE_LOG: 🔄 正在同一台运行中实例上无损重建 app.py 公网隧道（保留 GPU 与 ComfyUI）...", flush=True)
+        contents = ContentsClient(target_session)
+        for up_attempt in range(4):
+            try:
+                contents.upload(app_py_path, "content/app.py")
+                break
+            except Exception as up_err:
+                if up_attempt == 3:
+                    raise up_err
+                time.sleep(2.0)
+        contents.upload(os.path.join(os.path.dirname(app_py_path), "runtime_auth.py"), "content/runtime_auth.py")
+
+        stage = ".easycolab-management-" + uuid.uuid4().hex
+        with tempfile.TemporaryDirectory() as directory:
+            password_file = os.path.join(directory, "management")
+            with open(password_file, "w", encoding="ascii") as stream:
+                stream.write(password)
+            contents.upload(password_file, "content/" + stage)
+
+        restart_code = (
+            "ADMIN_STAGE = " + repr("/content/" + stage) + "\n"
+            + "INITIAL_IDLE_MINUTES = " + repr(initial_idle_minutes) + "\n"
+            + r"""
+import os, sys, time, re, subprocess
+
+with open(ADMIN_STAGE, encoding="ascii") as stream:
+    admin_password = stream.read()
+os.unlink(ADMIN_STAGE)
+
+subprocess.run(["pkill", "-f", "python.*/content/app.py"], check=False)
+time.sleep(1)
+
+log_path = "/content/easycolab_server.log"
+if os.path.exists(log_path):
+    os.remove(log_path)
+
+with open(log_path, "w") as out_f:
+    child_env = {**os.environ, "EASYCOLAB_ADMIN_PASSWORD": admin_password}
+    if INITIAL_IDLE_MINUTES is not None:
+        child_env["EASYCOLAB_IDLE_TIMEOUT_MINUTES"] = str(INITIAL_IDLE_MINUTES)
+    subprocess.Popen([sys.executable, "-u", "/content/app.py"], cwd="/content", env=child_env, stdout=out_f, stderr=subprocess.STDOUT)
+
+url_re = re.compile(r"^EasyColab URL: (https://[a-zA-Z0-9-]+\.gradio\.live)$", re.MULTILINE)
+found_url = None
+for _ in range(90):
+    time.sleep(2)
+    if os.path.exists(log_path):
+        txt = open(log_path, "r", errors="replace").read()
+        m = url_re.search(txt)
+        if m:
+            found_url = m.group(1)
+            break
+
+if found_url:
+    print("WAKE_URL:" + found_url, flush=True)
+else:
+    tail = open(log_path, "r", errors="replace").read()[-600:] if os.path.exists(log_path) else "no log"
+    print("RECOVER_ERROR: 重建隧道超时，日志尾部: " + tail, flush=True)
+"""
+        )
+        outputs = _exec_on_session(restart_code, timeout=240)
+        for out in outputs:
+            if "text" in out:
+                for line in out["text"].splitlines():
+                    print(line, flush=True)
+            elif out.get("output_type") == "error":
+                print("RECOVER_ERROR: " + out.get("evalue", "Execution error"), flush=True)
+    except Exception as exc:
+        print(f"RECOVER_ERROR: {exc}", flush=True)
 
 
 class _ProxyAuthExpiredError(RuntimeError):
@@ -2021,12 +2441,312 @@ def cmd_keepalive_daemon():
         _close_all_ws()
 
 
+def cmd_wake_multi(
+    accounts: list[str],
+    gpu_type: str,
+    app_py_path: str,
+    mode: str = "first",
+    persistent: bool = False,
+    retry_interval: float = 60.0,
+) -> dict:
+    """
+    多账号并发申请 Colab GPU：
+    - mode="first": 竞速抢卡（默认）。多个账号同时发起申请，首个分到机器的账号胜出，
+      立即终止其余账号并精准释放毫秒级并发多余新实例，仅部署胜出账号并返回 WAKE_WINNER + WAKE_URL。
+    - mode="all": 批量多开。并行启动所有指定账号各自的 GPU 并分别部署，输出每个账号的 WAKE_ACCOUNT_URL 与 WAKE_MULTI_JSON。
+    """
+    eff_mode = mode if mode in ("first", "all") else "first"
+    password = os.environ.pop("EASYCOLAB_ADMIN_PASSWORD", "")
+    if not password and sys.stdin.isatty():
+        import getpass
+        password = getpass.getpass("Management password (24+ URL-safe characters): ")
+    if not password:
+        msg = "Set a management password before deploying"
+        print(f"WAKE_ERROR: {msg}", flush=True)
+        return {"ok": False, "mode": eff_mode, "error": msg}
+
+    clean_accounts: list[str] = []
+    seen_norm: set[str] = set()
+    for raw in accounts:
+        em = (raw or "").strip()
+        if not em:
+            continue
+        norm = em.lower()
+        if norm not in seen_norm:
+            seen_norm.add(norm)
+            clean_accounts.append(em)
+
+    if not clean_accounts:
+        saved = _refresh_all_saved_accounts_live("")
+        clean_accounts = [
+            str(a.get("email") or "").strip()
+            for a in saved
+            if str(a.get("email") or "").strip()
+            and a.get("status_ok") is not False
+            and int(a.get("active_assignments") or 0) == 0
+        ]
+    if not clean_accounts:
+        msg = "未找到可用的空闲已保存 Google 账号，请在弹窗或 --accounts 中指定目标账号。"
+        print(f"WAKE_ERROR: {msg}", flush=True)
+        return {"ok": False, "mode": eff_mode, "error": msg}
+
+    eff_interval = max(5.0, float(retry_interval or 60.0))
+    use_persistent = bool(persistent) or (
+        os.environ.get("EASYCOLAB_PERSISTENT_WAKE", "").strip().lower() in ("1", "true", "yes")
+    )
+
+    mode_label = "竞速抢卡（抢到首个即停）" if eff_mode == "first" else "批量多开（全部各开一台）"
+    print(
+        f"WAKE_LOG: 🚀 启动多账号同时申请 [{mode_label}] · {gpu_type} GPU · 共 {len(clean_accounts)} 个账号 ({', '.join(clean_accounts)})",
+        flush=True,
+    )
+
+    lock = threading.Lock()
+    cancel_event = threading.Event()
+    procs: dict[str, subprocess.Popen] = {}
+    winner_email: str | None = None
+    winner_url: str | None = None
+    results: dict[str, dict] = {}
+    errors: dict[str, str] = {}
+
+    def _terminate_other_procs(keep_email: str | None):
+        with lock:
+            targets = [
+                p for em, p in procs.items()
+                if em != keep_email and p.poll() is None
+            ]
+        for p in targets:
+            try:
+                p.terminate()
+            except Exception:
+                pass
+
+    def _terminate_all_procs():
+        cancel_event.set()
+        _terminate_other_procs(None)
+
+    prev_handlers: dict[int, object] = {}
+    is_main_thread = threading.current_thread() is threading.main_thread()
+    if is_main_thread:
+        def _on_signal(_signum, _frame):
+            _terminate_all_procs()
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            try:
+                prev_handlers[sig] = signal.getsignal(sig)
+                signal.signal(sig, _on_signal)
+            except Exception:
+                pass
+
+    def _run_account_worker(email: str):
+        nonlocal winner_email, winner_url
+        child_env = os.environ.copy()
+        child_env["EASYCOLAB_ACCOUNT"] = email
+        child_env["EASYCOLAB_ADMIN_PASSWORD"] = password
+        child_env["EASYCOLAB_SUPPRESS_BRIDGE_LOG"] = "1"
+        child_env.pop("EASYCOLAB_FROM_APP", None)
+
+        child_args = ["--account", email, "wake", "--gpu", gpu_type, "--app-py", app_py_path]
+        if use_persistent:
+            child_args += ["--persistent", "--retry-interval", str(int(round(eff_interval)))]
+
+        proc = subprocess.Popen(
+            _build_bridge_subcommand(child_args),
+            env=child_env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+        )
+        with lock:
+            if cancel_event.is_set() or (eff_mode == "first" and winner_email is not None and winner_email != email):
+                try:
+                    proc.terminate()
+                except Exception:
+                    pass
+            procs[email] = proc
+
+        dup_new_endpoints: list[str] = []
+        try:
+            if proc.stdout is not None:
+                for raw_line in proc.stdout:
+                    line = raw_line.rstrip("\r\n")
+                    if not line:
+                        continue
+
+                    if line.startswith("WAKE_NEW_ALLOCATED:") or line.startswith("WAKE_ALLOCATED:"):
+                        is_new_alloc = line.startswith("WAKE_NEW_ALLOCATED:")
+                        ep = line.split(":", 1)[1].strip()
+                        if eff_mode == "first":
+                            won_now = False
+                            lost_now = False
+                            with lock:
+                                if not cancel_event.is_set() and winner_email is None:
+                                    winner_email = email
+                                    won_now = True
+                                elif winner_email is not None and winner_email != email:
+                                    lost_now = True
+                            if won_now:
+                                print(f"WAKE_WINNER: {email}", flush=True)
+                                if len(clean_accounts) > 1:
+                                    print(
+                                        f"WAKE_LOG: 🏆 [{email}] 率先分配到 {gpu_type} 实例，正在立即停止其余 {len(clean_accounts) - 1} 个账号的申请并继续部署...",
+                                        flush=True,
+                                    )
+                                _terminate_other_procs(email)
+                            elif lost_now and is_new_alloc and ep:
+                                dup_new_endpoints.append(ep)
+                        continue
+
+                    if line.startswith("WAKE_URL:"):
+                        url = line[len("WAKE_URL:"):].strip()
+                        if eff_mode == "first":
+                            emit_win_url = False
+                            announced_winner = False
+                            with lock:
+                                if not cancel_event.is_set() and (winner_email is None or winner_email == email):
+                                    if winner_email is None:
+                                        winner_email = email
+                                        announced_winner = True
+                                    if winner_url is None:
+                                        winner_url = url
+                                        emit_win_url = True
+                                        results[email] = {"ok": True, "email": email, "url": url}
+                            if announced_winner:
+                                print(f"WAKE_WINNER: {email}", flush=True)
+                                _terminate_other_procs(email)
+                            if emit_win_url:
+                                print(f"WAKE_URL: {url}", flush=True)
+                        else:
+                            with lock:
+                                results[email] = {"ok": True, "email": email, "url": url}
+                            print(f"WAKE_ACCOUNT_URL: {email} {url}", flush=True)
+                            print(f"WAKE_LOG: ✅ [{email}] 实例与隧道已就绪：{url[:38]}...", flush=True)
+                        continue
+
+                    if line.startswith("WAKE_ERROR:"):
+                        err_msg = line[len("WAKE_ERROR:"):].strip() or "Unknown wake error"
+                        with lock:
+                            errors[email] = err_msg
+                            cur_winner = winner_email
+                        if eff_mode == "all":
+                            with lock:
+                                results.setdefault(email, {"ok": False, "email": email, "error": err_msg})
+                            print(f"WAKE_LOG: ❌ [{email}] 唤醒失败: {err_msg}", flush=True)
+                        elif cur_winner == email:
+                            print(f"WAKE_ERROR: [{email}] {err_msg}", flush=True)
+                        else:
+                            if not cancel_event.is_set() and cur_winner is None:
+                                print(f"WAKE_LOG: ⚠️ [{email}] {err_msg}", flush=True)
+                        continue
+
+                    if line.startswith("WAKE_LOG:"):
+                        clean = line[len("WAKE_LOG:"):].strip()
+                        if not clean:
+                            continue
+                        with lock:
+                            cur_winner = winner_email
+                        if eff_mode == "first" and cur_winner is not None and cur_winner != email:
+                            continue
+                        print(f"WAKE_LOG: [{email}] {clean}", flush=True)
+                        continue
+
+                    if not line.startswith("[colab]") and "Assignment request failed" not in line and "urllib3" not in line:
+                        with lock:
+                            cur_winner = winner_email
+                        if eff_mode == "first" and cur_winner is not None and cur_winner != email:
+                            continue
+                        print(f"[{email}] {line}", flush=True)
+        finally:
+            try:
+                if proc.poll() is None:
+                    proc.wait(timeout=3.0)
+            except Exception:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+            with lock:
+                cur_winner = winner_email
+            if eff_mode == "first" and dup_new_endpoints and cur_winner != email:
+                for dup_ep in dup_new_endpoints:
+                    print(
+                        f"WAKE_LOG: 🧹 [{email}] 并发竞速出现毫秒级重复分配 ({dup_ep[:16]}...)，正在自动精准释放防重复扣费...",
+                        flush=True,
+                    )
+                    _unassign_single_endpoint_for_account(email, dup_ep)
+
+    threads: list[threading.Thread] = []
+    try:
+        for em in clean_accounts:
+            t = threading.Thread(target=_run_account_worker, args=(em,), daemon=True)
+            t.start()
+            threads.append(t)
+        for t in threads:
+            t.join()
+    finally:
+        _terminate_all_procs()
+        with lock:
+            stray_procs = list(procs.values())
+        for p in stray_procs:
+            if p.poll() is None:
+                try:
+                    p.wait(timeout=2.0)
+                except Exception:
+                    try:
+                        p.kill()
+                    except Exception:
+                        pass
+        if is_main_thread:
+            for sig, prev in prev_handlers.items():
+                try:
+                    signal.signal(sig, prev)
+                except Exception:
+                    pass
+
+    if eff_mode == "first":
+        if not winner_url and not cancel_event.is_set():
+            print(
+                f"WAKE_ERROR: 所有参与账号 ({len(clean_accounts)} 个) 均未成功分配或部署 {gpu_type} 实例，请查看上方日志或稍后重试。",
+                flush=True,
+            )
+        return {
+            "ok": bool(winner_url),
+            "mode": "first",
+            "gpu": gpu_type,
+            "winner": winner_email,
+            "url": winner_url,
+            "errors": errors,
+        }
+
+    succeeded = [em for em in clean_accounts if results.get(em, {}).get("ok")]
+    failed = [em for em in clean_accounts if em not in succeeded]
+    summary = {
+        "ok": bool(succeeded),
+        "mode": "all",
+        "gpu": gpu_type,
+        "succeeded": succeeded,
+        "failed": failed,
+        "results": {
+            em: results.get(em, {"ok": False, "email": em, "error": errors.get(em, "Failed")})
+            for em in clean_accounts
+        },
+    }
+    print(f"WAKE_MULTI_JSON: {json.dumps(summary, ensure_ascii=False)}", flush=True)
+    if not succeeded and not cancel_event.is_set():
+        print(
+            f"WAKE_ERROR: 批量多开失败：所有勾选账号 ({len(clean_accounts)} 个) 均未能成功唤醒 {gpu_type}。",
+            flush=True,
+        )
+    return summary
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser()
     parser.add_argument("--account", type=str, default="", help="Scope bridge execution to a saved Google account email")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     sub.add_parser("auth_status")
+    sub.add_parser("auth_status_all")
     sub.add_parser("auth_url")
     sub.add_parser("auth_logout")
     sub.add_parser("auth_list")
@@ -2050,13 +2770,36 @@ def main(argv=None):
     p_wake.add_argument("--persistent", action="store_true")
     p_wake.add_argument("--retry-interval", type=float, default=60.0)
 
+    p_wmulti = sub.add_parser("wake_multi")
+    p_wmulti.add_argument("--accounts", type=str, default="", help="Comma-separated saved account emails")
+    p_wmulti.add_argument("--gpu", type=str, default="G4")
+    p_wmulti.add_argument(
+        "--app-py",
+        type=str,
+        default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "app.py"),
+    )
+    p_wmulti.add_argument("--mode", type=str, default="first", choices=["first", "all"])
+    p_wmulti.add_argument("--persistent", action="store_true")
+    p_wmulti.add_argument("--retry-interval", type=float, default=60.0)
+
+    p_unep = sub.add_parser("unassign_endpoint")
+    p_unep.add_argument("endpoint", type=str)
+
+    p_rec = sub.add_parser("recover_tunnel")
+    p_rec.add_argument(
+        "--app-py",
+        type=str,
+        default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "app.py"),
+    )
+    p_rec.add_argument("--restart-server", action="store_true")
+
     sub.add_parser("keepalive")
     sub.add_parser("keepalive_daemon")
     sub.add_parser("stop_all")
 
     args = parser.parse_args(argv)
     scoped_account = (getattr(args, "account", "") or os.environ.get("EASYCOLAB_ACCOUNT", "")).strip()
-    if scoped_account and args.cmd in ("auth_status", "wake", "keepalive", "keepalive_daemon", "stop_all"):
+    if scoped_account and args.cmd in ("auth_status", "auth_status_all", "wake", "recover_tunnel", "keepalive", "keepalive_daemon", "stop_all", "unassign_endpoint"):
         try:
             _activate_scoped_account_context(scoped_account)
         except Exception as scope_err:
@@ -2073,6 +2816,8 @@ def main(argv=None):
             return
     if args.cmd == "auth_status":
         cmd_auth_status()
+    elif args.cmd == "auth_status_all":
+        cmd_auth_status_all()
     elif args.cmd == "auth_url":
         cmd_auth_url()
     elif args.cmd == "auth_logout":
@@ -2085,6 +2830,13 @@ def main(argv=None):
         cmd_auth_remove(args.email)
     elif args.cmd == "auth_code":
         cmd_auth_code(args.code)
+    elif args.cmd == "unassign_endpoint":
+        cmd_unassign_endpoint(args.endpoint)
+    elif args.cmd == "recover_tunnel":
+        cmd_recover_tunnel(
+            args.app_py,
+            restart_server=bool(getattr(args, "restart_server", False)),
+        )
     elif args.cmd == "wake":
         with _external_cli_log_tee():
             _append_external_app_log(
@@ -2093,6 +2845,20 @@ def main(argv=None):
             cmd_wake(
                 args.gpu,
                 args.app_py,
+                persistent=bool(getattr(args, "persistent", False)),
+                retry_interval=float(getattr(args, "retry_interval", 60.0) or 60.0),
+            )
+    elif args.cmd == "wake_multi":
+        raw_accts = [s.strip() for s in str(getattr(args, "accounts", "") or "").split(",") if s.strip()]
+        with _external_cli_log_tee():
+            _append_external_app_log(
+                f"正在通过 CLI 启动多账号同时申请 ({args.gpu} GPU, 模式={args.mode}, 账号={','.join(raw_accts) or '自动空闲账号'})..."
+            )
+            cmd_wake_multi(
+                raw_accts,
+                args.gpu,
+                args.app_py,
+                mode=args.mode,
                 persistent=bool(getattr(args, "persistent", False)),
                 retry_interval=float(getattr(args, "retry_interval", 60.0) or 60.0),
             )
