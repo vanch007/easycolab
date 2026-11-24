@@ -1484,6 +1484,54 @@ MODEL_CATALOG: Dict[str, Dict[str, Any]] = {
             ),
         ],
     },
+    "seedvr2_upscaler": {
+        "id": "seedvr2_upscaler",
+        "name": "SeedVR2 7B · 视频超分 (4K)",
+        "repo_id": "numz/SeedVR2_comfyUI",
+        "modality": "video_audio",
+        "pipeline_arch": "comfy_seedvr2_upscaler",
+        "comfy_pack_id": "seedvr2_upscaler",
+        "category": "PRO 6000 旗舰一步扩散视频超分 · SeedVR2 7B FP16 (支持 7B-sharp / 3B 切换) · 1080p/2K/4K + 原音频透传",
+        "approx_size_gb": 17.0,
+        "files": [
+            (
+                "SEEDVR2/seedvr2_ema_7b_fp16.safetensors",
+                "SeedVR2 7B FP16 满血超分 DiT 主干 (16.5 GB)",
+            ),
+            (
+                "SEEDVR2/ema_vae_fp16.safetensors",
+                "SeedVR2 共享视频 VAE FP16 (0.48 GB)",
+            ),
+        ],
+    },
+    "recavsr_upscaler": {
+        "id": "recavsr_upscaler",
+        "name": "ReCaVSR · 极速流式超分 (4K)",
+        "repo_id": "kopper/ReCaVSR",
+        "modality": "video_audio",
+        "pipeline_arch": "comfy_recavsr_upscaler",
+        "comfy_pack_id": "recavsr_upscaler",
+        "category": "USTC Wan2.2-5B 一步流式超分 + FlashDecoder · 4K 快 15~20 倍 · 支持 bf16 / int8_convrot 与 1.5x/2x/4x 倍率 · 原音轨帧率透传",
+        "approx_size_gb": 17.3,
+        "files": [
+            (
+                "recavsr/transformer.safetensors",
+                "ReCaVSR Wan2.2-5B BF16 满血主干 (10.6 GB)",
+            ),
+            (
+                "recavsr/transformer_int8_convrot.safetensors",
+                "ReCaVSR INT8 ConvRot 极速主干 (6.3 GB · 提速 1.8x)",
+            ),
+            (
+                "recavsr/flashdecoder.safetensors",
+                "ReCaVSR FlashDecoder 流式解码器 (0.23 GB · 快 25-40x)",
+            ),
+            (
+                "recavsr/prompt.safetensors",
+                "ReCaVSR 预计算文本条件嵌入 (0.17 GB)",
+            ),
+        ],
+    },
     "minimax_h3_image": {
         "id": "minimax_h3_image",
         "name": "MiniMax-H3-Image (33B · 4K)",
@@ -5133,7 +5181,7 @@ def load_model_to_vram_core(
             elif pipeline_arch in ("qwen38_27b_gguf", "gguf"):
                 q4_kv_gb = (ctx_len / 262144.0) * 4.6
                 required_free_gb = min(max(12.0, approx_gb + 2.0 + q4_kv_gb), max(12.0, total_vram_gb - 1.2))
-            elif pipeline_arch in ("minimax_h3", "minimax_h3_image", "comfy_h3_10eros_max", "comfy_h3_sulphur3", "comfy_h3_ref2va_tara"):
+            elif pipeline_arch in ("minimax_h3", "minimax_h3_image", "comfy_h3_10eros_max", "comfy_h3_sulphur3", "comfy_h3_ref2va_tara", "comfy_seedvr2_upscaler", "comfy_recavsr_upscaler"):
                 # BF16 单阶段峰值约 62.5GB；在 G4 (96GB) 上可与 Qwen3.8-GGUF (~21GB) 同时共驻显存
                 required_free_gb = min(65.0, max(24.0, total_vram_gb - 5.0))
             elif pipeline_arch == "transformers":
@@ -5142,7 +5190,7 @@ def load_model_to_vram_core(
                 required_free_gb = 24.0
 
             if (
-                not str(pipeline_arch).startswith("comfy_h3_")
+                not str(pipeline_arch).startswith("comfy_")
                 and torch.cuda.mem_get_info("cuda")[0] / (1024 ** 3) < required_free_gb
                 and COMFYUI_STATE.get("is_running")
             ):
@@ -5542,9 +5590,9 @@ def load_model_to_vram_core(
                 )
                 mode_label = new_llm["mode_label"]
 
-            elif pipeline_arch in ("comfy_h3_10eros_max", "comfy_h3_sulphur3", "comfy_h3_ref2va_tara"):
+            elif pipeline_arch in ("comfy_h3_10eros_max", "comfy_h3_sulphur3", "comfy_h3_ref2va_tara", "comfy_seedvr2_upscaler", "comfy_recavsr_upscaler"):
                 MODEL_DOWNLOAD_STATE["progress"] = 0.25
-                MODEL_DOWNLOAD_STATE["message"] = f"正在启动并预热 {spec['name']} 无限制 ComfyUI 推理引擎 (--highvram)..."
+                MODEL_DOWNLOAD_STATE["message"] = f"正在启动并预热 {spec['name']} ComfyUI 推理引擎 (--highvram)..."
                 stop_sync = threading.Event()
 
                 def _sync_comfy_boot_progress():
@@ -6088,6 +6136,8 @@ COMFY_STANDARD_MODEL_SUBDIRS = [
     "upscale_models",
     "latent_upscale_models",
     "h3_correctors",
+    "SEEDVR2",
+    "recavsr",
     "audio_encoders",
     "embeddings",
     "style_models",
@@ -6243,6 +6293,52 @@ COMFY_PRESET_WORKFLOW_PACKS: List[Dict[str, Any]] = [
                 "name": "ComfyUI-BFSNodes",
                 "url": "https://github.com/alisson-anjos/ComfyUI-BFSNodes.git",
                 "subdir": "ComfyUI-BFSNodes",
+            }
+        ],
+    },
+    {
+        "id": "seedvr2_upscaler",
+        "title": "SeedVR2 7B FP16 · 4K 电影级视频超分 (PRO 6000 满血版)",
+        "badge": "视频超分 · 一步扩散 4K",
+        "scenario": "ByteDance SeedVR2 7B FP16 一步扩散视频超分修复（支持 7B / 7B-sharp / 3B 切换），适配 PRO 6000 96GB 原生无切块大窗口推理，保留原视频帧率与音轨",
+        "approx_size_gb": 17.0,
+        "workflows": [
+            "12_SeedVR2_7B_FP16_视频4K超分修复.json",
+        ],
+        "models": [
+            ("SEEDVR2", "seedvr2_ema_7b_fp16.safetensors", "numz/SeedVR2_comfyUI", "seedvr2_ema_7b_fp16.safetensors", 16.5),
+            ("SEEDVR2", "ema_vae_fp16.safetensors", "numz/SeedVR2_comfyUI", "ema_vae_fp16.safetensors", 0.48),
+        ],
+        "custom_nodes": [
+            {
+                "type": "git",
+                "name": "ComfyUI-SeedVR2_VideoUpscaler",
+                "url": "https://github.com/numz/ComfyUI-SeedVR2_VideoUpscaler.git",
+                "subdir": "ComfyUI-SeedVR2_VideoUpscaler",
+            }
+        ],
+    },
+    {
+        "id": "recavsr_upscaler",
+        "title": "ReCaVSR · Wan2.2-5B 极速流式视频超分 (FlashDecoder 4K)",
+        "badge": "极速流式 · 4K 快 15×",
+        "scenario": "基于 Wan2.2 TI2V-5B 一步流式扩散 + FlashDecoder（21 帧起步 + 每批 8 帧逐块直写），PRO 6000 跑 300 帧 4K 仅约 1 分钟且不爆显存，原生保留音轨与帧率",
+        "approx_size_gb": 17.3,
+        "workflows": [
+            "13_ReCaVSR_Wan2.2_极速流式4K超分.json",
+        ],
+        "models": [
+            ("recavsr", "transformer.safetensors", "kopper/ReCaVSR", "transformer.safetensors", 10.6),
+            ("recavsr", "transformer_int8_convrot.safetensors", "PedroMarinhoDev/ReCaVSR-ComfyUI", "recavsr/transformer_int8_convrot.safetensors", 6.3),
+            ("recavsr", "flashdecoder.safetensors", "kopper/ReCaVSR", "flashdecoder.safetensors", 0.23),
+            ("recavsr", "prompt.safetensors", "kopper/ReCaVSR", "prompt.safetensors", 0.17),
+        ],
+        "custom_nodes": [
+            {
+                "type": "git",
+                "name": "ComfyUI-ReCaVSR",
+                "url": "https://github.com/PedroMarinhoDev/ComfyUI-ReCaVSR.git",
+                "subdir": "ComfyUI-ReCaVSR",
             }
         ],
     },
@@ -7870,6 +7966,252 @@ def _build_ref2va_tara_workflow() -> Dict[str, Any]:
     return wf
 
 
+def _build_seedvr2_upscaler_workflow() -> Dict[str, Any]:
+    """构建可直接打开的 SeedVR2 7B FP16 电影级视频超分修复（PRO 6000 满血版）ComfyUI 画布工作流"""
+    nodes = [
+        {
+            "id": 1,
+            "type": "VHS_LoadVideo",
+            "pos": [0, 140],
+            "size": [340, 270],
+            "flags": {},
+            "order": 0,
+            "mode": 0,
+            "inputs": [],
+            "outputs": [
+                {"name": "IMAGE", "type": "IMAGE", "links": [1]},
+                {"name": "frame_count", "type": "INT", "links": None},
+                {"name": "audio", "type": "AUDIO", "links": [2]},
+                {"name": "video_info", "type": "VHS_VIDEOINFO", "links": [3]},
+            ],
+            "title": "① 待超分原视频 (<Video 1>)",
+            "properties": {"Node name for S&R": "VHS_LoadVideo"},
+            "widgets_values": {"video": "source_video.mp4", "force_rate": 0, "custom_width": 0, "custom_height": 0, "frame_load_cap": 0, "skip_first_frames": 0, "select_every_nth": 1},
+        },
+        {
+            "id": 5,
+            "type": "VHS_VideoInfo",
+            "pos": [400, 420],
+            "size": [260, 220],
+            "flags": {},
+            "order": 1,
+            "mode": 0,
+            "inputs": [{"name": "video_info", "type": "VHS_VIDEOINFO", "link": 3}],
+            "outputs": [
+                {"name": "source_fps🟨", "type": "FLOAT", "links": None},
+                {"name": "source_frame_count🟨", "type": "INT", "links": None},
+                {"name": "source_duration🟨", "type": "FLOAT", "links": None},
+                {"name": "source_width🟨", "type": "INT", "links": None},
+                {"name": "source_height🟨", "type": "INT", "links": None},
+                {"name": "loaded_fps🟦", "type": "FLOAT", "links": [4]},
+            ],
+            "title": "读取原视频帧率 (FPS)",
+            "properties": {"Node name for S&R": "VHS_VideoInfo"},
+            "widgets_values": [],
+        },
+        {
+            "id": 2,
+            "type": "SeedVR2LoadDiTModel",
+            "pos": [0, -180],
+            "size": [360, 210],
+            "flags": {},
+            "order": 2,
+            "mode": 0,
+            "inputs": [],
+            "outputs": [{"name": "SEEDVR2_DIT", "type": "SEEDVR2_DIT", "links": [5]}],
+            "title": "SeedVR2 7B FP16 主干加载器",
+            "properties": {"Node name for S&R": "SeedVR2LoadDiTModel"},
+            "widgets_values": ["seedvr2_ema_7b_fp16.safetensors", "cuda:0", 0, False, "none", False, "sdpa"],
+        },
+        {
+            "id": 3,
+            "type": "SeedVR2LoadVAEModel",
+            "pos": [400, -180],
+            "size": [360, 270],
+            "flags": {},
+            "order": 3,
+            "mode": 0,
+            "inputs": [],
+            "outputs": [{"name": "SEEDVR2_VAE", "type": "SEEDVR2_VAE", "links": [6]}],
+            "title": "SeedVR2 VAE FP16 加载器 (PRO 6000 自适应大块)",
+            "properties": {"Node name for S&R": "SeedVR2LoadVAEModel"},
+            "widgets_values": ["ema_vae_fp16.safetensors", "cuda:0", False, 1024, 128, False, 2048, 128, "false", "none", False],
+        },
+        {
+            "id": 4,
+            "type": "SeedVR2VideoUpscaler",
+            "pos": [840, 40],
+            "size": [380, 340],
+            "flags": {},
+            "order": 4,
+            "mode": 0,
+            "inputs": [
+                {"name": "image", "type": "IMAGE", "link": 1},
+                {"name": "dit", "type": "SEEDVR2_DIT", "link": 5},
+                {"name": "vae", "type": "SEEDVR2_VAE", "link": 6},
+            ],
+            "outputs": [{"name": "IMAGE", "type": "IMAGE", "links": [7]}],
+            "title": "② SeedVR2 一步扩散超分修复",
+            "properties": {"Node name for S&R": "SeedVR2VideoUpscaler"},
+            "widgets_values": [42, 1080, 0, 17, True, 2, 0, "lab", 0.0, 0.0, "none", False],
+        },
+        {
+            "id": 6,
+            "type": "CreateVideo",
+            "pos": [1280, 140],
+            "size": [260, 120],
+            "flags": {},
+            "order": 5,
+            "mode": 0,
+            "inputs": [
+                {"name": "images", "type": "IMAGE", "link": 7},
+                {"name": "audio", "type": "AUDIO", "shape": 7, "link": 2},
+                {"name": "fps", "type": "FLOAT", "widget": {"name": "fps"}, "link": 4},
+            ],
+            "outputs": [{"name": "VIDEO", "type": "VIDEO", "links": [8]}],
+            "title": "封装超分视频与原音轨",
+            "properties": {"Node name for S&R": "CreateVideo"},
+            "widgets_values": [24, "auto", "sRGB", "none"],
+        },
+        {
+            "id": 7,
+            "type": "SaveVideo",
+            "pos": [1590, 140],
+            "size": [380, 420],
+            "flags": {},
+            "order": 6,
+            "mode": 0,
+            "inputs": [{"name": "video", "type": "VIDEO", "link": 8}],
+            "outputs": [{"name": "video", "type": "VIDEO", "links": []}],
+            "title": "③ 超分成片预览与保存",
+            "properties": {"Node name for S&R": "SaveVideo"},
+            "widgets_values": ["video/SeedVR2_7B_超分成片", "auto", "auto"],
+        },
+        _make_zh_guide_note(
+            525,
+            [-430, 0],
+            "【EasyColab · SeedVR2 7B FP16 视频超分修复指南】",
+            "## SeedVR2 7B FP16 · PRO 6000 满血一步扩散超分\n\n"
+            "1. 在 **「① 待超分原视频」** 上传需要放大的低清/AI 生成视频。\n"
+            "2. **resolution** 为目标短边分辨率（`1080` = 1080p，`1440` = 2K，`2160` = 4K）。\n"
+            "3. **batch_size** 需满足 `4n+1`（推荐 `17` 或 `21`），PRO 6000 96GB 已默认关闭 BlockSwap 与 VAE 切块，直接获得最佳时序一致性与皮肤/毛发细节。",
+        ),
+    ]
+    links = [
+        [1, 1, 0, 4, 0, "IMAGE"],
+        [2, 1, 2, 6, 1, "AUDIO"],
+        [3, 1, 3, 5, 0, "VHS_VIDEOINFO"],
+        [4, 5, 5, 6, 2, "FLOAT"],
+        [5, 2, 0, 4, 1, "SEEDVR2_DIT"],
+        [6, 3, 0, 4, 2, "SEEDVR2_VAE"],
+        [7, 4, 0, 6, 0, "IMAGE"],
+        [8, 6, 0, 7, 0, "VIDEO"],
+    ]
+    wf = {
+        "last_node_id": 530,
+        "last_link_id": 20,
+        "nodes": nodes,
+        "links": links,
+        "groups": [],
+        "config": {},
+        "extra": {"ds": {"scale": 0.65, "offset": [480, 220]}},
+        "version": 0.4,
+    }
+    _prune_workflow_dangling_links(wf)
+    return wf
+
+
+def _build_recavsr_upscaler_workflow() -> Dict[str, Any]:
+    """构建可直接打开的 ReCaVSR (Wan2.2-5B 一步流式 + FlashDecoder) ComfyUI 画布工作流"""
+    nodes = [
+        {
+            "id": 1,
+            "type": "LoadVideo",
+            "pos": [0, 120],
+            "size": [320, 360],
+            "flags": {},
+            "order": 0,
+            "mode": 0,
+            "inputs": [],
+            "outputs": [{"name": "VIDEO", "type": "VIDEO", "links": [2]}],
+            "title": "① 待超分原视频 (<Video 1>)",
+            "properties": {"Node name for S&R": "LoadVideo"},
+            "widgets_values": ["source_video.mp4", "image"],
+        },
+        {
+            "id": 2,
+            "type": "ReCaVSRLoader",
+            "pos": [0, -100],
+            "size": [320, 90],
+            "flags": {},
+            "order": 1,
+            "mode": 0,
+            "inputs": [],
+            "outputs": [{"name": "model", "type": "RECAVSR", "links": [1]}],
+            "title": "ReCaVSR Wan2.2-5B 模型加载器 (bf16 / int8)",
+            "properties": {"Node name for S&R": "ReCaVSRLoader"},
+            "widgets_values": ["transformer.safetensors"],
+        },
+        {
+            "id": 3,
+            "type": "ReCaVSRUpscale",
+            "pos": [420, 80],
+            "size": [340, 260],
+            "flags": {},
+            "order": 2,
+            "mode": 0,
+            "inputs": [
+                {"name": "model", "type": "RECAVSR", "link": 1},
+                {"name": "video", "type": "VIDEO", "link": 2},
+            ],
+            "outputs": [{"name": "VIDEO", "type": "VIDEO", "links": [3]}],
+            "title": "② ReCaVSR 一步流式超分 (FlashDecoder)",
+            "properties": {"Node name for S&R": "ReCaVSRUpscale"},
+            "widgets_values": [2.0, "none", 42, "fixed", "flashdecoder", "fast", False, "auto", 30.0],
+        },
+        {
+            "id": 4,
+            "type": "SaveVideo",
+            "pos": [840, 80],
+            "size": [360, 420],
+            "flags": {},
+            "order": 3,
+            "mode": 0,
+            "inputs": [{"name": "video", "type": "VIDEO", "link": 3}],
+            "outputs": [{"name": "video", "type": "VIDEO", "links": []}],
+            "title": "③ 极速超分成片预览与保存",
+            "properties": {"Node name for S&R": "SaveVideo"},
+            "widgets_values": ["video/ReCaVSR_流式超分成片", "auto", "auto"],
+        },
+        _make_zh_guide_note(
+            535,
+            [-420, 0],
+            "【EasyColab · ReCaVSR Wan2.2 极速流式超分指南】",
+            "## ReCaVSR (USTC Wan2.2-5B + FlashDecoder) · 4K 极速流式超分\n\n"
+            "1. 在 **「① 待超分原视频」** 上传视频，会自动无损透传原帧率与音轨。\n"
+            "2. **scale** 推荐：`1056×608 / 1280×720` AI 短片选 **`2.0`**（直出 ~2K）；`480p / 540p` 选 **`4.0`**（原生 4× 4K）。\n"
+            "3. **transformer**：`transformer.safetensors` 为 BF16 满血画质，`transformer_int8_convrot.safetensors` 再提速 1.8×。",
+        ),
+    ]
+    links = [
+        [1, 2, 0, 3, 0, "RECAVSR"],
+        [2, 1, 0, 3, 1, "VIDEO"],
+        [3, 3, 0, 4, 0, "VIDEO"],
+    ]
+    wf = {
+        "last_node_id": 540,
+        "last_link_id": 10,
+        "nodes": nodes,
+        "links": links,
+        "groups": [],
+        "config": {},
+        "extra": {"ds": {"scale": 0.72, "offset": [450, 160]}},
+        "version": 0.4,
+    }
+    _prune_workflow_dangling_links(wf)
+    return wf
+
+
 def _build_and_install_comfy_preset_workflows(
     persist_root: str,
     pack_ids: Optional[List[str]] = None,
@@ -8282,6 +8624,26 @@ def _build_and_install_comfy_preset_workflows(
             installed_files.append(os.path.basename(out_11))
         except Exception as e:
             print(f"[ComfyUI 工作流生成] Ref2VA TARA 模板处理异常: {e}")
+
+    # 8. SeedVR2 7B FP16 电影级视频超分修复
+    if "seedvr2_upscaler" in target_set:
+        try:
+            out_12 = os.path.join(wf_dir, "12_SeedVR2_7B_FP16_视频4K超分修复.json")
+            with open(out_12, "w", encoding="utf-8") as wf:
+                json.dump(_build_seedvr2_upscaler_workflow(), wf, ensure_ascii=False, indent=2)
+            installed_files.append(os.path.basename(out_12))
+        except Exception as e:
+            print(f"[ComfyUI 工作流生成] SeedVR2 超分模板处理异常: {e}")
+
+    # 9. ReCaVSR Wan2.2-5B 极速流式视频超分
+    if "recavsr_upscaler" in target_set:
+        try:
+            out_13 = os.path.join(wf_dir, "13_ReCaVSR_Wan2.2_极速流式4K超分.json")
+            with open(out_13, "w", encoding="utf-8") as wf:
+                json.dump(_build_recavsr_upscaler_workflow(), wf, ensure_ascii=False, indent=2)
+            installed_files.append(os.path.basename(out_13))
+        except Exception as e:
+            print(f"[ComfyUI 工作流生成] ReCaVSR 超分模板处理异常: {e}")
 
     if installed_files:
         try:
@@ -10008,6 +10370,20 @@ class GenerateVideoRequest(BaseModel):
     tara_window_seconds: float = 0.20
     tara_falloff_seconds: float = 0.25
     tara_max_penalty: float = 6.0
+    seedvr2_model: str = "seedvr2_ema_7b_fp16.safetensors"
+    seedvr2_resolution: int = 1080
+    seedvr2_max_resolution: int = 0
+    seedvr2_batch_size: int = 17
+    seedvr2_temporal_overlap: int = 2
+    seedvr2_color_correction: str = "lab"
+    seedvr2_keep_audio: bool = True
+    seedvr2_attention_mode: str = "sdpa"
+    seedvr2_decode_tile_size: int = 2048
+    recavsr_transformer: str = "transformer.safetensors"
+    recavsr_scale: float = 2.0
+    recavsr_color_fix: str = "none"
+    recavsr_kernels: str = "fast"
+    recavsr_encoder: str = "auto"
 
 
 def decode_base64_image(b64_str: Optional[str]) -> Optional[Image.Image]:
@@ -10442,6 +10818,13 @@ def _snap_h3_frames(num_frames: int) -> int:
     return 17 * k + 5
 
 
+def _snap_seedvr2_batch_size(batch_size: int) -> int:
+    """将 SeedVR2 batch_size 吸附至合法的 4n + 1 网格（1, 5, 9, 13, 17, 21...）"""
+    n = max(1, int(batch_size or 17))
+    k = max(0, round((n - 1) / 4.0))
+    return 4 * k + 1
+
+
 def _comfy_api_json_request(url: str, payload: Optional[Dict[str, Any]] = None, timeout: float = 15.0) -> Dict[str, Any]:
     """直连本机 ComfyUI 后端端口（绕过代理）"""
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -10720,6 +11103,193 @@ def _build_comfy_h3_api_prompt_for_request(
     return prompt
 
 
+def _build_seedvr2_api_prompt_for_request(
+    req: GenerateVideoRequest,
+    seed: int,
+    ref_video_filename: str,
+    save_prefix: str = "video/EasyColab_SeedVR2",
+) -> Dict[str, Any]:
+    """构建可直接提交至 ComfyUI /prompt 接口的 SeedVR2 一步扩散视频超分节点图（PRO 6000 默认关闭 BlockSwap 与 VAE 切块）"""
+    allowed_models = {
+        "seedvr2_ema_7b_fp16.safetensors",
+        "seedvr2_ema_7b_sharp_fp16.safetensors",
+        "seedvr2_ema_3b_fp16.safetensors",
+        "seedvr2_ema_7b_fp8_e4m3fn_mixed_block35_fp16.safetensors",
+        "seedvr2_ema_7b_sharp_fp8_e4m3fn_mixed_block35_fp16.safetensors",
+        "seedvr2_ema_3b_fp8_e4m3fn.safetensors",
+    }
+    raw_model = str(getattr(req, "seedvr2_model", "") or "seedvr2_ema_7b_fp16.safetensors").strip()
+    dit_model = raw_model if raw_model in allowed_models else "seedvr2_ema_7b_fp16.safetensors"
+
+    allowed_attn = {"sdpa", "flash_attn_2", "flash_attn_3", "sageattn_2", "sageattn_3"}
+    raw_attn = str(getattr(req, "seedvr2_attention_mode", "sdpa") or "sdpa").strip()
+    attn_mode = raw_attn if raw_attn in allowed_attn else "sdpa"
+
+    allowed_cc = {"lab", "wavelet", "wavelet_adaptive", "hsv", "adain", "none"}
+    raw_cc = str(getattr(req, "seedvr2_color_correction", "lab") or "lab").strip()
+    color_correction = raw_cc if raw_cc in allowed_cc else "lab"
+
+    resolution = max(256, (int(getattr(req, "seedvr2_resolution", 1080) or 1080) // 2) * 2)
+    max_resolution = max(0, (int(getattr(req, "seedvr2_max_resolution", 0) or 0) // 2) * 2)
+    batch_size = _snap_seedvr2_batch_size(int(getattr(req, "seedvr2_batch_size", 17) or 17))
+    temporal_overlap = max(0, min(16, int(getattr(req, "seedvr2_temporal_overlap", 2) or 0)))
+    keep_audio = bool(getattr(req, "seedvr2_keep_audio", True))
+    decode_tiled = resolution >= 1440
+    decode_tile_size = max(512, (int(getattr(req, "seedvr2_decode_tile_size", 2048) or 2048) // 64) * 64)
+
+    create_inputs: Dict[str, Any] = {
+        "images": ["4", 0],
+        "fps": ["5", 5],
+    }
+    if keep_audio:
+        create_inputs["audio"] = ["1", 2]
+
+    return {
+        "1": {
+            "class_type": "VHS_LoadVideo",
+            "inputs": {
+                "video": ref_video_filename,
+                "force_rate": 0.0,
+                "custom_width": 0,
+                "custom_height": 0,
+                "frame_load_cap": 0,
+                "skip_first_frames": 0,
+                "select_every_nth": 1,
+            },
+        },
+        "2": {
+            "class_type": "SeedVR2LoadDiTModel",
+            "inputs": {
+                "model": dit_model,
+                "device": "cuda:0",
+                "blocks_to_swap": 0,
+                "swap_io_components": False,
+                "offload_device": "none",
+                "cache_model": False,
+                "attention_mode": attn_mode,
+            },
+        },
+        "3": {
+            "class_type": "SeedVR2LoadVAEModel",
+            "inputs": {
+                "model": "ema_vae_fp16.safetensors",
+                "device": "cuda:0",
+                "encode_tiled": False,
+                "encode_tile_size": 1024,
+                "encode_tile_overlap": 128,
+                "decode_tiled": decode_tiled,
+                "decode_tile_size": decode_tile_size,
+                "decode_tile_overlap": 128,
+                "tile_debug": "false",
+                "offload_device": "none",
+                "cache_model": False,
+            },
+        },
+        "4": {
+            "class_type": "SeedVR2VideoUpscaler",
+            "inputs": {
+                "image": ["1", 0],
+                "dit": ["2", 0],
+                "vae": ["3", 0],
+                "seed": int(seed) % (2**32 - 1),
+                "resolution": resolution,
+                "max_resolution": max_resolution,
+                "batch_size": batch_size,
+                "uniform_batch_size": True,
+                "temporal_overlap": temporal_overlap,
+                "prepend_frames": 0,
+                "color_correction": color_correction,
+                "input_noise_scale": 0.0,
+                "latent_noise_scale": 0.0,
+                "offload_device": "none",
+                "enable_debug": False,
+            },
+        },
+        "5": {
+            "class_type": "VHS_VideoInfo",
+            "inputs": {"video_info": ["1", 3]},
+        },
+        "6": {
+            "class_type": "CreateVideo",
+            "inputs": create_inputs,
+        },
+        "7": {
+            "class_type": "SaveVideo",
+            "inputs": {
+                "video": ["6", 0],
+                "filename_prefix": save_prefix,
+                "format": "auto",
+                "codec": "auto",
+            },
+        },
+    }
+
+
+def _build_recavsr_api_prompt_for_request(
+    req: GenerateVideoRequest,
+    seed: int,
+    ref_video_filename: str,
+    save_prefix: str = "video/EasyColab_ReCaVSR",
+) -> Dict[str, Any]:
+    """构建可直接提交至 ComfyUI /prompt 接口的 ReCaVSR (Wan2.2-5B 一步流式 + FlashDecoder) 节点图"""
+    allowed_tr = {"transformer.safetensors", "transformer_int8_convrot.safetensors"}
+    raw_tr = str(getattr(req, "recavsr_transformer", "transformer.safetensors") or "transformer.safetensors").strip()
+    transformer = raw_tr if raw_tr in allowed_tr else "transformer.safetensors"
+
+    try:
+        scale_val = float(getattr(req, "recavsr_scale", 2.0) or 2.0)
+    except Exception:
+        scale_val = 2.0
+    scale_val = max(0.5, min(8.0, round(scale_val, 2)))
+
+    allowed_cf = {"none", "adain", "wavelet"}
+    raw_cf = str(getattr(req, "recavsr_color_fix", "none") or "none").strip()
+    color_fix = raw_cf if raw_cf in allowed_cf else "none"
+
+    allowed_kn = {"fast", "exact"}
+    raw_kn = str(getattr(req, "recavsr_kernels", "fast") or "fast").strip()
+    kernels = raw_kn if raw_kn in allowed_kn else "fast"
+
+    allowed_enc = {"auto", "hevc nvenc", "h264 nvenc", "h264"}
+    raw_enc = str(getattr(req, "recavsr_encoder", "auto") or "auto").strip()
+    encoder = raw_enc if raw_enc in allowed_enc else "auto"
+
+    return {
+        "1": {
+            "class_type": "LoadVideo",
+            "inputs": {"file": ref_video_filename},
+        },
+        "2": {
+            "class_type": "ReCaVSRLoader",
+            "inputs": {"transformer": transformer},
+        },
+        "3": {
+            "class_type": "ReCaVSRUpscale",
+            "inputs": {
+                "model": ["2", 0],
+                "video": ["1", 0],
+                "scale": scale_val,
+                "color_fix": color_fix,
+                "seed": int(seed) % (2**32 - 1),
+                "decoder": "flashdecoder",
+                "kernels": kernels,
+                "kv_offload": False,
+                "encoder": encoder,
+                "fps": 30.0,
+            },
+        },
+        "4": {
+            "class_type": "SaveVideo",
+            "inputs": {
+                "video": ["3", 0],
+                "filename_prefix": save_prefix,
+                "format": "auto",
+                "codec": "auto",
+            },
+        },
+    }
+
+
 def _save_b64_to_comfy_input(b64_str: str, dest_name: str, input_dir: str) -> str:
     os.makedirs(input_dir, exist_ok=True)
     raw_b64 = b64_str.split(",", 1)[1] if "," in b64_str else b64_str
@@ -10802,17 +11372,36 @@ def _execute_comfy_h3_api_job(
             last_img.save(os.path.join(input_dir, last_fn))
 
     save_prefix = f"video/{pipeline_arch}_{job_id}_{seed}"
-    api_prompt = _build_comfy_h3_api_prompt_for_request(
-        pipeline_arch=pipeline_arch,
-        req=req,
-        seed=seed,
-        ref_image_filenames=ref_image_filenames,
-        ref_audio_filename=ref_audio_filename,
-        first_frame_filename=first_fn,
-        last_frame_filename=last_fn,
-        save_prefix=save_prefix,
-        ref_video_filename=ref_video_filename,
-    )
+    if pipeline_arch == "comfy_seedvr2_upscaler":
+        if not ref_video_filename:
+            raise RuntimeError("视频超分模式下请先上传待超分的原视频 (<Video 1>)")
+        api_prompt = _build_seedvr2_api_prompt_for_request(
+            req=req,
+            seed=seed,
+            ref_video_filename=ref_video_filename,
+            save_prefix=save_prefix,
+        )
+    elif pipeline_arch == "comfy_recavsr_upscaler":
+        if not ref_video_filename:
+            raise RuntimeError("视频超分模式下请先上传待超分的原视频 (<Video 1>)")
+        api_prompt = _build_recavsr_api_prompt_for_request(
+            req=req,
+            seed=seed,
+            ref_video_filename=ref_video_filename,
+            save_prefix=save_prefix,
+        )
+    else:
+        api_prompt = _build_comfy_h3_api_prompt_for_request(
+            pipeline_arch=pipeline_arch,
+            req=req,
+            seed=seed,
+            ref_image_filenames=ref_image_filenames,
+            ref_audio_filename=ref_audio_filename,
+            first_frame_filename=first_fn,
+            last_frame_filename=last_fn,
+            save_prefix=save_prefix,
+            ref_video_filename=ref_video_filename,
+        )
 
     try:
         enqueue_resp = _comfy_api_json_request(
@@ -10874,10 +11463,18 @@ def _execute_comfy_h3_api_job(
                 break
 
         # 依据实际运行时间平滑更新进度，避免长时间无变化
-        est_total = 45.0 if pipeline_arch == "comfy_h3_10eros_max" else 135.0
+        est_total = (
+            45.0 if pipeline_arch in ("comfy_h3_10eros_max", "comfy_recavsr_upscaler")
+            else (90.0 if pipeline_arch == "comfy_seedvr2_upscaler" else 135.0)
+        )
         local_frac = min(0.88, 0.14 + 0.74 * ((time.time() - t_wait_start) / est_total))
         JOBS[job_id]["progress"] = round(base_prog + local_frac * span_prog, 3)
-        JOBS[job_id]["message"] = f"{prefix}{model_name} 联合音视频扩散采样中 ({elapsed_run:.0f}s)..."
+        phase_hint = (
+            "ReCaVSR 流式超分与 FlashDecoder 实时封装中"
+            if pipeline_arch == "comfy_recavsr_upscaler"
+            else ("一步扩散视频超分修复中" if pipeline_arch == "comfy_seedvr2_upscaler" else "联合音视频扩散采样中")
+        )
+        JOBS[job_id]["message"] = f"{prefix}{model_name} {phase_hint} ({elapsed_run:.0f}s)..."
         touch_activity()
 
     if not saved_file_info:
@@ -10972,6 +11569,11 @@ def _run_async_generation_job(job_id: str, req: GenerateVideoRequest):
                 JOBS[job_id]["status"] = "failed"
                 JOBS[job_id]["message"] = "首尾帧模式下请至少提供首帧或尾帧图片"
                 return
+        elif pipeline_arch in ("comfy_seedvr2_upscaler", "comfy_recavsr_upscaler") or req.task_mode == "video_upscale":
+            if not getattr(req, "ref_video_base64", None):
+                JOBS[job_id]["status"] = "failed"
+                JOBS[job_id]["message"] = "视频超分模式下请先上传待超分的原视频 (<Video 1>)"
+                return
         elif pipeline_arch == "comfy_h3_ref2va_tara" and req.task_mode == "motion_transfer":
             if not getattr(req, "ref_video_base64", None) or (not raw_ref_imgs and first_img is None):
                 JOBS[job_id]["status"] = "failed"
@@ -11037,7 +11639,7 @@ def _run_async_generation_job(job_id: str, req: GenerateVideoRequest):
 
                 _guard_ctx = (
                     contextlib.nullcontext()
-                    if pipeline_arch in ("comfy_h3_10eros_max", "comfy_h3_sulphur3", "comfy_h3_ref2va_tara")
+                    if pipeline_arch in ("comfy_h3_10eros_max", "comfy_h3_sulphur3", "comfy_h3_ref2va_tara", "comfy_seedvr2_upscaler", "comfy_recavsr_upscaler")
                     else _pipeline_job_execution_guard(
                         pipe=active_pipe,
                         job_id=job_id,
@@ -11051,7 +11653,7 @@ def _run_async_generation_job(job_id: str, req: GenerateVideoRequest):
                     )
                 )
                 with _guard_ctx as step_progress_bar:
-                    if pipeline_arch in ("comfy_h3_10eros_max", "comfy_h3_sulphur3", "comfy_h3_ref2va_tara"):
+                    if pipeline_arch in ("comfy_h3_10eros_max", "comfy_h3_sulphur3", "comfy_h3_ref2va_tara", "comfy_seedvr2_upscaler", "comfy_recavsr_upscaler"):
                         filename, output_path = _execute_comfy_h3_api_job(
                             job_id=job_id,
                             pipeline_arch=pipeline_arch,
