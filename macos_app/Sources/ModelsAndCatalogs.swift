@@ -1073,6 +1073,131 @@ let DEFAULT_COMFY_PRESET_PACKS: [ComfyPresetPackItem] = [
     )
 ]
 
+struct ComfyLiveTaskProgress: Codable, Hashable {
+    var active: Bool?
+    var prompt_id: String?
+    var progress: Double?
+    var step_value: Int?
+    var step_max: Int?
+    var node_id: String?
+    var node_type: String?
+    var node_done: Int?
+    var node_total: Int?
+    var stage_label: String?
+    var elapsed_s: Double?
+    var eta_s: Double?
+    var summary_line: String?
+    var prompt_text: String?
+    var filename_prefix: String?
+    var inferred_model_id: String?
+    var inferred_model_name: String?
+    var inferred_task_mode: String?
+}
+
+struct ExternalTaskParams: Codable, Equatable {
+    var width: Int?
+    var height: Int?
+    var frames: Int?
+    var steps: Int?
+    var fps: Int?
+    var corrector_enabled: Bool?
+    var corrector_strength: Double?
+    var tara_enabled: Bool?
+    var tara_strength: Double?
+    var seedvr2_model: String?
+    var seedvr2_resolution: Int?
+    var seedvr2_batch_size: Int?
+    var seedvr2_temporal_overlap: Int?
+    var seedvr2_color_correction: String?
+    var seedvr2_keep_audio: Bool?
+    var recavsr_transformer: String?
+    var recavsr_scale: Double?
+    var recavsr_color_fix: String?
+    var recavsr_kernels: String?
+    var recavsr_encoder: String?
+}
+
+struct ExternalTaskSnapshot: Codable, Equatable {
+    var task_id: String
+    var status: String
+    var source: String?
+    var command: String?
+    var account: String?
+    var project_name: String?
+    var project_dir: String?
+    var output_dir: String?
+    var prefix: String?
+    var model_id: String?
+    var model_name: String?
+    var task_mode: String?
+    var prompt: String?
+    var soundscape: String?
+    var music: String?
+    var params_summary: String?
+    var params: ExternalTaskParams?
+    var input_files: [String]?
+    var input_paths: [String]?
+    var output_files: [String]?
+    var progress: Double?
+    var progress_label: String?
+    var error: String?
+    var started_at: Double?
+    var updated_at: Double?
+
+    private static func resolveExistingURLs(rawItems: [String], projectDir: String?, outputDir: String?) -> [URL] {
+        var seen = Set<String>()
+        var result: [URL] = []
+        var baseURLs: [URL] = []
+        for rawBase in [projectDir, outputDir] {
+            let trimmed = (rawBase ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { continue }
+            let u = URL(fileURLWithPath: (trimmed as NSString).expandingTildeInPath)
+            baseURLs.append(u)
+            let parent = u.deletingLastPathComponent()
+            if !parent.path.isEmpty {
+                baseURLs.append(parent)
+            }
+        }
+        let fm = FileManager.default
+        for raw in rawItems {
+            let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { continue }
+            let expanded = (trimmed as NSString).expandingTildeInPath
+            var candidates: [URL] = []
+            if expanded.hasPrefix("/") {
+                candidates.append(URL(fileURLWithPath: expanded).standardizedFileURL)
+            } else {
+                for base in baseURLs {
+                    candidates.append(base.appendingPathComponent(expanded).standardizedFileURL)
+                }
+                let fname = (expanded as NSString).lastPathComponent
+                if !fname.isEmpty && fname != expanded {
+                    for base in baseURLs {
+                        candidates.append(base.appendingPathComponent(fname).standardizedFileURL)
+                    }
+                }
+            }
+            for cand in candidates {
+                let p = cand.path
+                if fm.fileExists(atPath: p) && seen.insert(p).inserted {
+                    result.append(cand)
+                    break
+                }
+            }
+        }
+        return result
+    }
+
+    var resolvedOutputURLs: [URL] {
+        Self.resolveExistingURLs(rawItems: output_files ?? [], projectDir: project_dir, outputDir: output_dir)
+    }
+
+    var resolvedInputURLs: [URL] {
+        let combined = (input_paths ?? []) + (input_files ?? [])
+        return Self.resolveExistingURLs(rawItems: combined, projectDir: project_dir, outputDir: output_dir)
+    }
+}
+
 struct ComfyRemoteStatus: Codable {
     var is_running: Bool?
     var is_starting: Bool?
@@ -1095,6 +1220,7 @@ struct ComfyRemoteStatus: Codable {
     var last_sync_ts: Int?
     var recent_outputs: [ComfyOutputMediaItem]?
     var preset_packs: [ComfyPresetPackItem]?
+    var live_task: ComfyLiveTaskProgress?
 }
 
 struct CompletedMediaItem: Codable, Hashable {

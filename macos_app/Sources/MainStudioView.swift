@@ -59,6 +59,14 @@ struct MainStudioView: View {
                 Rectangle()
                     .fill(palette.splitDivider)
                     .frame(height: 1)
+                if let extTask = vm.visibleExternalTask {
+                    ExternalTaskPreviewCard(vm: vm, task: extTask, palette: palette)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 10)
+                    Rectangle()
+                        .fill(palette.splitDivider)
+                        .frame(height: 1)
+                }
                 workspacePanel(palette: palette)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
@@ -1064,8 +1072,16 @@ struct MainStudioView: View {
             ForEach(vm.allAvailableModels) { spec in
                 let isSelected = vm.selectedModelId == spec.id
                 let isLoaded = vm.loadedModelIds.contains(spec.id) || (vm.loadedModelId == spec.id && vm.modelLoaded)
+                let isCLIRunning = (vm.visibleExternalTask?.status == "running" && vm.visibleExternalTask?.model_id == spec.id)
                 Button {
                     withAnimation(.easeInOut(duration: 0.16)) {
+                        if let activeExt = vm.visibleExternalTask, activeExt.status == "running" {
+                            if spec.id == activeExt.model_id {
+                                vm.userManuallyLeftExternalTaskId = ""
+                            } else {
+                                vm.userManuallyLeftExternalTaskId = activeExt.task_id
+                            }
+                        }
                         vm.switchSelectedModel(spec)
                     }
                 } label: {
@@ -1085,6 +1101,14 @@ struct MainStudioView: View {
                                     .font(.system(size: 12.5, weight: .semibold))
                                     .foregroundStyle(.primary)
                                     .lineLimit(1)
+                                if isCLIRunning {
+                                    Text(L("CLI 运行中", "CLI Running"))
+                                        .font(.system(size: 9.5, weight: .bold))
+                                        .foregroundStyle(Color.green)
+                                        .padding(.horizontal, 5)
+                                        .padding(.vertical, 1)
+                                        .background(Capsule().fill(Color.green.opacity(0.16)))
+                                }
                                 if spec.modality == .comfyUI && vm.comfyRunning {
                                     Text(vm.comfyQueueRunning > 0 ? L("渲染中", "Rendering") : L("画布在线", "Canvas Live"))
                                         .font(.system(size: 9.5, weight: .bold))
@@ -2020,7 +2044,8 @@ struct MainStudioView: View {
             || lower.contains("exception") || lower.contains("traceback") {
             return Color(red: 0.98, green: 0.46, blue: 0.46)
         }
-        if line.contains("───") {
+        if line.contains("───") || line.contains("ComfyUI 进度") || line.contains("进度 ")
+            || line.contains("%|") || line.contains("% [") || line.contains("DiT 去噪采样:") {
             return Color(red: 0.46, green: 0.80, blue: 0.98)
         }
         if line.contains("%") || line.contains("已装载") || line.contains("成功") || line.contains("完成")
@@ -2043,21 +2068,31 @@ struct MainStudioView: View {
                     .foregroundStyle(isTaskStreaming ? Color.accentColor : Color.secondary)
                     .padding(.top, 1)
 
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(vm.displayStatusMessage)
-                        .font(.system(size: 11.5, weight: .medium))
-                        .foregroundStyle(.primary)
-                        .lineLimit(3)
-                        .fixedSize(horizontal: false, vertical: true)
+                VStack(alignment: .leading, spacing: 4) {
+                    if let taskProg = vm.activeLogTaskProgress {
+                        HStack(alignment: .firstTextBaseline, spacing: 6) {
+                            Text("\(Int(round(taskProg.fraction * 100)))%")
+                                .font(.system(size: 11, weight: .bold, design: .monospaced))
+                                .foregroundStyle(.white)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 1.5)
+                                .background(Capsule().fill(Color.accentColor))
 
-                    if vm.isDownloadingWeights || vm.isLoadingModel {
-                        ProgressView(value: vm.modelTaskProgress)
+                            Text(taskProg.label)
+                                .font(.system(size: 11.5, weight: .medium))
+                                .foregroundStyle(.primary)
+                                .lineLimit(3)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        ProgressView(value: taskProg.fraction)
                             .progressViewStyle(.linear)
                             .controlSize(.small)
-                    } else if vm.isGenerating && vm.progressValue > 0 {
-                        ProgressView(value: vm.progressValue)
-                            .progressViewStyle(.linear)
-                            .controlSize(.small)
+                    } else {
+                        Text(vm.displayStatusMessage)
+                            .font(.system(size: 11.5, weight: .medium))
+                            .foregroundStyle(.primary)
+                            .lineLimit(3)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                 }
 

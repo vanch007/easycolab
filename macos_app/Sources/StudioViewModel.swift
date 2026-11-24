@@ -249,7 +249,85 @@ class StudioViewModel: ObservableObject {
     @Published var gpuPowerW: Double = -1.0
     @Published var lastMonitorSyncAt: Date? = nil
     @Published var attachedExternalSessionSource: String? = nil
-    var lastObservedExternalSessionUpdatedAt: Double = 0
+    @Published var lastObservedExternalSessionUpdatedAt: Double = 0
+    @Published var autoFollowExternalTasks: Bool = {
+        if UserDefaults.standard.object(forKey: "easycolabAutoFollowExternalTasks") == nil {
+            return true
+        }
+        return UserDefaults.standard.bool(forKey: "easycolabAutoFollowExternalTasks")
+    }() {
+        didSet {
+            UserDefaults.standard.set(autoFollowExternalTasks, forKey: "easycolabAutoFollowExternalTasks")
+        }
+    }
+    @Published var activeExternalTask: ExternalTaskSnapshot? = nil
+    @Published var externalTaskCardDismissedId: String = ""
+    @Published var externalTaskCardExpanded: Bool = true
+    @Published var externalTaskScrollNonce: Int = 0
+    var userManuallyLeftExternalTaskId: String = ""
+    var lastObservedExternalTaskUpdatedAt: Double = 0
+    var lastSyncedExternalTaskId: String = ""
+    var lastPreviewedExternalOutputPath: String = ""
+
+    var activeRunningExternalTaskForSelectedModel: ExternalTaskSnapshot? {
+        guard let task = visibleExternalTask, task.status == "running" else { return nil }
+        let mId = (task.model_id ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if mId.isEmpty || mId == selectedModelId {
+            return task
+        }
+        return nil
+    }
+
+    var visibleExternalTask: ExternalTaskSnapshot? {
+        if let ext = activeExternalTask, ext.task_id != externalTaskCardDismissedId {
+            if ext.status == "running" {
+                return ext
+            }
+            let ts = ext.updated_at ?? ext.started_at ?? 0
+            if ts <= 0 || (Date().timeIntervalSince1970 - ts) < 1800 {
+                return ext
+            }
+        }
+        if let live = comfyLiveTask, live.active == true {
+            let pid = (live.prompt_id ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            let liveId = pid.isEmpty ? "comfy_live_active" : "comfy_\(pid)"
+            guard liveId != externalTaskCardDismissedId else { return nil }
+            let pText = (live.prompt_text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            let pPrefix = (live.filename_prefix ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            let mId = (live.inferred_model_id ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            if !pText.isEmpty || !pPrefix.isEmpty || !mId.isEmpty {
+                let projFromPrefix = pPrefix.split(separator: "/").last.map(String.init)
+                return ExternalTaskSnapshot(
+                    task_id: liveId,
+                    status: "running",
+                    source: "comfyui-remote",
+                    command: "comfyui",
+                    account: accountEmail.isEmpty ? nil : accountEmail,
+                    project_name: (projFromPrefix?.isEmpty == false) ? projFromPrefix : nil,
+                    project_dir: nil,
+                    output_dir: nil,
+                    prefix: pPrefix.isEmpty ? nil : pPrefix,
+                    model_id: mId.isEmpty ? nil : mId,
+                    model_name: live.inferred_model_name,
+                    task_mode: live.inferred_task_mode,
+                    prompt: pText.isEmpty ? nil : pText,
+                    soundscape: nil,
+                    music: nil,
+                    params_summary: live.summary_line,
+                    params: nil,
+                    input_files: nil,
+                    input_paths: nil,
+                    output_files: nil,
+                    progress: live.progress,
+                    progress_label: live.summary_line,
+                    error: nil,
+                    started_at: nil,
+                    updated_at: Date().timeIntervalSince1970
+                )
+            }
+        }
+        return nil
+    }
     @Published var liveMonitoringEnabled: Bool = {
         if UserDefaults.standard.object(forKey: "easycolabLiveMonitoringEnabled") == nil {
             return true
@@ -340,6 +418,33 @@ class StudioViewModel: ObservableObject {
     @Published var comfyPublicURL: String = ""
     @Published var comfyQueueRunning: Int = 0
     @Published var comfyQueuePending: Int = 0
+    @Published var comfyLiveTask: ComfyLiveTaskProgress? = nil
+    @Published var externalCLITaskProgress: Double? = nil
+    @Published var externalCLITaskSummary: String = ""
+    var externalCLITaskUpdatedAt: Date = .distantPast
+
+    var activeLogTaskProgress: (fraction: Double, label: String)? {
+        if isDownloadingWeights || isLoadingModel {
+            return (max(0.0, min(1.0, modelTaskProgress)), displayStatusMessage)
+        }
+        if isGenerating && progressValue > 0 {
+            return (max(0.0, min(1.0, progressValue)), displayStatusMessage)
+        }
+        if let live = comfyLiveTask, live.active == true {
+            let frac = max(0.0, min(1.0, live.progress ?? 0.0))
+            let lbl = (live.summary_line ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            return (frac, lbl.isEmpty ? comfyStatusMessage : lbl)
+        }
+        if comfyStarting || comfySyncingDrive || comfyDownloadingWeight || !comfyInstallingPackId.isEmpty {
+            return (max(0.0, min(1.0, comfyProgress)), comfyStatusMessage)
+        }
+        if let extProg = externalCLITaskProgress,
+           Date().timeIntervalSince(externalCLITaskUpdatedAt) < 90.0 {
+            let lbl = externalCLITaskSummary.trimmingCharacters(in: .whitespacesAndNewlines)
+            return (max(0.0, min(1.0, extProg)), lbl.isEmpty ? displayStatusMessage : lbl)
+        }
+        return nil
+    }
     @Published var comfyPersistenceLabel: String = L(StudioViewModel.defaultComfyPersistZh, StudioViewModel.defaultComfyPersistEn)
     @Published var comfyDrivePersisted: Bool = false
     @Published var comfyPersistRoot: String = "/content/drive/MyDrive/EasyColab_ComfyUI"
@@ -726,6 +831,7 @@ class StudioViewModel: ObservableObject {
         comfyPublicURL = ""
         comfyQueueRunning = 0
         comfyQueuePending = 0
+        comfyLiveTask = nil
         progressValue = 0.0
         modelTaskProgress = 0.0
         vramUsedGB = 0.0
@@ -2047,6 +2153,13 @@ class StudioViewModel: ObservableObject {
         gpuTempC = -1.0
         gpuPowerW = -1.0
         attachedExternalSessionSource = nil
+        publishLocalActiveSessionToSharedFiles(
+            url: "",
+            password: "",
+            gpu: "",
+            account: activeBridgeAccountEmail ?? accountEmail,
+            sleeping: true
+        )
         lastTelemetrySampleDate = .distantPast
         remoteContextSynced = false
         remoteIdleSynced = false

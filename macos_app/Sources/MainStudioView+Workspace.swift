@@ -10,57 +10,73 @@ extension MainStudioView {
     // MARK: - 右侧主工作区
 
     func workspacePanel(palette: StudioPalette) -> some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
-                // 1. 顶部模型概览与醒目卡片模式切换栏
-                modeSwitcherHeader(palette: palette)
+        ScrollViewReader { proxy in
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    Color.clear
+                        .frame(height: 0)
+                        .id("workspaceTop")
 
-                if vm.activeModelSpec.modality == .comfyUI {
-                    comfyUIWorkspaceSection(palette: palette)
-                } else if vm.taskModeId == "api" {
-                    // API 协议网关专属面板（OpenAI + Anthropic 双协议配置与一键复制）
-                    apiGatewaySection(palette: palette)
-                } else {
-                    // 2. 参考图、参考视频与声纹参考上传区（在动作复刻、视频超分、多图参考、首尾帧、图生视频、指令修图、视觉理解模式下自动展开）
-                    if ["video_upscale", "motion_transfer", "multiref", "fl2va", "i2v", "i2i_edit", "vlm"].contains(vm.taskModeId) {
-                        referenceImageSection
-                    }
+                    // 1. 顶部模型概览与醒目卡片模式切换栏
+                    modeSwitcherHeader(palette: palette)
 
-                    // 3. 提示词与输入工作台（超分模式无需文本提示词）
-                    if vm.taskModeId != "video_upscale" {
-                        promptComposerSection(palette: palette)
-                    }
-
-                    // 3.5 Sulphur-3 s3_corrector、Ref2VA TARA、SeedVR2 或 ReCaVSR 视频超分控制面板
-                    if vm.selectedModelId == "minimax_h3_sulphur3" {
-                        h3CorrectorSection(palette: palette)
-                    } else if vm.selectedModelId == "minimax_h3_ref2va_tara" && vm.taskModeId == "motion_transfer" {
-                        h3TaraControlSection(palette: palette)
-                    } else if vm.selectedModelId == "recavsr_upscaler" {
-                        recavsrControlSection(palette: palette)
-                    } else if vm.selectedModelId == "seedvr2_upscaler" || vm.taskModeId == "video_upscale" {
-                        seedvr2ControlSection(palette: palette)
-                    }
-
-                    // 4. 生成主按钮与状态条
-                    generateActionSection
-
-                    // 5. 自适应预览区（大模型流式对话区 或 视频/图像播放器 + 历史库）
-                    if vm.activeModelSpec.modality == .llmVLM {
-                        llmConversationCard(palette: palette)
+                    if vm.activeModelSpec.modality == .comfyUI {
+                        comfyUIWorkspaceSection(palette: palette)
+                    } else if vm.taskModeId == "api" {
+                        // API 协议网关专属面板（OpenAI + Anthropic 双协议配置与一键复制）
+                        apiGatewaySection(palette: palette)
                     } else {
-                        HStack(alignment: .top, spacing: 14) {
-                            mediaPreviewCard
-                            mediaHistoryCard.frame(width: 242)
+                        // 2. 参考图、参考视频与声纹参考上传区（在动作复刻、视频超分、多图参考、首尾帧、图生视频、指令修图、视觉理解模式下自动展开）
+                        if ["video_upscale", "motion_transfer", "multiref", "fl2va", "i2v", "i2i_edit", "vlm"].contains(vm.taskModeId) {
+                            referenceImageSection
+                        }
+
+                        // 3. 提示词与输入工作台（超分模式无需文本提示词）
+                        if vm.taskModeId != "video_upscale" {
+                            promptComposerSection(palette: palette)
+                        }
+
+                        // 3.5 Sulphur-3 s3_corrector、Ref2VA TARA、SeedVR2 或 ReCaVSR 视频超分控制面板
+                        if vm.selectedModelId == "minimax_h3_sulphur3" {
+                            h3CorrectorSection(palette: palette)
+                        } else if vm.selectedModelId == "minimax_h3_ref2va_tara" && vm.taskModeId == "motion_transfer" {
+                            h3TaraControlSection(palette: palette)
+                        } else if vm.selectedModelId == "recavsr_upscaler" {
+                            recavsrControlSection(palette: palette)
+                        } else if vm.selectedModelId == "seedvr2_upscaler" || vm.taskModeId == "video_upscale" {
+                            seedvr2ControlSection(palette: palette)
+                        }
+
+                        // 4. 生成主按钮与状态条
+                        generateActionSection
+
+                        // 5. 自适应预览区（大模型流式对话区 或 视频/图像播放器 + 历史库）
+                        if vm.activeModelSpec.modality == .llmVLM {
+                            llmConversationCard(palette: palette)
+                        } else {
+                            HStack(alignment: .top, spacing: 14) {
+                                mediaPreviewCard
+                                mediaHistoryCard.frame(width: 242)
+                            }
                         }
                     }
                 }
+                .padding(20)
+                .frame(maxWidth: 1180)
+                .frame(maxWidth: .infinity)
             }
-            .padding(20)
-            .frame(maxWidth: 1180)
-            .frame(maxWidth: .infinity)
+            .compatScrollIndicatorMargins(.vertical, 6)
+            .onChange(of: vm.externalTaskScrollNonce) { _ in
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    proxy.scrollTo("workspaceTop", anchor: .top)
+                }
+            }
+            .onChange(of: vm.selectedModelId) { _ in
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    proxy.scrollTo("workspaceTop", anchor: .top)
+                }
+            }
         }
-        .compatScrollIndicatorMargins(.vertical, 6)
     }
 
     // MARK: - ComfyUI 云端节点视频工作台与 Google Drive 软链持久化面板
@@ -2278,6 +2294,25 @@ extension MainStudioView {
                         .foregroundStyle(Color.accentColor)
                         .frame(width: 38, alignment: .trailing)
                 }
+            } else if let ext = vm.activeRunningExternalTaskForSelectedModel {
+                let frac = max(0.0, min(1.0, ext.progress ?? 0.0))
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing: 8) {
+                        ProgressView(value: frac, total: 1.0)
+                            .tint(.green)
+                        Text("\(Int((frac * 100).rounded()))%")
+                            .font(.system(size: 11.5, weight: .semibold, design: .monospaced))
+                            .foregroundStyle(Color.green)
+                            .frame(width: 38, alignment: .trailing)
+                    }
+                    if let lbl = ext.progress_label, !lbl.isEmpty {
+                        Text(lbl)
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                    }
+                }
+                .padding(.vertical, 2)
             }
 
             HStack(spacing: 6) {

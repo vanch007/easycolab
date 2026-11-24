@@ -446,9 +446,17 @@ extension StudioViewModel {
     func handleWakeOutputLine(_ line: String, gpu: String, password: String) {
         if line.hasPrefix("WAKE_URL:") {
             let url = String(line.dropFirst("WAKE_URL:".count)).trimmingCharacters(in: .whitespacesAndNewlines)
+            Self.saveAdminPassword(password, for: url)
             self.colabServerURL = url
             self.adminPassword = password
             self.wakeObtainedURLThisRun = true
+            self.publishLocalActiveSessionToSharedFiles(
+                url: url,
+                password: password,
+                gpu: gpu,
+                account: self.activeBridgeAccountEmail ?? self.accountEmail,
+                sleeping: false
+            )
             self.liveConsoleLines.append(L(
                 "成功获取云端隧道地址: \(self.maskedURLDisplay(url))",
                 "Obtained public tunnel URL: \(self.maskedURLDisplay(url))"
@@ -795,14 +803,17 @@ extension StudioViewModel {
                 }
                 self.colabServerURL = wonURL
                 self.adminPassword = password
+                self.publishLocalActiveSessionToSharedFiles(url: wonURL, password: password, gpu: gpu, account: winner, sleeping: false)
                 await checkColabStatus()
                 await ensureKeepaliveDaemonRunning()
             } else if winner.caseInsensitiveCompare(accountEmail) == .orderedSame {
                 self.colabServerURL = wonURL
                 self.adminPassword = password
+                self.publishLocalActiveSessionToSharedFiles(url: wonURL, password: password, gpu: gpu, account: winner, sleeping: false)
                 await checkColabStatus()
                 await ensureKeepaliveDaemonRunning()
             } else {
+                self.publishLocalActiveSessionToSharedFiles(url: wonURL, password: password, gpu: gpu, account: winner, sleeping: false)
                 openWinnerWindow(winner)
                 statusMessage = L(
                     "竞速成功！胜出账号 \(winner) 已在新独立窗口连接 \(gpu) 实例。",
@@ -1017,6 +1028,13 @@ extension StudioViewModel {
         if let recURL = res.recoveredURL, !recURL.isEmpty {
             self.colabServerURL = recURL
             if !self.adminPassword.isEmpty {
+                self.publishLocalActiveSessionToSharedFiles(
+                    url: recURL,
+                    password: self.adminPassword,
+                    gpu: self.wakeGPUChoice,
+                    account: self.activeBridgeAccountEmail ?? self.accountEmail,
+                    sleeping: false
+                )
                 await checkColabStatus(silent: false)
                 if isConnected {
                     await ensureKeepaliveDaemonRunning()
@@ -1034,6 +1052,13 @@ extension StudioViewModel {
             Self.saveAdminPassword(freshPassword, for: newURL)
             self.colabServerURL = newURL
             self.adminPassword = freshPassword
+            self.publishLocalActiveSessionToSharedFiles(
+                url: newURL,
+                password: freshPassword,
+                gpu: self.wakeGPUChoice,
+                account: self.activeBridgeAccountEmail ?? self.accountEmail,
+                sleeping: false
+            )
             await checkColabStatus(silent: false)
             if isConnected {
                 await ensureKeepaliveDaemonRunning()
@@ -1180,6 +1205,82 @@ extension StudioViewModel {
         LocalRuntimePaths.appSupportDir.appendingPathComponent("active_session.json")
     }
 
+    func publishLocalActiveSessionToSharedFiles(
+        url: String,
+        password: String,
+        gpu: String = "",
+        account: String = "",
+        sleeping: Bool = false
+    ) {
+        let now = (Date().timeIntervalSince1970 * 1000.0).rounded() / 1000.0
+        lastObservedExternalSessionUpdatedAt = max(lastObservedExternalSessionUpdatedAt, now)
+
+        let cleanURL = url.trimmingCharacters(in: .whitespacesAndNewlines).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let resolvedAcct = account.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? (activeBridgeAccountEmail ?? accountEmail).trimmingCharacters(in: .whitespacesAndNewlines)
+            : account.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        func writeAtomic0600(_ obj: [String: Any], to dstURL: URL) {
+            let fm = FileManager.default
+            try? fm.createDirectory(at: dstURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+            guard let data = try? JSONSerialization.data(withJSONObject: obj, options: [.prettyPrinted, .sortedKeys]) else {
+                return
+            }
+            var finalData = data
+            finalData.append(0x0A)
+            let tmpURL = dstURL.deletingPathExtension().appendingPathExtension("tmp")
+            do {
+                try finalData.write(to: tmpURL, options: .atomic)
+                try? fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: tmpURL.path)
+                if fm.fileExists(atPath: dstURL.path) {
+                    _ = try? fm.replaceItemAt(dstURL, withItemAt: tmpURL)
+                } else {
+                    try fm.moveItem(at: tmpURL, to: dstURL)
+                }
+                try? fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: dstURL.path)
+            } catch {
+                try? fm.removeItem(at: tmpURL)
+            }
+        }
+
+        let sharedPayload: [String: Any] = [
+            "url": sleeping ? "" : cleanURL,
+            "password": sleeping ? "" : password,
+            "gpu": gpu,
+            "comfy_url": sleeping ? "" : comfyPublicURL,
+            "account": resolvedAcct,
+            "sleeping": sleeping,
+            "source": "easycolab-app",
+            "updated_at": now,
+        ]
+        writeAtomic0600(sharedPayload, to: activeSessionFileURL)
+
+        let cliConfigDir = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".config/colab-minimax-h3")
+        let cliSessionURL = cliConfigDir.appendingPathComponent("session.json")
+        var cliObj: [String: Any] = [:]
+        if let existingData = try? Data(contentsOf: cliSessionURL),
+           let parsed = try? JSONSerialization.jsonObject(with: existingData) as? [String: Any] {
+            cliObj = parsed
+        }
+        if sleeping {
+            cliObj.removeValue(forKey: "url")
+            cliObj.removeValue(forKey: "comfy_url")
+            cliObj["sleeping"] = true
+            cliObj["last_sleep_ts"] = Int(now)
+        } else if !cleanURL.isEmpty {
+            cliObj["url"] = cleanURL
+            if !password.isEmpty { cliObj["password"] = password }
+            if !gpu.isEmpty { cliObj["gpu"] = gpu }
+            if !comfyPublicURL.isEmpty { cliObj["comfy_url"] = comfyPublicURL }
+            cliObj["sleeping"] = false
+        }
+        if !resolvedAcct.isEmpty {
+            cliObj["account"] = resolvedAcct
+        }
+        cliObj["updated_at"] = now
+        writeAtomic0600(cliObj, to: cliSessionURL)
+    }
+
     func checkExternalActiveSessionIfNeeded() async {
         let candidates = [
             activeSessionFileURL,
@@ -1205,13 +1306,17 @@ extension StudioViewModel {
                 newestObj = obj
             }
         }
-        guard let obj = newestObj, newestUpdatedAt > lastObservedExternalSessionUpdatedAt else {
+        guard let obj = newestObj else {
             return
         }
-        lastObservedExternalSessionUpdatedAt = newestUpdatedAt
         let isSleeping = (obj["sleeping"] as? Bool) ?? false
         let rawURL = ((obj["url"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         let cleanURL = rawURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let canOfflineAttach = !isConnected && !isSleeping && normalizedBaseURL.isEmpty && !cleanURL.isEmpty && cleanURL.hasPrefix("https://")
+        guard newestUpdatedAt > lastObservedExternalSessionUpdatedAt || canOfflineAttach else {
+            return
+        }
+        lastObservedExternalSessionUpdatedAt = max(lastObservedExternalSessionUpdatedAt, newestUpdatedAt)
         let pw = (obj["password"] as? String) ?? ""
         let src = (obj["source"] as? String) ?? "external-cli"
         let sessAcct = ((obj["account"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1250,6 +1355,7 @@ extension StudioViewModel {
         heartbeatTask?.cancel()
         heartbeatTask = Task {
             await checkExternalActiveSessionIfNeeded()
+            await checkExternalActiveTaskIfNeeded()
             if !normalizedBaseURL.isEmpty {
                 await checkColabStatus(silent: true)
             }
@@ -1261,6 +1367,7 @@ extension StudioViewModel {
                 guard liveMonitoringEnabled else { continue }
 
                 await checkExternalActiveSessionIfNeeded()
+                await checkExternalActiveTaskIfNeeded()
                 if isConnected {
                     // 生成任务进行中由 pollColabJob 附带 telemetry 实时更新图表，每 15s 低频同步全局状态
                     if !isGenerating || tick % 10 == 0 {
@@ -1293,6 +1400,163 @@ extension StudioViewModel {
                 }
             }
         }
+    }
+
+    var activeExternalTaskFileURL: URL {
+        LocalRuntimePaths.appSupportDir.appendingPathComponent("active_external_task.json")
+    }
+
+    func checkExternalActiveTaskIfNeeded() async {
+        let taskURL = activeExternalTaskFileURL
+        guard FileManager.default.fileExists(atPath: taskURL.path),
+              let data = try? Data(contentsOf: taskURL),
+              let decoded = try? JSONDecoder().decode(ExternalTaskSnapshot.self, from: data) else {
+            return
+        }
+        let taskAcct = (decoded.account ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if let pinnedAcct = boundAccountEmail, !pinnedAcct.isEmpty {
+            if !taskAcct.isEmpty && taskAcct.caseInsensitiveCompare(pinnedAcct) != .orderedSame {
+                return
+            }
+        }
+
+        let updatedTs = decoded.updated_at ?? decoded.started_at ?? 0
+        if activeExternalTask != decoded {
+            activeExternalTask = decoded
+        }
+
+        if decoded.status == "running" {
+            if let prog = decoded.progress {
+                externalCLITaskProgress = max(0.0, min(1.0, prog))
+                let projTag = (decoded.project_name ?? "").isEmpty ? "" : "[\(decoded.project_name!)] "
+                let lbl = (decoded.progress_label ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                externalCLITaskSummary = lbl.isEmpty ? "\(projTag)\(decoded.model_name ?? "")" : "\(projTag)\(lbl)"
+                externalCLITaskUpdatedAt = Date()
+            }
+            if !isGenerating && autoFollowExternalTasks {
+                let taskModelId = (decoded.model_id ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                if decoded.task_id != lastSyncedExternalTaskId {
+                    syncWorkspaceToExternalTask(decoded, force: false)
+                } else if decoded.task_id != userManuallyLeftExternalTaskId,
+                          !taskModelId.isEmpty,
+                          selectedModelId != taskModelId {
+                    syncWorkspaceToExternalTask(decoded, force: true)
+                }
+            }
+        } else if decoded.status == "completed" {
+            if updatedTs > lastObservedExternalTaskUpdatedAt {
+                externalCLITaskProgress = nil
+                externalCLITaskSummary = ""
+            }
+            if autoFollowExternalTasks && !isGenerating && decoded.task_id != lastSyncedExternalTaskId && updatedTs > lastObservedExternalTaskUpdatedAt {
+                syncWorkspaceToExternalTask(decoded, force: false)
+            }
+            if let firstOut = decoded.resolvedOutputURLs.first {
+                let trimmed = firstOut.path
+                if trimmed != lastPreviewedExternalOutputPath {
+                    lastPreviewedExternalOutputPath = trimmed
+                    refreshLocalMedia()
+                    selectMedia(firstOut)
+                }
+            }
+        } else if decoded.status == "failed" {
+            if updatedTs > lastObservedExternalTaskUpdatedAt {
+                externalCLITaskProgress = nil
+                externalCLITaskSummary = ""
+            }
+        }
+        lastObservedExternalTaskUpdatedAt = max(lastObservedExternalTaskUpdatedAt, updatedTs)
+    }
+
+    func syncWorkspaceToExternalTask(_ task: ExternalTaskSnapshot, force: Bool = false) {
+        let taskModelId = (task.model_id ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let modelMismatch = !taskModelId.isEmpty && selectedModelId != taskModelId
+        if !force && task.task_id == lastSyncedExternalTaskId && !modelMismatch {
+            return
+        }
+        if force {
+            userManuallyLeftExternalTaskId = ""
+            if externalTaskCardDismissedId == task.task_id {
+                externalTaskCardDismissedId = ""
+            }
+        }
+        lastSyncedExternalTaskId = task.task_id
+
+        if !taskModelId.isEmpty,
+           let spec = allAvailableModels.first(where: { $0.id == taskModelId }) {
+            if selectedModelId != spec.id {
+                switchSelectedModel(spec)
+            }
+            if let tm = task.task_mode,
+               !tm.isEmpty,
+               spec.modes.contains(where: { $0.id == tm }) {
+                taskModeId = tm
+            }
+        }
+        if let p = task.prompt, !p.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            visualPrompt = p
+        }
+        if let s = task.soundscape, !s.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            soundscapePrompt = s
+        }
+        if let m = task.music, !m.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            musicPrompt = m
+        }
+
+        if let params = task.params {
+            if let steps = params.steps, steps > 0 { inferenceSteps = Double(steps) }
+            if let frames = params.frames, frames > 0 { numFrames = Double(frames) }
+            if let taskFps = params.fps, taskFps > 0 { fps = Double(taskFps) }
+            if let w = params.width, let h = params.height, w > 0, h > 0 {
+                if activeModelSpec.modality == .image {
+                    if let opt = activeImageResolutions.first(where: { $0.width == w && $0.height == h }) {
+                        selectedImageResolution = opt
+                    }
+                } else {
+                    if let opt = VIDEO_RESOLUTIONS.first(where: { $0.width == w && $0.height == h }) {
+                        selectedVideoResolution = opt
+                    }
+                }
+            }
+            if let corrEn = params.corrector_enabled { h3CorrectorEnabled = corrEn }
+            if let corrStr = params.corrector_strength { h3CorrectorStrength = corrStr }
+            if let taraEn = params.tara_enabled { taraEnabled = taraEn }
+            if let taraStr = params.tara_strength { taraStrength = taraStr }
+
+            if let sm = params.seedvr2_model, !sm.isEmpty { seedvr2Model = sm }
+            if let sr = params.seedvr2_resolution, sr > 0 { seedvr2Resolution = sr }
+            if let sb = params.seedvr2_batch_size, sb > 0 { seedvr2BatchSize = sb }
+            if let so = params.seedvr2_temporal_overlap { seedvr2TemporalOverlap = so }
+            if let sc = params.seedvr2_color_correction, !sc.isEmpty { seedvr2ColorCorrection = sc }
+            if let sk = params.seedvr2_keep_audio { seedvr2KeepAudio = sk }
+
+            if let rt = params.recavsr_transformer, !rt.isEmpty { recavsrTransformer = rt }
+            if let rs = params.recavsr_scale, rs > 0 { recavsrScale = rs }
+            if let rc = params.recavsr_color_fix, !rc.isEmpty { recavsrColorFix = rc }
+            if let rk = params.recavsr_kernels, !rk.isEmpty { recavsrKernels = rk }
+            if let re = params.recavsr_encoder, !re.isEmpty { recavsrEncoder = re }
+        }
+
+        if taskModeId == "video_upscale" || taskModeId == "motion_transfer" {
+            let resolvedInputs = task.resolvedInputURLs
+            let videoExts: Set<String> = ["mp4", "mov", "webm", "mkv", "avi", "m4v"]
+            let videoURL = resolvedInputs.first(where: { videoExts.contains($0.pathExtension.lowercased()) })
+            let fallbackName = task.input_files?.first(where: { name in
+                let ext = (name as NSString).pathExtension.lowercased()
+                return videoExts.contains(ext)
+            }) ?? task.input_files?.first
+            let displayName = videoURL?.lastPathComponent ?? fallbackName
+            if let name = displayName, !name.isEmpty, refVideoBase64 == nil || refVideoFileName != name {
+                refVideoFileName = name
+                if let url = videoURL,
+                   let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
+                   let bytes = attrs[.size] as? NSNumber {
+                    refVideoSizeMB = Double(bytes.int64Value) / (1024.0 * 1024.0)
+                }
+            }
+        }
+
+        externalTaskScrollNonce &+= 1
     }
 
     var externalCLILogFileURL: URL {
@@ -1378,6 +1642,7 @@ extension StudioViewModel {
             if externalCLILogLines.count > 250 {
                 externalCLILogLines.removeFirst(externalCLILogLines.count - 250)
             }
+            updateExternalCLIProgress(from: added)
             rebuildMergedConsoleLines()
             if !isWakingColab && !isGenerating && !isDownloadingWeights && !isLoadingModel,
                let latest = added.last {
@@ -1385,6 +1650,41 @@ extension StudioViewModel {
             }
         } catch {
             return
+        }
+    }
+
+    func updateExternalCLIProgress(from lines: [String]) {
+        let pctPattern = try? NSRegularExpression(pattern: #"(?:进度\s*[:：]?\s*)(\d{1,3})%"#)
+        let rawProgPattern = try? NSRegularExpression(pattern: #"progress=([0-9]+(?:\.[0-9]+)?)"#)
+        for raw in lines {
+            let clean = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !clean.isEmpty else { continue }
+            if clean.contains("成片下载完成") || clean.contains("已执行 stop-all")
+                || clean.contains("自动休眠完成") || clean.contains("命令 ") && clean.contains("失败") {
+                externalCLITaskProgress = nil
+                externalCLITaskSummary = ""
+                continue
+            }
+            let ns = clean as NSString
+            let fullRange = NSRange(location: 0, length: ns.length)
+            if let m = pctPattern?.firstMatch(in: clean, range: fullRange), m.numberOfRanges >= 2 {
+                let numStr = ns.substring(with: m.range(at: 1))
+                if let pct = Double(numStr) {
+                    externalCLITaskProgress = max(0.0, min(1.0, pct / 100.0))
+                    externalCLITaskSummary = clean
+                    externalCLITaskUpdatedAt = Date()
+                    continue
+                }
+            }
+            if let m = rawProgPattern?.firstMatch(in: clean, range: fullRange), m.numberOfRanges >= 2 {
+                let numStr = ns.substring(with: m.range(at: 1))
+                if let val = Double(numStr) {
+                    let frac = val > 1.0 ? (val / 100.0) : val
+                    externalCLITaskProgress = max(0.0, min(1.0, frac))
+                    externalCLITaskSummary = clean
+                    externalCLITaskUpdatedAt = Date()
+                }
+            }
         }
     }
 
@@ -1561,6 +1861,22 @@ extension StudioViewModel {
             comfyPublicURL = cf.public_url ?? ""
             comfyQueueRunning = cf.queue_running ?? 0
             comfyQueuePending = cf.queue_pending ?? 0
+            comfyLiveTask = cf.live_task
+            if cf.live_task?.active == true {
+                if let summary = cf.live_task?.summary_line,
+                   !summary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                   !isGenerating && !isDownloadingWeights && !isLoadingModel {
+                    statusMessage = summary
+                }
+                if autoFollowExternalTasks,
+                   !isGenerating,
+                   activeExternalTask?.status != "running",
+                   let remoteSnapshot = visibleExternalTask,
+                   remoteSnapshot.task_id != lastSyncedExternalTaskId,
+                   remoteSnapshot.task_id != userManuallyLeftExternalTaskId {
+                    syncWorkspaceToExternalTask(remoteSnapshot, force: false)
+                }
+            }
             if let pl = cf.persistence_label, !pl.isEmpty {
                 comfyPersistenceLabel = pl
             }
