@@ -35,6 +35,9 @@ def _load_app_comfy_helpers() -> Dict[str, Any]:
         "_prune_workflow_dangling_links",
         "_build_10eros_max_workflow",
         "_build_sulphur3_workflow",
+        "_build_ref2va_tara_workflow",
+        "_build_seedvr2_upscaler_workflow",
+        "_build_recavsr_upscaler_workflow",
         "_build_and_install_comfy_preset_workflows",
         "_get_comfy_preset_packs_status",
         "_safe_symlink_dir",
@@ -49,7 +52,10 @@ def _load_app_comfy_helpers() -> Dict[str, Any]:
         "_install_comfy_pack_custom_nodes",
         "build_structured_prompt",
         "_snap_h3_frames",
+        "_snap_seedvr2_batch_size",
         "_build_comfy_h3_api_prompt_for_request",
+        "_build_seedvr2_api_prompt_for_request",
+        "_build_recavsr_api_prompt_for_request",
     }
 
     selected = []
@@ -484,9 +490,9 @@ class ComfyH3OptimizationsTest(unittest.TestCase):
 
     def test_macos_native_ui_exposes_multiref_voice_corrector_and_autosleep(self):
         required_tokens = {
-            os.path.join(REPO_ROOT, "macos_app", "Sources", "ModelsAndCatalogs.swift"): ["multiref", "motion_transfer", "minimax_h3_10eros_max", "minimax_h3_sulphur3", "minimax_h3_ref2va_tara"],
-            os.path.join(REPO_ROOT, "macos_app", "Sources", "StudioViewModel.swift"): ["ref_images_base64", "ref_audio_base64", "ref_video_base64", "corrector_strength", "tara_strength", "autoSleepAfterGenerate", "disconnectRemoteColab"],
-            os.path.join(REPO_ROOT, "macos_app", "Sources", "MainStudioView+Workspace.swift"): ["multiref", "motion_transfer", "h3CorrectorSection", "h3TaraControlSection", "autoSleepAfterGenerate"],
+            os.path.join(REPO_ROOT, "macos_app", "Sources", "ModelsAndCatalogs.swift"): ["multiref", "motion_transfer", "video_upscale", "minimax_h3_10eros_max", "minimax_h3_sulphur3", "minimax_h3_ref2va_tara", "seedvr2_upscaler", "recavsr_upscaler"],
+            os.path.join(REPO_ROOT, "macos_app", "Sources", "StudioViewModel.swift"): ["ref_images_base64", "ref_audio_base64", "ref_video_base64", "corrector_strength", "tara_strength", "seedvr2_resolution", "recavsr_scale", "autoSleepAfterGenerate", "disconnectRemoteColab"],
+            os.path.join(REPO_ROOT, "macos_app", "Sources", "MainStudioView+Workspace.swift"): ["multiref", "motion_transfer", "video_upscale", "h3CorrectorSection", "h3TaraControlSection", "seedvr2ControlSection", "recavsrControlSection", "autoSleepAfterGenerate"],
         }
         for path, tokens in required_tokens.items():
             with open(path, "r", encoding="utf-8") as f:
@@ -576,6 +582,172 @@ class ComfyH3OptimizationsTest(unittest.TestCase):
             parsed = json.loads(proc.stdout)
             self.assertEqual(parsed["prompt"]["32"]["class_type"], "BFSMiniMaxH3NativeTemporal")
             self.assertIn("ref_videos.ref_video_0", parsed["prompt"]["8"]["inputs"])
+
+    def test_seedvr2_video_upscaler_catalog_pack_graph_and_cli(self):
+        self.assertIn("SEEDVR2", self.ns["COMFY_STANDARD_MODEL_SUBDIRS"])
+        catalog = self.ns["MODEL_CATALOG"]
+        self.assertIn("seedvr2_upscaler", catalog)
+        self.assertEqual(catalog["seedvr2_upscaler"]["pipeline_arch"], "comfy_seedvr2_upscaler")
+        self.assertEqual(catalog["seedvr2_upscaler"]["comfy_pack_id"], "seedvr2_upscaler")
+
+        packs = {p["id"]: p for p in self.ns["COMFY_PRESET_WORKFLOW_PACKS"]}
+        self.assertIn("seedvr2_upscaler", packs)
+        pack = packs["seedvr2_upscaler"]
+        model_files = {(sub, fn) for sub, fn, _, _, _ in pack["models"]}
+        self.assertIn(("SEEDVR2", "seedvr2_ema_7b_fp16.safetensors"), model_files)
+        self.assertIn(("SEEDVR2", "ema_vae_fp16.safetensors"), model_files)
+        cn_names = {c["name"] for c in pack.get("custom_nodes", [])}
+        self.assertIn("ComfyUI-SeedVR2_VideoUpscaler", cn_names)
+
+        snap = self.ns["_snap_seedvr2_batch_size"]
+        self.assertEqual(snap(17), 17)
+        self.assertEqual(snap(16), 17)
+        self.assertEqual(snap(5), 5)
+        self.assertEqual(snap(1), 1)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            installed = self.ns["_build_and_install_comfy_preset_workflows"](tmp, ["seedvr2_upscaler"])
+            self.assertEqual(installed, ["12_SeedVR2_7B_FP16_视频4K超分修复.json"])
+            wf_path = os.path.join(tmp, "user", "default", "workflows", installed[0])
+            wf = json.load(open(wf_path, "r", encoding="utf-8"))
+            ntypes = {n["type"] for n in wf["nodes"]}
+            self.assertIn("SeedVR2LoadDiTModel", ntypes)
+            self.assertIn("SeedVR2LoadVAEModel", ntypes)
+            self.assertIn("SeedVR2VideoUpscaler", ntypes)
+
+        builder = self.ns["_build_seedvr2_api_prompt_for_request"]
+        req_up = SimpleNamespace(
+            seedvr2_model="seedvr2_ema_7b_sharp_fp16.safetensors",
+            seedvr2_resolution=2160,
+            seedvr2_max_resolution=0,
+            seedvr2_batch_size=16,
+            seedvr2_temporal_overlap=3,
+            seedvr2_color_correction="wavelet",
+            seedvr2_keep_audio=True,
+            seedvr2_attention_mode="sdpa",
+        )
+        g_on = builder(req_up, seed=99, ref_video_filename="clip.mp4", save_prefix="video/seedvr2_test")
+        self.assertEqual(g_on["1"]["class_type"], "VHS_LoadVideo")
+        self.assertEqual(g_on["2"]["class_type"], "SeedVR2LoadDiTModel")
+        self.assertEqual(g_on["2"]["inputs"]["model"], "seedvr2_ema_7b_sharp_fp16.safetensors")
+        self.assertEqual(g_on["2"]["inputs"]["blocks_to_swap"], 0)
+        self.assertEqual(g_on["2"]["inputs"]["offload_device"], "none")
+        self.assertFalse(g_on["2"]["inputs"]["cache_model"])
+        self.assertEqual(g_on["3"]["class_type"], "SeedVR2LoadVAEModel")
+        self.assertFalse(g_on["3"]["inputs"]["encode_tiled"])
+        self.assertTrue(g_on["3"]["inputs"]["decode_tiled"])
+        self.assertEqual(g_on["3"]["inputs"]["decode_tile_size"], 2048)
+        self.assertFalse(g_on["3"]["inputs"]["cache_model"])
+        self.assertEqual(g_on["4"]["class_type"], "SeedVR2VideoUpscaler")
+        self.assertEqual(g_on["4"]["inputs"]["resolution"], 2160)
+        self.assertEqual(g_on["4"]["inputs"]["batch_size"], 17)
+        self.assertEqual(g_on["4"]["inputs"]["color_correction"], "wavelet")
+        self.assertEqual(g_on["5"]["class_type"], "VHS_VideoInfo")
+        self.assertEqual(g_on["6"]["class_type"], "CreateVideo")
+        self.assertEqual(g_on["6"]["inputs"]["fps"], ["5", 5])
+        self.assertEqual(g_on["6"]["inputs"]["audio"], ["1", 2])
+        self.assertEqual(g_on["7"]["class_type"], "SaveVideo")
+
+        req_1080 = SimpleNamespace(**vars(req_up))
+        req_1080.seedvr2_resolution = 1080
+        g_1080 = builder(req_1080, seed=99, ref_video_filename="clip.mp4")
+        self.assertFalse(g_1080["3"]["inputs"]["decode_tiled"])
+
+        req_up.seedvr2_keep_audio = False
+        g_mute = builder(req_up, seed=99, ref_video_filename="clip.mp4")
+        self.assertNotIn("audio", g_mute["6"]["inputs"])
+
+        with tempfile.TemporaryDirectory() as tmp:
+            vid = os.path.join(tmp, "source.mp4")
+            open(vid, "wb").write(b"fake_mp4")
+            cli_path = os.path.join(REPO_ROOT, "skills", "colab-minimax-h3", "scripts", "colab_h3_cli.py")
+            proc = subprocess.run(
+                [
+                    sys.executable, cli_path, "comfy-upscale",
+                    "--video", vid,
+                    "--model", "seedvr2_ema_7b_fp16.safetensors",
+                    "--resolution", "2160",
+                    "--batch-size", "21",
+                    "--dry-run",
+                ],
+                capture_output=True, text=True, check=True,
+            )
+            parsed = json.loads(proc.stdout)
+            self.assertFalse(parsed["prompt"]["2"]["inputs"]["cache_model"])
+            self.assertFalse(parsed["prompt"]["3"]["inputs"]["cache_model"])
+            self.assertTrue(parsed["prompt"]["3"]["inputs"]["decode_tiled"])
+            self.assertEqual(parsed["prompt"]["3"]["inputs"]["decode_tile_size"], 2048)
+            self.assertEqual(parsed["prompt"]["4"]["class_type"], "SeedVR2VideoUpscaler")
+            self.assertEqual(parsed["prompt"]["4"]["inputs"]["resolution"], 2160)
+            self.assertEqual(parsed["prompt"]["4"]["inputs"]["batch_size"], 21)
+            self.assertEqual(parsed["prompt"]["6"]["inputs"]["audio"], ["1", 2])
+
+    def test_recavsr_streaming_upscaler_catalog_pack_graph_and_cli(self):
+        self.assertIn("recavsr", self.ns["COMFY_STANDARD_MODEL_SUBDIRS"])
+        catalog = self.ns["MODEL_CATALOG"]
+        self.assertIn("recavsr_upscaler", catalog)
+        self.assertEqual(catalog["recavsr_upscaler"]["pipeline_arch"], "comfy_recavsr_upscaler")
+        self.assertEqual(catalog["recavsr_upscaler"]["comfy_pack_id"], "recavsr_upscaler")
+
+        packs = {p["id"]: p for p in self.ns["COMFY_PRESET_WORKFLOW_PACKS"]}
+        self.assertIn("recavsr_upscaler", packs)
+        pack = packs["recavsr_upscaler"]
+        model_files = {(sub, fn) for sub, fn, _, _, _ in pack["models"]}
+        self.assertIn(("recavsr", "transformer.safetensors"), model_files)
+        self.assertIn(("recavsr", "transformer_int8_convrot.safetensors"), model_files)
+        self.assertIn(("recavsr", "flashdecoder.safetensors"), model_files)
+        self.assertIn(("recavsr", "prompt.safetensors"), model_files)
+        cn_names = {c["name"] for c in pack.get("custom_nodes", [])}
+        self.assertIn("ComfyUI-ReCaVSR", cn_names)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            installed = self.ns["_build_and_install_comfy_preset_workflows"](tmp, ["recavsr_upscaler"])
+            self.assertEqual(installed, ["13_ReCaVSR_Wan2.2_极速流式4K超分.json"])
+            wf_path = os.path.join(tmp, "user", "default", "workflows", installed[0])
+            wf = json.load(open(wf_path, "r", encoding="utf-8"))
+            ntypes = {n["type"] for n in wf["nodes"]}
+            self.assertIn("ReCaVSRLoader", ntypes)
+            self.assertIn("ReCaVSRUpscale", ntypes)
+
+        builder = self.ns["_build_recavsr_api_prompt_for_request"]
+        req_rc = SimpleNamespace(
+            recavsr_transformer="transformer_int8_convrot.safetensors",
+            recavsr_scale=4.0,
+            recavsr_color_fix="wavelet",
+            recavsr_kernels="exact",
+            recavsr_encoder="hevc nvenc",
+        )
+        g = builder(req_rc, seed=77, ref_video_filename="dance.mp4", save_prefix="video/recavsr_test")
+        self.assertEqual(g["1"]["class_type"], "LoadVideo")
+        self.assertEqual(g["2"]["class_type"], "ReCaVSRLoader")
+        self.assertEqual(g["2"]["inputs"]["transformer"], "transformer_int8_convrot.safetensors")
+        self.assertEqual(g["3"]["class_type"], "ReCaVSRUpscale")
+        self.assertEqual(g["3"]["inputs"]["scale"], 4.0)
+        self.assertEqual(g["3"]["inputs"]["color_fix"], "wavelet")
+        self.assertEqual(g["3"]["inputs"]["decoder"], "flashdecoder")
+        self.assertEqual(g["3"]["inputs"]["kernels"], "exact")
+        self.assertEqual(g["3"]["inputs"]["encoder"], "hevc nvenc")
+        self.assertEqual(g["4"]["class_type"], "SaveVideo")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            vid = os.path.join(tmp, "clip.mp4")
+            open(vid, "wb").write(b"fake_mp4")
+            cli_path = os.path.join(REPO_ROOT, "skills", "colab-minimax-h3", "scripts", "colab_h3_cli.py")
+            proc = subprocess.run(
+                [
+                    sys.executable, cli_path, "comfy-upscale-recavsr",
+                    "--video", vid,
+                    "--transformer", "transformer.safetensors",
+                    "--scale", "2.0",
+                    "--dry-run",
+                ],
+                capture_output=True, text=True, check=True,
+            )
+            parsed = json.loads(proc.stdout)
+            self.assertEqual(parsed["prompt"]["2"]["inputs"]["transformer"], "transformer.safetensors")
+            self.assertEqual(parsed["prompt"]["3"]["class_type"], "ReCaVSRUpscale")
+            self.assertEqual(parsed["prompt"]["3"]["inputs"]["scale"], 2.0)
+            self.assertEqual(parsed["prompt"]["3"]["inputs"]["decoder"], "flashdecoder")
 
 
 if __name__ == "__main__":
