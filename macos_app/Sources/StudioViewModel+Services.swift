@@ -163,6 +163,9 @@ extension StudioViewModel {
             DispatchQueue.global(qos: .userInitiated).async {
                 let proc = Process()
                 proc.executableURL = URL(fileURLWithPath: pyBin)
+                proc.environment = ProcessInfo.processInfo.environment.merging([
+                    "EASYCOLAB_FROM_APP": "1"
+                ]) { _, new in new }
                 proc.arguments = [script] + args
                 let outPipe = Pipe()
                 proc.standardOutput = outPipe
@@ -353,6 +356,7 @@ extension StudioViewModel {
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: pyBin)
         proc.environment = ProcessInfo.processInfo.environment.merging([
+            "EASYCOLAB_FROM_APP": "1",
             "EASYCOLAB_ADMIN_PASSWORD": password,
             "EASYCOLAB_IDLE_TIMEOUT_MINUTES": "\(idleMin)"
         ]) { _, new in new }
@@ -474,6 +478,9 @@ extension StudioViewModel {
 
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: pyBin)
+        proc.environment = ProcessInfo.processInfo.environment.merging([
+            "EASYCOLAB_FROM_APP": "1"
+        ]) { _, new in new }
         proc.arguments = [self.bridgeScript, "keepalive_daemon"]
         let stdinPipe = Pipe()
         let stdoutPipe = Pipe()
@@ -578,6 +585,109 @@ extension StudioViewModel {
                     await keepaliveColabRuntime()
                 }
             }
+        }
+    }
+
+    var externalCLILogFileURL: URL {
+        LocalRuntimePaths.appSupportDir.appendingPathComponent("external_cli_logs.jsonl")
+    }
+
+    func startExternalCLILogWatcher() {
+        externalLogWatcherTask?.cancel()
+        let logURL = externalCLILogFileURL
+
+        if let attrs = try? FileManager.default.attributesOfItem(atPath: logURL.path),
+           let modDate = attrs[.modificationDate] as? Date,
+           let sizeNum = attrs[.size] as? NSNumber {
+            let size = sizeNum.uint64Value
+            if Date().timeIntervalSince(modDate) < 12 * 3600, size > 0 {
+                let tailOffset: UInt64 = size > 32 * 1024 ? (size - 32 * 1024) : 0
+                if let handle = try? FileHandle(forReadingFrom: logURL) {
+                    try? handle.seek(toOffset: tailOffset)
+                    let chunk = handle.readDataToEndOfFile()
+                    try? handle.close()
+                    let parsed = Self.parseExternalLogChunk(chunk, skipPartialFirstLine: tailOffset > 0)
+                    if !parsed.isEmpty {
+                        externalCLILogLines = Array(parsed.suffix(40))
+                        rebuildMergedConsoleLines()
+                    }
+                }
+            }
+            externalLogFileOffset = size
+        }
+
+        externalLogWatcherTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 600_000_000)
+                guard let self else { break }
+                self.pollNewExternalCLILogLines()
+            }
+        }
+    }
+
+    private static func parseExternalLogChunk(_ data: Data, skipPartialFirstLine: Bool = false) -> [String] {
+        guard !data.isEmpty, let raw = String(data: data, encoding: .utf8) else { return [] }
+        var rawLines = raw.components(separatedBy: .newlines)
+        if skipPartialFirstLine && !rawLines.isEmpty {
+            rawLines.removeFirst()
+        }
+        var result: [String] = []
+        for entryStr in rawLines {
+            let trimmed = entryStr.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { continue }
+            if let entryData = trimmed.data(using: .utf8),
+               let obj = try? JSONSerialization.jsonObject(with: entryData) as? [String: Any],
+               let lineText = obj["line"] as? String {
+                let clean = lineText.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !clean.isEmpty {
+                    result.append(clean)
+                }
+            } else {
+                result.append(trimmed)
+            }
+        }
+        return result
+    }
+
+    func pollNewExternalCLILogLines() {
+        let logURL = externalCLILogFileURL
+        guard FileManager.default.fileExists(atPath: logURL.path) else { return }
+        guard let attrs = try? FileManager.default.attributesOfItem(atPath: logURL.path),
+              let sizeNum = attrs[.size] as? NSNumber else { return }
+        let fileSize = sizeNum.uint64Value
+        if fileSize < externalLogFileOffset {
+            externalLogFileOffset = 0
+        }
+        guard fileSize > externalLogFileOffset else { return }
+        guard let handle = try? FileHandle(forReadingFrom: logURL) else { return }
+        defer { try? handle.close() }
+        do {
+            try handle.seek(toOffset: externalLogFileOffset)
+            let data = handle.readDataToEndOfFile()
+            externalLogFileOffset = fileSize
+            let added = Self.parseExternalLogChunk(data)
+            guard !added.isEmpty else { return }
+            externalCLILogLines.append(contentsOf: added)
+            if externalCLILogLines.count > 250 {
+                externalCLILogLines.removeFirst(externalCLILogLines.count - 250)
+            }
+            rebuildMergedConsoleLines()
+            if !isWakingColab && !isGenerating && !isDownloadingWeights && !isLoadingModel,
+               let latest = added.last {
+                statusMessage = latest
+            }
+        } catch {
+            return
+        }
+    }
+
+    func rebuildMergedConsoleLines() {
+        if !remoteConsoleLines.isEmpty && !externalCLILogLines.isEmpty {
+            liveConsoleLines = remoteConsoleLines + ["─── 外部 Skill / CLI 实时日志 ───"] + externalCLILogLines
+        } else if !externalCLILogLines.isEmpty {
+            liveConsoleLines = externalCLILogLines
+        } else if !remoteConsoleLines.isEmpty {
+            liveConsoleLines = remoteConsoleLines
         }
     }
 
@@ -724,7 +834,8 @@ extension StudioViewModel {
             Task { await syncApiKeyToColab(initializeOnly: true) }
         }
         if let lines = decoded.console_lines, !lines.isEmpty {
-            liveConsoleLines = lines
+            remoteConsoleLines = lines
+            rebuildMergedConsoleLines()
         }
         if let cf = decoded.comfyui {
             comfyRunning = cf.is_running ?? false

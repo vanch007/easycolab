@@ -24,6 +24,58 @@ from typing import Any, Dict, List, Optional, Tuple
 
 DEFAULT_EASYCOLAB_ROOT = "/Users/vanch/easycolab"
 SESSION_PATH = Path.home() / ".config" / "colab-minimax-h3" / "session.json"
+APP_LOG_PATH = Path(
+    os.environ.get("EASYCOLAB_APP_LOG_PATH", "").strip()
+    or (Path.home() / "Library" / "Application Support" / "EasyColab" / "external_cli_logs.jsonl")
+)
+
+
+def _mask_sensitive_text(text: str) -> str:
+    """Redact passwords, HF tokens, Basic auth, and full Gradio subdomains from log lines."""
+    if not text:
+        return ""
+    masked = re.sub(
+        r"(--(?:password|hf-token)\s+)(\S+)",
+        lambda m: f"{m.group(1)}***",
+        text,
+    )
+    masked = re.sub(r"(Basic\s+)[A-Za-z0-9+/=]+", r"\1***", masked)
+    masked = re.sub(
+        r"https://([A-Za-z0-9-]{4})[A-Za-z0-9.-]*(\.gradio\.live)",
+        r"https://\1***\2",
+        masked,
+    )
+    return masked
+
+
+def _emit_app_log(message: str, source: str = "colab-h3-cli", level: str = "info") -> None:
+    """Append a structured log entry so the EasyColab macOS app displays external CLI/skill logs live."""
+    try:
+        clean = _mask_sensitive_text(str(message or "")).strip()
+        if not clean:
+            return
+        log_path = Path(
+            os.environ.get("EASYCOLAB_APP_LOG_PATH", "").strip() or str(APP_LOG_PATH)
+        )
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        if log_path.is_file() and log_path.stat().st_size > 512 * 1024:
+            try:
+                tail = log_path.read_text(encoding="utf-8", errors="replace").splitlines()[-200:]
+                log_path.write_text("\n".join(tail) + "\n", encoding="utf-8")
+            except Exception:
+                pass
+        ts_str = time.strftime("%H:%M:%S")
+        entry = {
+            "ts": round(time.time(), 3),
+            "source": source,
+            "level": level,
+            "line": f"[{source} {ts_str}] {clean}",
+        }
+        with open(log_path, "a", encoding="utf-8") as wf:
+            wf.write(json.dumps(entry, ensure_ascii=False) + "\n")
+            wf.flush()
+    except Exception:
+        pass
 
 
 def _find_easycolab_root() -> Path:
@@ -146,6 +198,7 @@ def _run_bridge(bridge_args: List[str], env_extra: Optional[Dict[str, str]] = No
         raise RuntimeError(f"colab_bridge.py not found under {root}. Set EASYCOLAB_ROOT.")
     py_bin = _find_bridge_python(root)
     env = os.environ.copy()
+    env["EASYCOLAB_SUPPRESS_BRIDGE_LOG"] = "1"
     if env_extra:
         env.update(env_extra)
     cmd = [py_bin, str(bridge_py), *bridge_args]
@@ -161,6 +214,14 @@ def _run_bridge(bridge_args: List[str], env_extra: Optional[Dict[str, str]] = No
         ln = raw.rstrip("\n")
         lines.append(ln)
         print(ln, flush=True)
+        if ln.startswith("WAKE_LOG:"):
+            _emit_app_log(ln[len("WAKE_LOG:"):].strip())
+        elif ln.startswith("WAKE_URL:"):
+            _emit_app_log(f"成功获取云端隧道地址: {ln[len('WAKE_URL:'):].strip()}")
+        elif ln.startswith("WAKE_ERROR:"):
+            _emit_app_log(ln[len("WAKE_ERROR:"):].strip(), level="error")
+        elif ln.strip() and not ln.startswith("[colab]") and "urllib3" not in ln and "Assignment request failed" not in ln:
+            _emit_app_log(ln.strip())
     rc = proc.wait()
     return rc, "\n".join(lines)
 
@@ -439,15 +500,21 @@ def _submit_and_wait_comfy(comfy_url: str, password: str, graph: Dict[str, Any],
     prompt_id = str(res.get("prompt_id") or "").strip()
     if not prompt_id:
         raise RuntimeError(f"ComfyUI rejected prompt: {json.dumps(res, ensure_ascii=False)}")
-    print(f"Submitted ComfyUI prompt_id={prompt_id}, waiting for completion...", flush=True)
+    msg_sub = f"Submitted ComfyUI prompt_id={prompt_id}, waiting for completion..."
+    print(msg_sub, flush=True)
+    _emit_app_log(f"ComfyUI 任务已入队 (prompt_id={prompt_id})，等待云端渲染完成...")
 
     deadline = time.time() + timeout_s
     history_item: Optional[Dict[str, Any]] = None
+    tick_count = 0
     while time.time() < deadline:
         hist = _http_json(f"{comfy_url}/history/{prompt_id}", password=password, base_url=comfy_url, timeout=30)
         if prompt_id in hist:
             history_item = hist[prompt_id]
             break
+        tick_count += 1
+        if tick_count % 5 == 0:
+            _emit_app_log(f"ComfyUI 推理运行中 (prompt_id={prompt_id}, 已等待 {tick_count * 3}s)...")
         time.sleep(3.0)
 
     if not history_item:
@@ -455,7 +522,9 @@ def _submit_and_wait_comfy(comfy_url: str, password: str, graph: Dict[str, Any],
 
     status_info = history_item.get("status") or {}
     if status_info.get("status_str") == "error":
-        raise RuntimeError(f"ComfyUI execution error: {json.dumps(status_info, ensure_ascii=False)}")
+        err_txt = f"ComfyUI execution error: {json.dumps(status_info, ensure_ascii=False)}"
+        _emit_app_log(err_txt, level="error")
+        raise RuntimeError(err_txt)
 
     saved_files: List[str] = []
     outputs = history_item.get("outputs") or {}
@@ -475,6 +544,7 @@ def _submit_and_wait_comfy(comfy_url: str, password: str, graph: Dict[str, Any],
                 local_p = out_dir / fname
                 _http_download(dl_url, local_p, password=password, base_url=comfy_url, timeout=300)
                 saved_files.append(str(local_p))
+                _emit_app_log(f"ComfyUI 成片下载完成: {local_p}")
     return saved_files
 
 
@@ -485,7 +555,9 @@ def _wait_for_native_flag(base_url: str, password: str, flag_key: str, model_id:
         st = _http_json(f"{base_url}/minimax_api/status{qs}", password=password, base_url=base_url)
         msg = st.get("status_message") or st.get("message") or ""
         prog = st.get("progress")
-        print(f"[{flag_key}] progress={prog} | {msg}", flush=True)
+        line = f"[{flag_key}] progress={prog} | {msg}"
+        print(line, flush=True)
+        _emit_app_log(line)
         if not st.get(flag_key):
             return st
         time.sleep(4.0)
@@ -497,7 +569,9 @@ def _wait_for_comfy_flag(base_url: str, password: str, flag_key: str, timeout_s:
     while time.time() < deadline:
         st = _http_json(f"{base_url}/minimax_api/comfyui/status", password=password, base_url=base_url)
         cf = st.get("comfyui") or {}
-        print(f"[comfyui:{flag_key}] progress={cf.get('progress')} | {cf.get('status_message')}", flush=True)
+        line = f"[comfyui:{flag_key}] progress={cf.get('progress')} | {cf.get('status_message')}"
+        print(line, flush=True)
+        _emit_app_log(line)
         if not cf.get(flag_key):
             return cf
         time.sleep(4.0)
@@ -509,7 +583,9 @@ def _poll_native_job(base_url: str, password: str, job_id: str, out_dir: Path, t
     while time.time() < deadline:
         job = _http_json(f"{base_url}/minimax_api/job/{job_id}", password=password, base_url=base_url)
         status = job.get("status")
-        print(f"[job {job_id}] status={status} progress={job.get('progress')} | {job.get('message')}", flush=True)
+        line = f"[job {job_id}] status={status} progress={job.get('progress')} | {job.get('message')}"
+        print(line, flush=True)
+        _emit_app_log(line, level=("error" if status == "failed" else "info"))
         if status == "completed":
             downloaded: List[str] = []
             items = job.get("completed_videos") or []
@@ -523,6 +599,7 @@ def _poll_native_job(base_url: str, password: str, job_id: str, out_dir: Path, t
                     dst = out_dir / fn
                     _http_download(full_url, dst, password=password, base_url=base_url, timeout=300)
                     downloaded.append(str(dst))
+                    _emit_app_log(f"任务成片已下载至本地: {dst}")
             job["downloaded_files"] = downloaded
             return job
         if status == "failed":
@@ -553,6 +630,7 @@ def cmd_extract_voice_seed(args: argparse.Namespace) -> None:
 
 def _auto_sleep_runtime(base_url: str, password: str, sync_comfy: bool = False) -> Dict[str, Any]:
     """Sync outputs/ComfyUI (if requested), disconnect runtime, and terminate all Colab VMs via stop_all."""
+    _emit_app_log("触发自动休眠：正在同步云端产出并释放 Colab 实例...")
     report: Dict[str, Any] = {
         "triggered": True,
         "synced_comfy": False,
@@ -571,6 +649,7 @@ def _auto_sleep_runtime(base_url: str, password: str, sync_comfy: bool = False) 
                 timeout=90,
             )
             report["synced_comfy"] = True
+            _emit_app_log("ComfyUI 资产与产物已同步至 Google Drive。")
         except Exception as sync_err:
             report["sync_error"] = str(sync_err)
 
@@ -592,8 +671,13 @@ def _auto_sleep_runtime(base_url: str, password: str, sync_comfy: bool = False) 
         rc, out = _run_bridge(["stop_all"])
         report["stop_all_rc"] = rc
         report["stop_all_output"] = out
+        _emit_app_log(
+            f"自动休眠完成：Colab 实例已释放 (rc={rc})。",
+            level=("info" if rc == 0 else "error"),
+        )
     except Exception as stop_err:
         report["stop_all_error"] = str(stop_err)
+        _emit_app_log(f"自动休眠释放异常: {stop_err}", level="error")
 
     sess = _load_session()
     sess.pop("url", None)
@@ -609,6 +693,7 @@ def cmd_wake(args: argparse.Namespace) -> None:
     pwd = args.password or _generate_admin_password()
     if not re.fullmatch(r"[A-Za-z0-9_-]{24,256}", pwd):
         raise ValueError("Password must be 24-256 URL-safe ASCII characters ([A-Za-z0-9_-]).")
+    _emit_app_log(f"正在通过 Skill CLI 唤醒 {args.gpu} GPU 实例并部署 app.py...")
     rc, out = _run_bridge(["wake", "--gpu", args.gpu, "--app-py", str(root / "app.py")], env_extra={"EASYCOLAB_ADMIN_PASSWORD": pwd}, stream=True)
     if rc != 0:
         raise RuntimeError(f"colab_bridge wake exited with code {rc}")
@@ -633,6 +718,7 @@ def cmd_wake(args: argparse.Namespace) -> None:
     sess = _load_session()
     sess.update({"url": url, "password": pwd, "gpu": args.gpu, "sleeping": False, "idle_timeout_minutes": idle_mins})
     _save_session(sess)
+    _emit_app_log(f"{args.gpu} 实例已就绪 ({url})，闲置自动释放={idle_mins}m。")
     print(json.dumps({
         "ok": True,
         "url": url,
@@ -654,6 +740,7 @@ def cmd_connect(args: argparse.Namespace) -> None:
     elif isinstance(st.get("comfyui"), dict) and st["comfyui"].get("public_url"):
         sess["comfy_url"] = str(st["comfyui"]["public_url"]).rstrip("/")
     _save_session(sess)
+    _emit_app_log(f"已绑定云端实例 {url} (GPU: {st.get('gpu_name')})")
     print(json.dumps({"ok": True, "url": url, "comfy_url": sess.get("comfy_url", ""), "gpu_name": st.get("gpu_name")}, indent=2))
 
 
@@ -821,15 +908,28 @@ def main(argv: Optional[List[str]] = None) -> int:
     p_s3.add_argument("--dry-run", action="store_true")
 
     args = parser.parse_args(argv)
+    if args.cmd not in ("snap-frames",):
+        _emit_app_log(f"[Skill/CLI] >>> 开始执行命令: {args.cmd}")
 
+    try:
+        return _execute_cli_command(args)
+    except Exception as exc:
+        _emit_app_log(f"[Skill/CLI] 命令 {args.cmd} 失败: {exc}", level="error")
+        raise
+
+
+def _execute_cli_command(args: argparse.Namespace) -> int:
     if args.cmd == "snap-frames":
         cmd_snap_frames(args)
         return 0
     if args.cmd == "extract-voice-seed":
         cmd_extract_voice_seed(args)
+        _emit_app_log(f"声纹音频切片完成 -> {args.output}")
         return 0
     if args.cmd in ("auth-status", "auth-url", "keepalive", "stop-all"):
         rc, out = _run_bridge([args.cmd.replace("-", "_")])
+        if args.cmd == "stop-all":
+            _emit_app_log(f"已执行 stop-all 释放全部 Colab 实例 (rc={rc})", level=("info" if rc == 0 else "error"))
         print(out)
         return rc
     if args.cmd == "auth-code":
@@ -892,6 +992,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         ff = _encode_image_b64(args.first_frame)
         lf = _encode_image_b64(args.last_frame)
         task_mode = "fl2va" if (ff or lf) else "t2va"
+        _emit_app_log(f"提交 MiniMax-H3 视频生成 ({task_mode}, {args.width}x{args.height}, {snapped}帧, {args.steps}步)...")
         payload = {
             "model_id": "minimax_h3",
             "task_mode": task_mode,
@@ -1029,6 +1130,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         cf_pw = password
         try:
             comfy_url, cf_pw = _resolve_comfy_url(args)
+            _emit_app_log(
+                f"提交 10Eros-Max 推理 ({args.mode}, 参考图={len(args.ref_image)}张, 声纹={len(args.ref_audio)}段, {args.steps}步)..."
+            )
             ref_imgs = [_comfy_upload_file(comfy_url, cf_pw, p) for p in args.ref_image]
             ref_auds = [_comfy_upload_file(comfy_url, cf_pw, p) for p in args.ref_audio]
             ff_name = _comfy_upload_file(comfy_url, cf_pw, args.first_frame) if args.first_frame else ""
@@ -1042,6 +1146,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         finally:
             if not args.keep_alive:
                 sleep_report = _auto_sleep_runtime(base_url, password or cf_pw, sync_comfy=bool(base_url))
+        _emit_app_log(f"10Eros-Max 生成完成，输出文件: {', '.join(files)}")
         print(json.dumps({"ok": True, "files": files, "auto_sleep": sleep_report}, ensure_ascii=False, indent=2))
         return 0
 
@@ -1066,6 +1171,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         cf_pw = password
         try:
             comfy_url, cf_pw = _resolve_comfy_url(args)
+            _emit_app_log(
+                f"提交 Sulphur-3 推理 ({args.mode}, {args.steps}步, 修正器强度={args.corrector_strength})..."
+            )
             ff_name = _comfy_upload_file(comfy_url, cf_pw, args.first_frame) if args.first_frame else ""
             lf_name = _comfy_upload_file(comfy_url, cf_pw, args.last_frame) if args.last_frame else ""
             graph = _build_sulphur3_api_prompt(
@@ -1079,6 +1187,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         finally:
             if not args.keep_alive:
                 sleep_report = _auto_sleep_runtime(base_url, password or cf_pw, sync_comfy=bool(base_url))
+        _emit_app_log(f"Sulphur-3 生成完成，输出文件: {', '.join(files)}")
         print(json.dumps({"ok": True, "files": files, "auto_sleep": sleep_report}, ensure_ascii=False, indent=2))
         return 0
 

@@ -218,6 +218,10 @@ class StudioViewModel: ObservableObject {
     var remoteIdleSynced: Bool = false
     @Published var drivePersisted: Bool = false
     @Published var bf16ShardsCount: Int = 0
+    var remoteConsoleLines: [String] = []
+    var externalCLILogLines: [String] = []
+    var externalLogFileOffset: UInt64 = 0
+    var externalLogWatcherTask: Task<Void, Never>? = nil
     @Published var liveConsoleLines: [String] = (
         LanguageManager.shared.isEN ? StudioViewModel.defaultWelcomeLinesEn : StudioViewModel.defaultWelcomeLinesZh
     ) {
@@ -716,6 +720,7 @@ class StudioViewModel: ObservableObject {
         loadPersistedCustomModels()
         refreshLocalMedia()
         startBackgroundTelemetryLoop()
+        startExternalCLILogWatcher()
         localEventMonitor = NSEvent.addLocalMonitorForEvents(
             matching: [.keyDown, .leftMouseDown, .rightMouseDown, .scrollWheel]
         ) { [weak self] event in
@@ -749,6 +754,7 @@ class StudioViewModel: ObservableObject {
     }
 
     deinit {
+        externalLogWatcherTask?.cancel()
         if let localEventMonitor {
             NSEvent.removeMonitor(localEventMonitor)
         }
@@ -758,6 +764,16 @@ class StudioViewModel: ObservableObject {
         if let languageObserver {
             NotificationCenter.default.removeObserver(languageObserver)
         }
+    }
+
+    func clearConsoleLogs() {
+        remoteConsoleLines = []
+        externalCLILogLines = []
+        if let attrs = try? FileManager.default.attributesOfItem(atPath: externalCLILogFileURL.path),
+           let sizeNum = attrs[.size] as? NSNumber {
+            externalLogFileOffset = sizeNum.uint64Value
+        }
+        liveConsoleLines = [L(Self.clearedConsoleLineZh, Self.clearedConsoleLineEn)]
     }
 
     func addReferenceImages(from urls: [URL]) {
@@ -1557,7 +1573,8 @@ class StudioViewModel: ObservableObject {
                 }
                 if let s = job.seed { self.seed = s }
                 if let lines = job.console_lines, !lines.isEmpty {
-                    self.liveConsoleLines = lines
+                    self.remoteConsoleLines = lines
+                    self.rebuildMergedConsoleLines()
                 }
 
                 // Qwen3.8-27B 实时流式更新思考链与回复正文

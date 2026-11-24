@@ -319,7 +319,7 @@ struct MainStudioView: View {
             .help(L("复制全部日志", "Copy all logs"))
 
             Button {
-                vm.liveConsoleLines = [L(StudioViewModel.clearedConsoleLineZh, StudioViewModel.clearedConsoleLineEn)]
+                vm.clearConsoleLogs()
             } label: {
                 Image(systemName: "trash")
                     .font(.system(size: 11.5, weight: .medium))
@@ -1694,6 +1694,9 @@ struct MainStudioView: View {
             || lower.contains("loaded") || lower.contains("succeeded") || lower.contains("successfully")
             || lower.contains("completed") || lower.contains("ready in vram") {
             return Color(red: 0.35, green: 0.92, blue: 0.55)
+        }
+        if line.hasPrefix("[colab-h3-cli") || line.hasPrefix("[CLI ") || line.contains("[Skill/CLI]") {
+            return Color(red: 0.56, green: 0.86, blue: 0.99)
         }
         return Color(white: 0.87)
     }

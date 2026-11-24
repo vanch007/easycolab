@@ -135,6 +135,113 @@ def _has_valid_token() -> bool:
 
 PKCE_VERIFIER_PATH = os.path.expanduser("~/.config/colab-cli/pkce_verifier.txt")
 ACCOUNT_PROFILE_CACHE_PATH = os.path.expanduser("~/.config/colab-cli/account_profile.json")
+_APP_LOG_PATH = os.path.expanduser(
+    os.environ.get("EASYCOLAB_APP_LOG_PATH", "").strip()
+    or "~/Library/Application Support/EasyColab/external_cli_logs.jsonl"
+)
+
+
+def _mask_bridge_log_text(text: str) -> str:
+    if not text:
+        return ""
+    return re.sub(
+        r"https://([A-Za-z0-9-]{4})[A-Za-z0-9.-]*(\.gradio\.live)",
+        r"https://\1***\2",
+        text,
+    )
+
+
+def _append_external_app_log(line: str, level: str = "info") -> None:
+    """When colab_bridge.py is called directly from external CLI/skills, stream logs into EasyColab app."""
+    if os.environ.get("EASYCOLAB_FROM_APP") == "1" or os.environ.get("EASYCOLAB_SUPPRESS_BRIDGE_LOG") == "1":
+        return
+    try:
+        clean = _mask_bridge_log_text(str(line or "")).strip()
+        if not clean:
+            return
+        log_path = os.path.expanduser(
+            os.environ.get("EASYCOLAB_APP_LOG_PATH", "").strip() or _APP_LOG_PATH
+        )
+        os.makedirs(os.path.dirname(log_path), exist_ok=True)
+        if os.path.isfile(log_path) and os.path.getsize(log_path) > 512 * 1024:
+            try:
+                with open(log_path, "r", encoding="utf-8", errors="replace") as rf:
+                    tail = rf.read().splitlines()[-200:]
+                with open(log_path, "w", encoding="utf-8") as wf:
+                    wf.write("\n".join(tail) + "\n")
+            except Exception:
+                pass
+        ts_str = time.strftime("%H:%M:%S")
+        entry = {
+            "ts": round(time.time(), 3),
+            "source": "colab-bridge",
+            "level": level,
+            "line": f"[CLI {ts_str}] {clean}",
+        }
+        with open(log_path, "a", encoding="utf-8") as wf:
+            wf.write(json.dumps(entry, ensure_ascii=False) + "\n")
+            wf.flush()
+    except Exception:
+        pass
+
+
+@contextlib.contextmanager
+def _external_cli_log_tee():
+    """Tee WAKE_* / stop_all output to EasyColab app log bus when invoked outside the macOS GUI app."""
+    if os.environ.get("EASYCOLAB_FROM_APP") == "1" or os.environ.get("EASYCOLAB_SUPPRESS_BRIDGE_LOG") == "1":
+        yield
+        return
+
+    real_stdout = sys.stdout
+    buf = []
+
+    class _TeeStream:
+        def write(self, s):
+            real_stdout.write(s)
+            buf.append(s)
+            if "\n" in s:
+                joined = "".join(buf)
+                parts = joined.split("\n")
+                buf[:] = [parts[-1]]
+                for ln in parts[:-1]:
+                    self._mirror(ln)
+            return len(s)
+
+        def flush(self):
+            real_stdout.flush()
+
+        def isatty(self):
+            return getattr(real_stdout, "isatty", lambda: False)()
+
+        def _mirror(self, ln: str):
+            s = ln.strip()
+            if not s:
+                return
+            if s.startswith("WAKE_LOG:"):
+                _append_external_app_log(s[len("WAKE_LOG:"):].strip(), level="info")
+            elif s.startswith("WAKE_URL:"):
+                _append_external_app_log(f"成功获取云端隧道地址: {s[len('WAKE_URL:'):].strip()}", level="info")
+            elif s.startswith("WAKE_ERROR:"):
+                _append_external_app_log(s[len("WAKE_ERROR:"):].strip(), level="error")
+            elif s.startswith("{") and s.endswith("}"):
+                try:
+                    obj = json.loads(s)
+                    msg = obj.get("message") or obj.get("error")
+                    if msg:
+                        lvl = "error" if obj.get("ok") is False else "info"
+                        _append_external_app_log(str(msg), level=lvl)
+                except Exception:
+                    pass
+
+    tee = _TeeStream()
+    sys.stdout = tee
+    try:
+        yield
+    finally:
+        sys.stdout = real_stdout
+        rem = "".join(buf).strip()
+        if rem:
+            tee._mirror(rem)
 
 
 def _clear_local_session_store():
@@ -1523,13 +1630,17 @@ def main(argv=None):
     elif args.cmd == "auth_code":
         cmd_auth_code(args.code)
     elif args.cmd == "wake":
-        cmd_wake(args.gpu, args.app_py)
+        with _external_cli_log_tee():
+            _append_external_app_log(f"正在通过 CLI 直接唤醒 Colab ({args.gpu} GPU)...")
+            cmd_wake(args.gpu, args.app_py)
     elif args.cmd == "keepalive":
         cmd_keepalive()
     elif args.cmd == "keepalive_daemon":
         cmd_keepalive_daemon()
     elif args.cmd == "stop_all":
-        cmd_stop_all()
+        with _external_cli_log_tee():
+            _append_external_app_log("正在通过 CLI 直接休眠并释放全部 Colab 实例...")
+            cmd_stop_all()
 
 
 def run_cli(argv=None):
