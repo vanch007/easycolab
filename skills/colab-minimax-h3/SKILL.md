@@ -96,7 +96,13 @@ Use `./scripts/colab_h3_cli.py` for the listed runtime, model, and generation co
 6. **Preventing Camera-Turn & Axis-Crossing Artifacts**:
    - In 90° profile dialogue, use a matched 90° profile reference image; avoid plural words (`eyes`, `brows`) and negative phrasing (`without turning toward camera`), which activate those tokens in Qwen3-VL.
    - Lock screen positions explicitly (`<Picture 1> on screen-left facing right`), use **1 camera move per 5s clip**, and end with a silent closed-mouth hold + `No subtitles`.
-7. **Security & Auto-Sleep Cost Hygiene**:
+7. **Prompt Writing Rules (from `h3-prompt-journal` & `ancient-rap-battle`)**:
+   - **Grant/Deny Split**: State what `<Picture 1>` preserves (identity/garment) and explicitly deny static pose inheritance (`NOT a pose/opening-frame reference; begin directly with beat 1 below`). Use waist-up crops for close-ups and lip-sync.
+   - **Executable Physics & Time-Window Budget**: Write `force source -> weight shift -> peak -> recovery` instead of adjective stacking; match complexity to window length (`0.3–0.6s` single accent, `0.6–1.2s` short chain, `1.2–2.5s` compound phrase) to avoid jitter.
+   - **1:1 Action-Camera Sync & Cut Separation**: Share exact timestamps between body peaks and camera moves; explicitly separate hard cuts from single-take continuous camera shifts; keep **1 lyric line per lip-sync clip** and **1 outfit state per clip**.
+   - **Self-Contained Segments**: Repeat full identity locks, framing, lighting, and audio/BGM grid in every segment, ending with `No subtitles, no on-screen text, no watermarks`.
+   - Full templates and 10-point pre-submission checklist: [prompting-and-pro-techniques.md](./references/prompting-and-pro-techniques.md#7-prompt-authoring-blueprint-from-h3-prompt-journal--ancient-rap-battle).
+8. **Security & Auto-Sleep Cost Hygiene**:
    - Never share `*.gradio.live`, `*.trycloudflare.com`, or admin passwords in screenshots or logs.
    - The generation CLI's default `finally` cleanup calls `disconnect` and `stop-all`, including on errors. Direct ComfyUI graph submission does not invoke that CLI wrapper. Check scope and ownership before using the default cleanup.
 

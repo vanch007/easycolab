@@ -92,3 +92,64 @@ For single 5s shots (`124` frames) and multi-shot sequences:
 - **Default Auto-Sleep**: Every generation command (`comfy-run-10eros`, `comfy-run-sulphur3`, `generate-video`, `generate-image`) automatically downloads outputs first, then runs `sync_drive` (for ComfyUI) + `disconnect` + `stop-all` inside `finally` — even if generation fails.
 - **Idle Watchdog**: `wake` sets `--idle-minutes 10` on the VM by default (override via `wake --idle-minutes N` or `config-idle --minutes N`).
 - **Multi-Shot Batch Pattern**: Pass `--keep-alive` on shots `1..N-1` to preserve 0s model residency, then omit `--keep-alive` on shot `N` so it auto-sleeps immediately upon completion.
+
+---
+
+## 7. Prompt Authoring Blueprint (from `h3-prompt-journal` & `ancient-rap-battle`)
+
+Apply these rules whenever authoring or rewriting MiniMax-H3 prompts (I2VA, Ref2VA, 10Eros-Max, Sulphur-3):
+
+### A. Reference Authority Split (Grant/Deny Lists) & Pose Demotion
+H3 treats reference images as holistic truth and will copy the static pose into frame 1 unless pose authority is explicitly revoked and reassigned:
+1. **Grant vs. Deny Split**:
+   - `<Picture 1>` = facial identity / product structure ONLY (`Use <Picture 1> ONLY to preserve facial identity, proportions, garment seams...`).
+   - Add an explicit **Deny List** in every independent segment: `<Picture 1> is NOT a pose reference, NOT a choreography reference, NOT an opening-frame reference. Do not reproduce its static stance, head angle, or camera composition.`
+   - Reassign frame-1 authority: `Begin directly with the first choreographed movement specified below.`
+   - Demote subjective look requests (e.g. "half-body portrait feel") into camera/lens rules (`close-up / waist-up handheld framing`) rather than copying `<Picture 1>`'s pose.
+2. **Crop Waist-Up for Close-Ups & Lip-Sync**:
+   - Feeding a full-body turnaround sheet makes H3 pull back into a wide shot where lips and facial details degrade. Crop waist-up (`<Picture 1>`) for talking, singing, or upper-body gesture shots, and open with an explicit `FRAMING` rule (`Waist-up medium shot; legs and floor never appear in frame`).
+3. **Multi-Segment Self-Containment**:
+   - Every independent segment must re-upload `<Picture 1>` and repeat full identity, lighting, style, and audio locks inside that segment's prompt. Never rely on rules written only in Segment 1.
+
+### B. Physical Action-Chain Mechanics (No Adjective Stacking)
+Replace abstract quality adjectives ("dances gracefully", "spins dynamically") with executable physical causality:
+1. **10-Element Action Chain**: `initial state -> force source -> entry path -> beat-by-beat force change -> technical peak -> inertia follow-through -> recovery order -> body/fabric physics -> camera geometry -> music trigger`.
+2. **Three-Layer Structure Per Segment**:
+   - **Continuous base layer** (constant throughout: knee bounce, hip groove, breathing).
+   - **Action-chain layer** (beat-locked moves with explicit `entry state` -> `exit state`).
+   - **Micro-expression layer** (head tilts, eye contact, blinks, smiles on off-beats).
+3. **Time-Window Capacity Check (Anti-Jitter / Anti-Overload)**:
+   - Never cram multiple complex moves into a short window (causes repetitive arm-crossing or in-place jitter).
+   - `0.3–0.6s`: 1 sharp accent (elbow slice, wrist flick, hip pop).
+   - `0.6–1.2s`: 1 short chain (weight shift -> torso turn -> arm release).
+   - `1.2–2.5s`: 1 compound phrase with clear preparation, peak, and recovery.
+   - `>2.5s`: multi-stage Hero action (spin axis setup -> rotation -> deceleration -> landing). Keep total full-body spins `<= 2` per dance, and state explicit stillness (`holds one beat of stillness`) so H3 does not average velocity into constant drift.
+4. **Physical Contact & Garment Rules**:
+   - When hands touch props, fabric, or hair, explicitly require continuous physical contact and fabric creasing/deformation so hands never detach mid-motion.
+
+### C. Camera Geometry, 1:1 Action-Camera Sync & Cut Separation
+1. **1:1 Action-Camera Synchronization**:
+   - Body movement and camera motion share the **exact same absolute timestamps**: camera initiates when the body initiates, hits framing peak on the beat peak, and decelerates during recovery.
+2. **Physical Camera Spec**:
+   - Define camera type, height, distance, optical axis, and path physically (e.g., `handheld smartphone at chest height, 1.1m away, subtle organic operator lag`; or `floor-level POV a few centimeters off the floor aimed vertically upward`). Avoid vague "tilted angle" — specify diagonal horizon/shoreline geometry while keeping natural gravity on the performer.
+3. **Separate Hard Cuts vs. Continuous Motion**:
+   - State exact local timestamps for hard cuts (`At 00:05.000, execute a clean hard cut`) vs. continuous in-shot camera transitions (`At 00:08.000 within the same continuous take, the camera transitions into a backward tracking shot without cutting`).
+   - For multi-look / outfit-swap showcases: **one garment state = one independent clip**, opening mid-stride or with a clear match-cut entry rather than morphing outfits inside one generation.
+
+### D. Exact Audio & Lip-Sync Rules
+1. **One Lyric Line Per Lip-Sync Clip**: Feeding two or more lines in one clip causes H3 to re-sing or drift out of sync after ~2 seconds.
+2. **Explicit Audio Lock**: State `SOUND: Audio 1 is used identically from first frame to last without re-singing, re-timing, or adding extra crowd/music noise; lips follow Audio 1 syllable by syllable.`
+3. **Silent / T2VA Mode**: Include an explicit `overall_soundscape` and `non_diegetic_music` grid (genre, BPM, instruments, downbeat accents) and bind movement peaks to those accents.
+
+### E. Pre-Submission 10-Point Gate
+Check before submitting any H3 job:
+1. `Framing & Physical Camera`: camera height, distance, lens feel, and crop bounds stated.
+2. `Grant/Deny Reference Split`: `<Picture 1>` grants identity/garment, denies static pose if starting in motion.
+3. `Time-Window Fit`: each timestamp window only contains movements physically completable in those seconds.
+4. `10-Element Causality`: force source, weight shift, peak, and recovery specified.
+5. `1:1 Camera Sync`: camera movement triggers share exact timestamps with body peaks.
+6. `Cut vs. Continuous Clarity`: hard cuts vs. single-take camera moves explicitly separated.
+7. `Segment Self-Containment`: identity locks, style, and audio/BGM repeated in every standalone prompt.
+8. `Single-Subject & Anti-Clone`: `exactly one performer, no duplicate or invented background person`.
+9. `Audio / Lip-Sync Scope`: one speaker/line per clip or explicit BGM beat grid.
+10. `Clean Output Tail`: `No subtitles, no on-screen text, no logos, no watermark.`

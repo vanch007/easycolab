@@ -12,8 +12,12 @@ import os
 import re
 import secrets
 import shutil
+import socket
+import ssl
+import struct
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -33,6 +37,236 @@ ACTIVE_SESSION_PATH = Path(
     os.environ.get("EASYCOLAB_ACTIVE_SESSION_PATH", "").strip()
     or (Path.home() / "Library" / "Application Support" / "EasyColab" / "active_session.json")
 )
+ACTIVE_TASK_PATH = Path(
+    os.environ.get("EASYCOLAB_ACTIVE_TASK_PATH", "").strip()
+    or (Path.home() / "Library" / "Application Support" / "EasyColab" / "active_external_task.json")
+)
+_CURRENT_EXTERNAL_TASK: Optional[Dict[str, Any]] = None
+
+
+def _infer_project_info(out_dir: str, prefix: str = "") -> Tuple[str, str]:
+    """Infer user-facing project folder name & path from output directory or prefix."""
+    generic = {
+        "outputs", "output", "work", "renders", "render",
+        "videos", "video", "images", "image", "tmp", "temp", "out",
+    }
+    try:
+        p = Path(out_dir or ".").expanduser().resolve()
+    except Exception:
+        p = Path.cwd().resolve()
+    if p.is_file():
+        p = p.parent
+    cur = p
+    for _ in range(6):
+        name = cur.name.strip()
+        low = name.lower()
+        if name and low not in generic and not low.endswith("-outputs") and not low.endswith("_outputs") and cur != cur.parent:
+            return name, str(cur)
+        if cur.parent == cur:
+            break
+        cur = cur.parent
+    cwd = Path.cwd().resolve()
+    if cwd.name and cwd.name.lower() not in generic:
+        return cwd.name, str(cwd)
+    if prefix:
+        tail = prefix.strip("/").split("/")[-1]
+        if tail:
+            return tail, str(p)
+    return p.name or "EasyColab Task", str(p)
+
+
+def _sync_app_external_task(payload: Dict[str, Any]) -> None:
+    """Publish structured external task metadata so EasyColab previews project & prompt live."""
+    try:
+        target = Path(
+            os.environ.get("EASYCOLAB_ACTIVE_TASK_PATH", "").strip() or str(ACTIVE_TASK_PATH)
+        )
+        target.parent.mkdir(parents=True, exist_ok=True)
+        tmp = target.with_suffix(".tmp")
+        tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, target)
+        os.chmod(target, 0o600)
+    except Exception:
+        pass
+
+
+def _model_display_name(model_id: str) -> str:
+    mapping = {
+        "minimax_h3": "MiniMax-H3 (33B)",
+        "minimax_h3_10eros_max": "10Eros-Max (H3 无限制)",
+        "minimax_h3_sulphur3": "Sulphur-3 (H3 无限制)",
+        "minimax_h3_ref2va_tara": "Ref2VA · TARA 动作复刻",
+        "seedvr2_upscaler": "SeedVR2 7B · 视频超分",
+        "recavsr_upscaler": "ReCaVSR · 极速流式超分",
+        "minimax_h3_image": "MiniMax-H3-Image (33B · 4K)",
+        "comfyui_studio": "ComfyUI 节点工作台",
+        "qwen38_27b": "Qwen3.8-27B",
+        "qwen38_27b_gguf": "Qwen3.8-27B-GGUF",
+        "qwen_image_21": "Qwen-Image-2.1",
+        "z_image_turbo": "Z-Image-Turbo",
+    }
+    return mapping.get(model_id, model_id)
+
+
+def _pack_to_model_id(pack_id: str) -> Tuple[str, str]:
+    low = (pack_id or "").lower()
+    if "recavsr" in low:
+        return "recavsr_upscaler", _model_display_name("recavsr_upscaler")
+    if "seedvr2" in low:
+        return "seedvr2_upscaler", _model_display_name("seedvr2_upscaler")
+    if "tara" in low or "ref2va" in low:
+        return "minimax_h3_ref2va_tara", _model_display_name("minimax_h3_ref2va_tara")
+    if "10eros" in low:
+        return "minimax_h3_10eros_max", _model_display_name("minimax_h3_10eros_max")
+    if "sulphur3" in low:
+        return "minimax_h3_sulphur3", _model_display_name("minimax_h3_sulphur3")
+    return "comfyui_studio", _model_display_name("comfyui_studio")
+
+
+def _resolve_task_input_paths(items: Optional[List[str]]) -> List[str]:
+    resolved: List[str] = []
+    for raw in (items or []):
+        s = str(raw or "").strip()
+        if not s:
+            continue
+        try:
+            resolved.append(str(Path(s).expanduser().resolve()))
+        except Exception:
+            resolved.append(s)
+    return resolved
+
+
+def _resolve_task_output_paths(items: Optional[List[str]], project_dir: str = "", output_dir: str = "") -> List[str]:
+    resolved: List[str] = []
+    bases: List[Path] = []
+    for b in (str(Path.cwd()), project_dir, output_dir):
+        if b and str(b).strip():
+            try:
+                bases.append(Path(str(b)).expanduser())
+            except Exception:
+                pass
+    for raw in (items or []):
+        s = str(raw or "").strip()
+        if not s:
+            continue
+        p = Path(s).expanduser()
+        if p.is_absolute():
+            try:
+                resolved.append(str(p.resolve()))
+            except Exception:
+                resolved.append(str(p))
+            continue
+        matched: Optional[str] = None
+        for base in bases:
+            cand = base / p
+            if cand.exists():
+                try:
+                    matched = str(cand.resolve())
+                except Exception:
+                    matched = str(cand)
+                break
+        if not matched:
+            try:
+                matched = str(p.resolve())
+            except Exception:
+                matched = s
+        resolved.append(matched)
+    return resolved
+
+
+def _begin_external_task(
+    *,
+    command: str,
+    model_id: str,
+    model_name: str,
+    task_mode: str,
+    prompt: str = "",
+    soundscape: str = "",
+    music: str = "",
+    params_summary: str = "",
+    params: Optional[Dict[str, Any]] = None,
+    input_files: Optional[List[str]] = None,
+    out_dir: str = "./outputs",
+    prefix: str = "",
+    account: str = "",
+) -> Dict[str, Any]:
+    global _CURRENT_EXTERNAL_TASK
+    proj_name, proj_dir = _infer_project_info(out_dir, prefix=prefix)
+    try:
+        resolved_out = str(Path(out_dir or "./outputs").expanduser().resolve())
+    except Exception:
+        resolved_out = str(out_dir or "./outputs")
+    acct = (account or os.environ.get("EASYCOLAB_ACCOUNT", "")).strip()
+    if not acct:
+        try:
+            acct = str(_load_session().get("account") or "").strip()
+        except Exception:
+            acct = ""
+    now = round(time.time(), 3)
+    payload: Dict[str, Any] = {
+        "task_id": uuid.uuid4().hex[:12],
+        "status": "running",
+        "source": "colab-h3-cli",
+        "command": command,
+        "account": acct,
+        "project_name": proj_name,
+        "project_dir": proj_dir,
+        "output_dir": resolved_out,
+        "prefix": prefix or "",
+        "model_id": model_id,
+        "model_name": model_name,
+        "task_mode": task_mode,
+        "prompt": (prompt or "").strip(),
+        "soundscape": (soundscape or "").strip(),
+        "music": (music or "").strip(),
+        "params_summary": (params_summary or "").strip(),
+        "params": params or {},
+        "input_files": [Path(x).name for x in (input_files or []) if str(x).strip()],
+        "input_paths": _resolve_task_input_paths(input_files),
+        "output_files": [],
+        "progress": 0.02,
+        "progress_label": f"已提交 {model_name} 任务...",
+        "error": "",
+        "started_at": now,
+        "updated_at": now,
+    }
+    _CURRENT_EXTERNAL_TASK = payload
+    _sync_app_external_task(payload)
+    return payload
+
+
+def _update_external_task_progress(progress: float, label: str = "") -> None:
+    if not _CURRENT_EXTERNAL_TASK:
+        return
+    _CURRENT_EXTERNAL_TASK["progress"] = round(max(0.0, min(1.0, float(progress or 0.0))), 3)
+    if label:
+        _CURRENT_EXTERNAL_TASK["progress_label"] = label
+    _CURRENT_EXTERNAL_TASK["updated_at"] = round(time.time(), 3)
+    _sync_app_external_task(_CURRENT_EXTERNAL_TASK)
+
+
+def _finish_external_task(output_files: Optional[List[str]] = None, error: str = "") -> None:
+    global _CURRENT_EXTERNAL_TASK
+    if not _CURRENT_EXTERNAL_TASK:
+        return
+    now = round(time.time(), 3)
+    if error:
+        _CURRENT_EXTERNAL_TASK["status"] = "failed"
+        _CURRENT_EXTERNAL_TASK["error"] = error
+        _CURRENT_EXTERNAL_TASK["progress_label"] = f"任务失败: {error[:160]}"
+    else:
+        _CURRENT_EXTERNAL_TASK["status"] = "completed"
+        _CURRENT_EXTERNAL_TASK["progress"] = 1.0
+        _CURRENT_EXTERNAL_TASK["output_files"] = _resolve_task_output_paths(
+            output_files,
+            project_dir=str(_CURRENT_EXTERNAL_TASK.get("project_dir") or ""),
+            output_dir=str(_CURRENT_EXTERNAL_TASK.get("output_dir") or ""),
+        )
+        _CURRENT_EXTERNAL_TASK["progress_label"] = "生成完成"
+    _CURRENT_EXTERNAL_TASK["updated_at"] = now
+    _sync_app_external_task(_CURRENT_EXTERNAL_TASK)
+    _CURRENT_EXTERNAL_TASK = None
 
 
 def _sync_app_active_session(
@@ -145,15 +379,52 @@ def _find_bridge_python(root: Path) -> str:
 
 
 def _load_session() -> Dict[str, Any]:
-    if not SESSION_PATH.is_file():
-        return {}
-    try:
-        return json.loads(SESSION_PATH.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
+    sess: Dict[str, Any] = {}
+    sess_ts: float = 0.0
+    if SESSION_PATH.is_file():
+        try:
+            sess = json.loads(SESSION_PATH.read_text(encoding="utf-8"))
+            sess_ts = float(sess.get("updated_at") or 0.0)
+            if sess_ts <= 0.0:
+                sess_ts = float(SESSION_PATH.stat().st_mtime)
+        except Exception:
+            sess = {}
+            sess_ts = 0.0
+
+    # Adopt a fresher live tunnel session published by EasyColab.app / colab_bridge
+    env_act = os.environ.get("EASYCOLAB_ACTIVE_SESSION_PATH", "").strip()
+    act_path = Path(env_act) if env_act else ACTIVE_SESSION_PATH
+    if act_path.is_file():
+        try:
+            act = json.loads(act_path.read_text(encoding="utf-8"))
+            act_url = str(act.get("url") or "").strip().rstrip("/")
+            if not act.get("sleeping") and act_url.startswith("https://"):
+                cur_acct = (os.environ.get("EASYCOLAB_ACCOUNT", "").strip() or str(sess.get("account") or "").strip()).lower()
+                act_acct = str(act.get("account") or "").strip().lower()
+                if not cur_acct or not act_acct or cur_acct == act_acct:
+                    act_ts = float(act.get("updated_at") or 0.0)
+                    if act_ts <= 0.0:
+                        act_ts = float(act_path.stat().st_mtime)
+                    if not sess.get("url") or act_ts >= sess_ts:
+                        sess["url"] = act_url
+                        if act.get("password"):
+                            sess["password"] = str(act["password"])
+                        if act.get("gpu"):
+                            sess["gpu"] = str(act["gpu"])
+                        if act.get("comfy_url"):
+                            sess["comfy_url"] = str(act["comfy_url"]).rstrip("/")
+                        if act.get("account"):
+                            sess["account"] = str(act["account"])
+                        sess["sleeping"] = False
+                        sess["updated_at"] = act_ts
+        except Exception:
+            pass
+    return sess
 
 
 def _save_session(data: Dict[str, Any]) -> None:
+    if isinstance(data, dict):
+        data["updated_at"] = round(time.time(), 3)
     SESSION_PATH.parent.mkdir(parents=True, exist_ok=True)
     tmp = SESSION_PATH.with_suffix(".tmp")
     tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -855,38 +1126,393 @@ def _build_recavsr_upscale_api_prompt(
     }
 
 
+def _format_progress_bar(fraction: float, width: int = 10) -> str:
+    frac = max(0.0, min(1.0, float(fraction or 0.0)))
+    filled = max(0, min(width, int(round(width * frac))))
+    return ("█" * filled) + ("-" * (width - filled))
+
+
+def _describe_comfy_node_stage(class_type: str) -> str:
+    ct = (class_type or "").strip()
+    low = ct.lower()
+    if not ct:
+        return "处理中"
+    if any(k in low for k in ("loader", "checkpoint", "loadimage", "loadvideo", "loadaudio", "loadh3")):
+        return "加载模型与输入"
+    if "cliptext" in low or "encode" in low:
+        return "编码文本与条件特征"
+    if "recavsr" in low:
+        return "ReCaVSR 流式超分"
+    if "seedvr2" in low:
+        return "SeedVR2 扩散超分"
+    if any(k in low for k in ("sampler", "ksampler", "bfsminimax")):
+        return "扩散去噪采样"
+    if "vaedecodeaudio" in low:
+        return "立体声音频 VAE 解码"
+    if "vaedecode" in low:
+        return "3D 视频 / 图像 VAE 解码"
+    if any(k in low for k in ("createvideo", "savevideo", "videocombine", "saveimage")):
+        return "合成与封装成片"
+    return ct
+
+
+class _ComfyWSProgressTracker:
+    """Pure-stdlib ComfyUI WebSocket listener providing step/node progress + ETA."""
+
+    def __init__(self, comfy_url: str, password: str, client_id: str, graph: Dict[str, Any]):
+        self.comfy_url = comfy_url.rstrip("/")
+        self.password = password or ""
+        self.client_id = client_id
+        self.nodes_map: Dict[str, str] = {
+            str(nid): str(node.get("class_type") or "")
+            for nid, node in (graph or {}).items()
+            if isinstance(node, dict)
+        }
+        self._lock = threading.Lock()
+        self.prompt_id: str = ""
+        self.done_nodes: set[str] = set()
+        self.node_id: str = ""
+        self.node_type: str = ""
+        self.stage_label: str = "准备执行"
+        self.step_value: int = 0
+        self.step_max: int = 0
+        self.progress: float = 0.0
+        self.eta_s: Optional[float] = None
+        self.started_at: float = time.time()
+        self.step_started_at: float = self.started_at
+        self._version: int = 0
+        self._stop_event = threading.Event()
+        self._thread: Optional[threading.Thread] = None
+        self._sock = None
+
+    def set_prompt_id(self, prompt_id: str) -> None:
+        with self._lock:
+            self.prompt_id = str(prompt_id or "").strip()
+
+    def handle_event(self, evt: Dict[str, Any], now_ts: Optional[float] = None) -> bool:
+        if not isinstance(evt, dict):
+            return False
+        mtype = str(evt.get("type") or "").strip()
+        data = evt.get("data") if isinstance(evt.get("data"), dict) else {}
+        ts = float(now_ts if now_ts is not None else time.time())
+        with self._lock:
+            ev_pid = str(data.get("prompt_id") or "").strip()
+            if self.prompt_id and ev_pid and ev_pid != self.prompt_id:
+                return False
+
+            total_nodes = max(len(self.nodes_map), len(self.done_nodes) + 1)
+            if mtype == "execution_start":
+                if ev_pid and not self.prompt_id:
+                    self.prompt_id = ev_pid
+                self.started_at = ts
+                self.step_started_at = ts
+                self.progress = max(self.progress, 0.03)
+                self.stage_label = "初始化节点图"
+                self._version += 1
+                return True
+
+            if mtype == "execution_cached":
+                for n in data.get("nodes") or []:
+                    if n is not None:
+                        self.done_nodes.add(str(n))
+                self._version += 1
+                return True
+
+            if mtype == "executing":
+                node = data.get("node")
+                if node is None:
+                    self.progress = 1.0
+                    self.eta_s = 0.0
+                    self.stage_label = "节点图执行完成"
+                    self._version += 1
+                    return True
+                nid = str(node)
+                if self.node_id and self.node_id != nid:
+                    self.done_nodes.add(self.node_id)
+                self.node_id = nid
+                self.node_type = self.nodes_map.get(nid, nid)
+                self.stage_label = _describe_comfy_node_stage(self.node_type)
+                self.step_value = 0
+                self.step_max = 0
+                self.step_started_at = ts
+                self.eta_s = None
+                total_nodes = max(len(self.nodes_map), len(self.done_nodes) + 1)
+                self.progress = max(0.04, min(0.95, 0.04 + 0.91 * (len(self.done_nodes) / float(max(1, total_nodes)))))
+                self._version += 1
+                return True
+
+            if mtype == "executed":
+                nid = str(data.get("node") or "")
+                if nid:
+                    self.done_nodes.add(nid)
+                    self._version += 1
+                    return True
+                return False
+
+            if mtype in ("progress", "progress_state"):
+                if mtype == "progress":
+                    val = int(data.get("value") or 0)
+                    mx = max(1, int(data.get("max") or 1))
+                    nid = str(data.get("node") or self.node_id or "")
+                else:
+                    nodes_st = data.get("nodes") if isinstance(data.get("nodes"), dict) else {}
+                    running = None
+                    for k_nid, info_n in nodes_st.items():
+                        if not isinstance(info_n, dict):
+                            continue
+                        if info_n.get("state") == "finished":
+                            self.done_nodes.add(str(k_nid))
+                        elif info_n.get("state") == "running":
+                            running = (str(k_nid), info_n)
+                    if running is None:
+                        return False
+                    nid, info_n = running
+                    val = int(info_n.get("value") or 0)
+                    mx = max(1, int(info_n.get("max") or 1))
+
+                if nid:
+                    self.node_id = nid
+                    self.node_type = self.nodes_map.get(nid, self.node_type or nid)
+                    self.stage_label = _describe_comfy_node_stage(self.node_type)
+                if val <= 0:
+                    self.step_started_at = ts
+                    self.eta_s = None
+                elif mx > val:
+                    step_el = max(0.05, ts - self.step_started_at)
+                    self.eta_s = round(step_el * (mx - val) / float(val), 1)
+                else:
+                    self.eta_s = 0.0
+                self.step_value = val
+                self.step_max = mx
+                step_frac = max(0.0, min(1.0, val / float(mx)))
+                total_nodes = max(len(self.nodes_map), len(self.done_nodes) + 1)
+                combined = (len(self.done_nodes) + step_frac) / float(max(1, total_nodes))
+                self.progress = max(0.05, min(0.98, 0.04 + 0.94 * combined))
+                self._version += 1
+                return True
+
+            if mtype in ("execution_success", "execution_error", "execution_interrupted"):
+                self.progress = 1.0 if mtype == "execution_success" else self.progress
+                self.eta_s = 0.0
+                self._version += 1
+                return True
+        return False
+
+    def snapshot(self) -> Tuple[int, float]:
+        with self._lock:
+            return self._version, self.progress
+
+    def format_status_line(self, elapsed_s: float) -> str:
+        with self._lock:
+            pct = int(round(max(0.0, min(1.0, self.progress)) * 100))
+            bar = _format_progress_bar(self.progress)
+            total_nodes = max(len(self.nodes_map), len(self.done_nodes) + 1)
+            done_disp = min(total_nodes, len(self.done_nodes) + (1 if self.node_id else 0))
+            step_part = f"{self.step_value}/{self.step_max} 步 · " if self.step_max > 0 else ""
+            node_name = self.node_type or self.node_id or "ComfyUI"
+            eta_part = f" · 剩余约 {int(round(self.eta_s))}s" if (self.eta_s is not None and self.eta_s >= 1.0) else ""
+            return (
+                f"ComfyUI 进度 {pct}% [{bar}] {step_part}{self.stage_label} "
+                f"({node_name} · 节点 {done_disp}/{total_nodes} · 耗时 {int(round(elapsed_s))}s{eta_part})"
+            )
+
+    def start(self) -> None:
+        if self._thread is not None:
+            return
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop_event.set()
+        if self._sock is not None:
+            try:
+                self._sock.close()
+            except Exception:
+                pass
+
+    def _run(self) -> None:
+        parsed = urllib.parse.urlparse(self.comfy_url)
+        host = parsed.hostname or ""
+        if not host:
+            return
+        use_ssl = parsed.scheme.lower() == "https"
+        port = parsed.port or (443 if use_ssl else 80)
+        base_path = parsed.path.rstrip("/")
+        ws_path = f"{base_path}/ws?clientId={urllib.parse.quote(self.client_id)}"
+        host_hdr = f"{host}:{port}" if parsed.port else host
+
+        while not self._stop_event.is_set():
+            sock_obj = None
+            try:
+                raw_sock = socket.create_connection((host, port), timeout=6.0)
+                if use_ssl:
+                    ctx = ssl.create_default_context()
+                    sock_obj = ctx.wrap_socket(raw_sock, server_hostname=host)
+                else:
+                    sock_obj = raw_sock
+                self._sock = sock_obj
+
+                key = base64.b64encode(os.urandom(16)).decode("ascii")
+                hdr_lines = [
+                    f"GET {ws_path} HTTP/1.1",
+                    f"Host: {host_hdr}",
+                    "Upgrade: websocket",
+                    "Connection: Upgrade",
+                    f"Sec-WebSocket-Key: {key}",
+                    "Sec-WebSocket-Version: 13",
+                    "User-Agent: EasyColab-H3-Skill/1.0",
+                ]
+                if self.password:
+                    raw_auth = f"easycolab:{self.password}".encode("utf-8")
+                    hdr_lines.append("Authorization: Basic " + base64.b64encode(raw_auth).decode("ascii"))
+                sock_obj.sendall(("\r\n".join(hdr_lines) + "\r\n\r\n").encode("ascii"))
+
+                buf = bytearray()
+                while b"\r\n\r\n" not in buf:
+                    chunk = sock_obj.recv(4096)
+                    if not chunk:
+                        raise EOFError("WS handshake closed")
+                    buf.extend(chunk)
+                    if len(buf) > 16384:
+                        raise ValueError("WS handshake header too large")
+                hdr_end = buf.index(b"\r\n\r\n") + 4
+                first_line = bytes(buf[:hdr_end]).decode("latin-1", errors="replace").splitlines()[0]
+                del buf[:hdr_end]
+                if " 101 " not in first_line:
+                    raise RuntimeError(f"WS upgrade rejected: {first_line}")
+
+                sock_obj.settimeout(25.0)
+                frag_opcode = 0
+                frag_buf = bytearray()
+
+                def _read_n(n: int) -> bytes:
+                    while len(buf) < n:
+                        ch = sock_obj.recv(max(4096, n - len(buf)))
+                        if not ch:
+                            raise EOFError("WS closed")
+                        buf.extend(ch)
+                    out = bytes(buf[:n])
+                    del buf[:n]
+                    return out
+
+                while not self._stop_event.is_set():
+                    try:
+                        b1, b2 = _read_n(2)
+                    except socket.timeout:
+                        continue
+                    fin = bool(b1 & 0x80)
+                    opcode = b1 & 0x0F
+                    masked = bool(b2 & 0x80)
+                    length = b2 & 0x7F
+                    if length == 126:
+                        length = struct.unpack(">H", _read_n(2))[0]
+                    elif length == 127:
+                        length = struct.unpack(">Q", _read_n(8))[0]
+                    mask_key = _read_n(4) if masked else b""
+                    payload = _read_n(length) if length else b""
+                    if masked and payload:
+                        payload = bytes(b ^ mask_key[i % 4] for i, b in enumerate(payload))
+                    if opcode == 0x8:
+                        break
+                    if opcode == 0x9:
+                        mk = os.urandom(4)
+                        pl = payload[:125]
+                        masked_pl = bytes(b ^ mk[i % 4] for i, b in enumerate(pl))
+                        sock_obj.sendall(bytes([0x8A, 0x80 | len(pl)]) + mk + masked_pl)
+                        continue
+                    if opcode == 0xA:
+                        continue
+                    if opcode in (0x1, 0x2):
+                        frag_opcode = opcode
+                        frag_buf = bytearray(payload)
+                    elif opcode == 0x0:
+                        frag_buf.extend(payload)
+                    if not fin:
+                        continue
+                    if frag_opcode == 0x1:
+                        try:
+                            evt = json.loads(frag_buf.decode("utf-8", errors="replace"))
+                        except Exception:
+                            evt = None
+                        if isinstance(evt, dict):
+                            self.handle_event(evt)
+            except Exception:
+                if self._stop_event.is_set():
+                    break
+                time.sleep(2.0)
+            finally:
+                if sock_obj is not None:
+                    try:
+                        sock_obj.close()
+                    except Exception:
+                        pass
+                self._sock = None
+
+
 def _submit_and_wait_comfy(comfy_url: str, password: str, graph: Dict[str, Any], out_dir: Path, timeout_s: int = 1800) -> List[str]:
     client_id = uuid.uuid4().hex
-    res = _http_json(
-        f"{comfy_url}/prompt",
-        method="POST",
-        payload={"prompt": graph, "client_id": client_id},
-        password=password,
-        base_url=comfy_url,
-        timeout=30,
-    )
-    prompt_id = str(res.get("prompt_id") or "").strip()
-    if not prompt_id:
-        raise RuntimeError(f"ComfyUI rejected prompt: {json.dumps(res, ensure_ascii=False)}")
-    msg_sub = f"Submitted ComfyUI prompt_id={prompt_id}, waiting for completion..."
-    print(msg_sub, flush=True)
-    _emit_app_log(f"ComfyUI 任务已入队 (prompt_id={prompt_id})，等待云端渲染完成...")
+    tracker = _ComfyWSProgressTracker(comfy_url, password, client_id, graph)
+    tracker.start()
+    try:
+        res = _http_json(
+            f"{comfy_url}/prompt",
+            method="POST",
+            payload={"prompt": graph, "client_id": client_id},
+            password=password,
+            base_url=comfy_url,
+            timeout=30,
+        )
+        prompt_id = str(res.get("prompt_id") or "").strip()
+        if not prompt_id:
+            raise RuntimeError(f"ComfyUI rejected prompt: {json.dumps(res, ensure_ascii=False)}")
+        tracker.set_prompt_id(prompt_id)
+        msg_sub = f"ComfyUI 进度 2% [{_format_progress_bar(0.02)}] 任务已入队 (prompt_id={prompt_id}, 共 {len(graph)} 节点)..."
+        print(msg_sub, flush=True)
+        _emit_app_log(msg_sub)
 
-    deadline = time.time() + timeout_s
-    history_item: Optional[Dict[str, Any]] = None
-    tick_count = 0
-    while time.time() < deadline:
-        hist = _http_json(f"{comfy_url}/history/{prompt_id}", password=password, base_url=comfy_url, timeout=30)
-        if prompt_id in hist:
-            history_item = hist[prompt_id]
-            break
-        tick_count += 1
-        if tick_count % 5 == 0:
-            _emit_app_log(f"ComfyUI 推理运行中 (prompt_id={prompt_id}, 已等待 {tick_count * 3}s)...")
-        time.sleep(3.0)
+        t_start = time.time()
+        deadline = t_start + timeout_s
+        history_item: Optional[Dict[str, Any]] = None
+        last_emitted_ver = -1
+        last_emit_ts = t_start
+        while time.time() < deadline:
+            hist = _http_json(f"{comfy_url}/history/{prompt_id}", password=password, base_url=comfy_url, timeout=30)
+            if prompt_id in hist:
+                history_item = hist[prompt_id]
+                break
 
-    if not history_item:
-        raise TimeoutError(f"Timed out waiting for ComfyUI prompt_id={prompt_id}")
+            now = time.time()
+            cur_ver, cur_prog = tracker.snapshot()
+            if cur_ver > last_emitted_ver and (now - last_emit_ts) >= 2.5:
+                prog_line = tracker.format_status_line(now - t_start)
+                print(prog_line, flush=True)
+                _emit_app_log(prog_line)
+                _update_external_task_progress(cur_prog, prog_line)
+                last_emitted_ver = cur_ver
+                last_emit_ts = now
+            elif (now - last_emit_ts) >= 12.0:
+                fallback_line = None
+                try:
+                    q_st = _http_json(f"{comfy_url}/queue", password=password, base_url=comfy_url, timeout=8)
+                    q_pend = q_st.get("queue_pending") or []
+                    q_pos = next((i + 1 for i, it in enumerate(q_pend) if isinstance(it, list) and len(it) > 1 and it[1] == prompt_id), None)
+                    if q_pos is not None:
+                        fallback_line = f"ComfyUI 进度 3% [{_format_progress_bar(0.03)}] 队列第 {q_pos} 位等待中 (耗时 {int(now - t_start)}s)..."
+                except Exception:
+                    pass
+                if not fallback_line:
+                    fallback_line = tracker.format_status_line(now - t_start)
+                print(fallback_line, flush=True)
+                _emit_app_log(fallback_line)
+                _update_external_task_progress(cur_prog, fallback_line)
+                last_emit_ts = now
+
+            time.sleep(2.0)
+
+        if not history_item:
+            raise TimeoutError(f"Timed out waiting for ComfyUI prompt_id={prompt_id}")
+    finally:
+        tracker.stop()
 
     status_info = history_item.get("status") or {}
     if status_info.get("status_str") == "error":
@@ -937,10 +1563,13 @@ def _wait_for_native_flag(base_url: str, password: str, flag_key: str, model_id:
     while time.time() < deadline:
         st = _http_json(f"{base_url}/minimax_api/status{qs}", password=password, base_url=base_url)
         msg = st.get("status_message") or st.get("message") or ""
-        prog = st.get("progress")
-        line = f"[{flag_key}] progress={prog} | {msg}"
+        prog_val = float(st.get("task_progress") if st.get("task_progress") is not None else (st.get("progress") or 0.0))
+        pct = int(round(max(0.0, min(1.0, prog_val)) * 100))
+        bar = _format_progress_bar(prog_val)
+        line = f"[{flag_key}] 进度 {pct}% [{bar}] {msg}"
         print(line, flush=True)
         _emit_app_log(line)
+        _update_external_task_progress(prog_val, line)
         if not st.get(flag_key):
             return st
         time.sleep(4.0)
@@ -952,9 +1581,13 @@ def _wait_for_comfy_flag(base_url: str, password: str, flag_key: str, timeout_s:
     while time.time() < deadline:
         st = _http_json(f"{base_url}/minimax_api/comfyui/status", password=password, base_url=base_url)
         cf = st.get("comfyui") or {}
-        line = f"[comfyui:{flag_key}] progress={cf.get('progress')} | {cf.get('status_message')}"
+        prog_val = float(cf.get("progress") or 0.0)
+        pct = int(round(max(0.0, min(1.0, prog_val)) * 100))
+        bar = _format_progress_bar(prog_val)
+        line = f"[comfyui:{flag_key}] 进度 {pct}% [{bar}] {cf.get('status_message')}"
         print(line, flush=True)
         _emit_app_log(line)
+        _update_external_task_progress(prog_val, line)
         if not cf.get(flag_key):
             return cf
         time.sleep(4.0)
@@ -966,9 +1599,14 @@ def _poll_native_job(base_url: str, password: str, job_id: str, out_dir: Path, t
     while time.time() < deadline:
         job = _http_json(f"{base_url}/minimax_api/job/{job_id}", password=password, base_url=base_url)
         status = job.get("status")
-        line = f"[job {job_id}] status={status} progress={job.get('progress')} | {job.get('message')}"
+        prog_val = float(job.get("progress") or 0.0)
+        pct = int(round(max(0.0, min(1.0, prog_val)) * 100))
+        bar = _format_progress_bar(prog_val)
+        line = f"[job {job_id}] {status} 进度 {pct}% [{bar}] | {job.get('message')}"
         print(line, flush=True)
         _emit_app_log(line, level=("error" if status == "failed" else "info"))
+        if status not in ("completed", "failed"):
+            _update_external_task_progress(prog_val, line)
         if status == "completed":
             downloaded: List[str] = []
             items = job.get("completed_videos") or []
@@ -1118,6 +1756,41 @@ def cmd_wake(args: argparse.Namespace) -> None:
         "idle_watchdog_set": idle_configured,
         "session_file": str(SESSION_PATH),
     }, indent=2))
+
+
+def cmd_recover(args: argparse.Namespace) -> None:
+    root = _find_easycolab_root()
+    sess = _load_session()
+    fresh_pwd = args.password or _generate_admin_password()
+    if not re.fullmatch(r"[A-Za-z0-9_-]{24,256}", fresh_pwd):
+        raise ValueError("Password must be 24-256 URL-safe ASCII characters ([A-Za-z0-9_-]).")
+    bridge_args = ["recover_tunnel", "--app-py", str(root / "app.py")]
+    if getattr(args, "restart", False):
+        bridge_args.append("--restart-server")
+    idle_mins = max(1, int(getattr(args, "idle_minutes", 10) or sess.get("idle_timeout_minutes") or 10))
+    rc, out = _run_bridge(
+        bridge_args,
+        env_extra={"EASYCOLAB_ADMIN_PASSWORD": fresh_pwd, "EASYCOLAB_IDLE_TIMEOUT_MINUTES": str(idle_mins)},
+        stream=True,
+    )
+    if rc != 0:
+        raise RuntimeError(f"colab_bridge recover_tunnel exited with code {rc}")
+    m_wake = re.search(r"^WAKE_URL:(https://[A-Za-z0-9.-]+\.gradio\.live)\s*$", out, flags=re.MULTILINE)
+    m_rec = re.search(r"^RECOVER_URL:(https://[A-Za-z0-9.-]+\.gradio\.live)\s*$", out, flags=re.MULTILINE)
+    if m_wake:
+        url = m_wake.group(1).strip()
+        pwd = fresh_pwd
+    elif m_rec:
+        url = m_rec.group(1).strip()
+        pwd = str(sess.get("password") or "")
+    else:
+        raise RuntimeError(f"Recover did not return a live gradio.live URL:\n{out.strip()}")
+    sess.update({"url": url, "sleeping": False})
+    if pwd:
+        sess["password"] = pwd
+    _save_session(sess)
+    _sync_app_active_session(url, pwd, gpu=str(sess.get("gpu") or ""), sleeping=False)
+    print(json.dumps({"ok": True, "url": url, "restarted": bool(m_wake), "session_file": str(SESSION_PATH)}, indent=2))
 
 
 def _scoped_session_path(account_email: str) -> Path:
@@ -1356,6 +2029,10 @@ def main(argv: Optional[List[str]] = None) -> int:
     p_conn.add_argument("--url", required=True)
     p_conn.add_argument("--password", default="")
     p_conn.add_argument("--comfy-url", default="")
+    p_rec = sub.add_parser("recover", help="Losslessly probe or hot-restart app.py tunnel on an already running Colab VM")
+    p_rec.add_argument("--restart", action="store_true", help="Hot-redeploy app.py and rebuild gradio.live tunnel without releasing the GPU VM")
+    p_rec.add_argument("--password", default="")
+    p_rec.add_argument("--idle-minutes", type=int, default=10)
     p_idle = sub.add_parser("config-idle", help="Configure cloud idle auto-sleep watchdog (minutes)")
     p_idle.add_argument("--minutes", type=int, default=10)
     sub.add_parser("keepalive", help="Send keepalive ping to active Colab runtime")
@@ -1611,6 +2288,9 @@ def _execute_cli_command(args: argparse.Namespace) -> int:
     if args.cmd == "connect":
         cmd_connect(args)
         return 0
+    if args.cmd == "recover":
+        cmd_recover(args)
+        return 0
 
     if args.cmd in ("comfy-run-10eros", "comfy-run-sulphur3", "comfy-run-tara", "comfy-upscale", "comfy-upscale-recavsr"):
         if args.dry_run:
@@ -1641,15 +2321,41 @@ def _execute_cli_command(args: argparse.Namespace) -> int:
         print(json.dumps(_http_json(f"{base_url}/minimax_api/status{qs}", password=password, base_url=base_url), ensure_ascii=False, indent=2))
         return 0
     if args.cmd == "download-model":
-        res = _http_json(f"{base_url}/minimax_api/download_model", method="POST", payload={"model_id": args.model, "hf_token": args.hf_token}, password=password, base_url=base_url)
-        if args.wait:
-            res = _wait_for_native_flag(base_url, password, "is_downloading", args.model)
+        _begin_external_task(
+            command="download-model",
+            model_id=args.model,
+            model_name=_model_display_name(args.model),
+            task_mode="",
+            prompt=f"下载模型权重：{args.model}",
+            params_summary=args.model,
+        )
+        try:
+            res = _http_json(f"{base_url}/minimax_api/download_model", method="POST", payload={"model_id": args.model, "hf_token": args.hf_token}, password=password, base_url=base_url)
+            if args.wait:
+                res = _wait_for_native_flag(base_url, password, "is_downloading", args.model)
+            _finish_external_task(output_files=[])
+        except Exception as task_err:
+            _finish_external_task(error=str(task_err))
+            raise
         print(json.dumps(res, ensure_ascii=False, indent=2))
         return 0
     if args.cmd == "load-model":
-        res = _http_json(f"{base_url}/minimax_api/load_model", method="POST", payload={"model_id": args.model, "hf_token": args.hf_token}, password=password, base_url=base_url)
-        if args.wait:
-            res = _wait_for_native_flag(base_url, password, "is_loading_vram", args.model)
+        _begin_external_task(
+            command="load-model",
+            model_id=args.model,
+            model_name=_model_display_name(args.model),
+            task_mode="",
+            prompt=f"加载模型至 GPU 显存：{args.model}",
+            params_summary=args.model,
+        )
+        try:
+            res = _http_json(f"{base_url}/minimax_api/load_model", method="POST", payload={"model_id": args.model, "hf_token": args.hf_token}, password=password, base_url=base_url)
+            if args.wait:
+                res = _wait_for_native_flag(base_url, password, "is_loading_vram", args.model)
+            _finish_external_task(output_files=[])
+        except Exception as task_err:
+            _finish_external_task(error=str(task_err))
+            raise
         print(json.dumps(res, ensure_ascii=False, indent=2))
         return 0
     if args.cmd == "unload-model":
@@ -1681,11 +2387,34 @@ def _execute_cli_command(args: argparse.Namespace) -> int:
         }
         sleep_report: Dict[str, Any] = {"triggered": False, "reason": "keep_alive"}
         done: Dict[str, Any] = {}
+        _begin_external_task(
+            command="generate-video",
+            model_id="minimax_h3",
+            model_name="MiniMax-H3 (33B)",
+            task_mode=("fl2va" if (ff or lf) else "t2va"),
+            prompt=args.prompt,
+            soundscape=args.soundscape,
+            music=args.music,
+            params_summary=f"{args.width}x{args.height} · {snapped}帧 · {args.steps}步 · {args.fps}fps",
+            params={
+                "width": int(args.width),
+                "height": int(args.height),
+                "frames": int(snapped),
+                "steps": int(args.steps),
+                "fps": int(args.fps),
+            },
+            input_files=[x for x in (args.first_frame, args.last_frame) if x],
+            out_dir=args.out,
+        )
         try:
             job = _http_json(f"{base_url}/minimax_api/generate", method="POST", payload=payload, password=password, base_url=base_url, timeout=60)
             if job.get("status") == "failed":
                 raise RuntimeError(job.get("message", "Generation rejected"))
             done = _poll_native_job(base_url, password, job["job_id"], Path(args.out))
+            _finish_external_task(output_files=done.get("downloaded_files") or [])
+        except Exception as task_err:
+            _finish_external_task(error=str(task_err))
+            raise
         finally:
             if not args.keep_alive:
                 sleep_report = _auto_sleep_runtime(base_url, password, sync_comfy=False)
@@ -1710,11 +2439,30 @@ def _execute_cli_command(args: argparse.Namespace) -> int:
         }
         sleep_report = {"triggered": False, "reason": "keep_alive"}
         done = {}
+        _begin_external_task(
+            command="generate-image",
+            model_id="minimax_h3_image",
+            model_name="MiniMax-H3-Image (33B · 4K)",
+            task_mode=("i2i_edit" if (ff or lf) else "t2i"),
+            prompt=args.prompt,
+            params_summary=f"{args.width}x{args.height} · {args.steps}步 · batch={args.batch}",
+            params={
+                "width": int(args.width),
+                "height": int(args.height),
+                "steps": int(args.steps),
+            },
+            input_files=[x for x in (args.first_frame, args.last_frame) if x],
+            out_dir=args.out,
+        )
         try:
             job = _http_json(f"{base_url}/minimax_api/generate", method="POST", payload=payload, password=password, base_url=base_url, timeout=60)
             if job.get("status") == "failed":
                 raise RuntimeError(job.get("message", "Generation rejected"))
             done = _poll_native_job(base_url, password, job["job_id"], Path(args.out))
+            _finish_external_task(output_files=done.get("downloaded_files") or [])
+        except Exception as task_err:
+            _finish_external_task(error=str(task_err))
+            raise
         finally:
             if not args.keep_alive:
                 sleep_report = _auto_sleep_runtime(base_url, password, sync_comfy=False)
@@ -1725,14 +2473,27 @@ def _execute_cli_command(args: argparse.Namespace) -> int:
         print(json.dumps(_http_json(f"{base_url}/minimax_api/comfyui/status", password=password, base_url=base_url), ensure_ascii=False, indent=2))
         return 0
     if args.cmd == "comfy-start":
-        res = _http_json(f"{base_url}/minimax_api/comfyui/start", method="POST", payload={"unload_existing": args.unload_existing, "force_restart": args.force_restart}, password=password, base_url=base_url)
-        if args.wait:
-            cf = _wait_for_comfy_flag(base_url, password, "is_starting")
-            if cf.get("public_url"):
-                sess = _load_session()
-                sess["comfy_url"] = str(cf["public_url"]).rstrip("/")
-                _save_session(sess)
-            res = {"comfyui": cf}
+        _begin_external_task(
+            command="comfy-start",
+            model_id="comfyui_studio",
+            model_name=_model_display_name("comfyui_studio"),
+            task_mode="comfyui",
+            prompt="启动云端 ComfyUI 节点工作台并挂载持久化目录",
+            params_summary="ComfyUI Canvas",
+        )
+        try:
+            res = _http_json(f"{base_url}/minimax_api/comfyui/start", method="POST", payload={"unload_existing": args.unload_existing, "force_restart": args.force_restart}, password=password, base_url=base_url)
+            if args.wait:
+                cf = _wait_for_comfy_flag(base_url, password, "is_starting")
+                if cf.get("public_url"):
+                    sess = _load_session()
+                    sess["comfy_url"] = str(cf["public_url"]).rstrip("/")
+                    _save_session(sess)
+                res = {"comfyui": cf}
+            _finish_external_task(output_files=[])
+        except Exception as task_err:
+            _finish_external_task(error=str(task_err))
+            raise
         print(json.dumps(res, ensure_ascii=False, indent=2))
         return 0
     if args.cmd == "comfy-stop":
@@ -1745,34 +2506,61 @@ def _execute_cli_command(args: argparse.Namespace) -> int:
         print(json.dumps(_http_json(f"{base_url}/minimax_api/comfyui/sync_drive", method="POST", payload={}, password=password, base_url=base_url, timeout=180), ensure_ascii=False, indent=2))
         return 0
     if args.cmd == "comfy-install-pack":
-        res = _http_json(
-            f"{base_url}/minimax_api/comfyui/install_pack",
-            method="POST",
-            payload={"pack_id": args.pack, "auto_start": not args.no_auto_start, "hf_token": args.hf_token},
-            password=password,
-            base_url=base_url,
+        pack_model_id, pack_model_name = _pack_to_model_id(args.pack)
+        _begin_external_task(
+            command="comfy-install-pack",
+            model_id=pack_model_id,
+            model_name=pack_model_name,
+            task_mode="",
+            prompt=f"一键配齐 ComfyUI 工作流包：{args.pack}",
+            params_summary=args.pack,
         )
-        if args.wait:
-            cf = _wait_for_comfy_flag(base_url, password, "installing_pack_id")
-            if cf.get("is_starting"):
-                cf = _wait_for_comfy_flag(base_url, password, "is_starting")
-            if cf.get("public_url"):
-                sess = _load_session()
-                sess["comfy_url"] = str(cf["public_url"]).rstrip("/")
-                _save_session(sess)
-            res = {"comfyui": cf}
+        try:
+            res = _http_json(
+                f"{base_url}/minimax_api/comfyui/install_pack",
+                method="POST",
+                payload={"pack_id": args.pack, "auto_start": not args.no_auto_start, "hf_token": args.hf_token},
+                password=password,
+                base_url=base_url,
+            )
+            if args.wait:
+                cf = _wait_for_comfy_flag(base_url, password, "installing_pack_id")
+                if cf.get("is_starting"):
+                    cf = _wait_for_comfy_flag(base_url, password, "is_starting")
+                if cf.get("public_url"):
+                    sess = _load_session()
+                    sess["comfy_url"] = str(cf["public_url"]).rstrip("/")
+                    _save_session(sess)
+                res = {"comfyui": cf}
+            _finish_external_task(output_files=[])
+        except Exception as task_err:
+            _finish_external_task(error=str(task_err))
+            raise
         print(json.dumps(res, ensure_ascii=False, indent=2))
         return 0
     if args.cmd == "comfy-download-weight":
-        res = _http_json(
-            f"{base_url}/minimax_api/comfyui/download_weight",
-            method="POST",
-            payload={"url_or_repo": args.src, "filename": args.filename, "subfolder": args.subfolder, "hf_token": args.hf_token},
-            password=password,
-            base_url=base_url,
+        _begin_external_task(
+            command="comfy-download-weight",
+            model_id="comfyui_studio",
+            model_name=_model_display_name("comfyui_studio"),
+            task_mode="comfyui",
+            prompt=f"下载权重至 ComfyUI/models/{args.subfolder}: {args.src}",
+            params_summary=f"{args.subfolder}",
         )
-        if args.wait:
-            res = {"comfyui": _wait_for_comfy_flag(base_url, password, "is_downloading_weight")}
+        try:
+            res = _http_json(
+                f"{base_url}/minimax_api/comfyui/download_weight",
+                method="POST",
+                payload={"url_or_repo": args.src, "filename": args.filename, "subfolder": args.subfolder, "hf_token": args.hf_token},
+                password=password,
+                base_url=base_url,
+            )
+            if args.wait:
+                res = {"comfyui": _wait_for_comfy_flag(base_url, password, "is_downloading_weight")}
+            _finish_external_task(output_files=[])
+        except Exception as task_err:
+            _finish_external_task(error=str(task_err))
+            raise
         print(json.dumps(res, ensure_ascii=False, indent=2))
         return 0
     if args.cmd == "comfy-download-output":
@@ -1797,6 +2585,24 @@ def _execute_cli_command(args: argparse.Namespace) -> int:
         sleep_report = {"triggered": False, "reason": "keep_alive"}
         files: List[str] = []
         cf_pw = password
+        _begin_external_task(
+            command="comfy-run-10eros",
+            model_id="minimax_h3_10eros_max",
+            model_name="10Eros-Max (H3 无限制)",
+            task_mode=("fl2va" if args.mode == "flf2v" else "multiref"),
+            prompt=args.prompt,
+            params_summary=f"{args.width}x{args.height} · {snap_frames_to_h3_grid(args.frames)[0]}帧 · {args.steps}步 · {args.sampler}",
+            params={
+                "width": int(args.width),
+                "height": int(args.height),
+                "frames": int(snap_frames_to_h3_grid(args.frames)[0]),
+                "steps": int(args.steps),
+                "fps": 24,
+            },
+            input_files=[x for x in [*args.ref_image, *args.ref_audio, args.first_frame, args.last_frame] if x],
+            out_dir=args.out,
+            prefix=args.prefix,
+        )
         try:
             comfy_url, cf_pw = _resolve_comfy_url(args)
             _emit_app_log(
@@ -1812,6 +2618,10 @@ def _execute_cli_command(args: argparse.Namespace) -> int:
                 args.shift_video, args.shift_audio, args.ref_image_size, args.seed, args.prefix, args.unet, args.clip,
             )
             files = _submit_and_wait_comfy(comfy_url, cf_pw, graph, Path(args.out))
+            _finish_external_task(output_files=files)
+        except Exception as task_err:
+            _finish_external_task(error=str(task_err))
+            raise
         finally:
             if not args.keep_alive:
                 sleep_report = _auto_sleep_runtime(base_url, password or cf_pw, sync_comfy=bool(base_url))
@@ -1838,6 +2648,26 @@ def _execute_cli_command(args: argparse.Namespace) -> int:
         sleep_report = {"triggered": False, "reason": "keep_alive"}
         files = []
         cf_pw = password
+        _begin_external_task(
+            command="comfy-run-sulphur3",
+            model_id="minimax_h3_sulphur3",
+            model_name="Sulphur-3 (H3 无限制)",
+            task_mode=("fl2va" if args.mode == "i2va" else "t2va"),
+            prompt=prompt_text,
+            params_summary=f"{args.width}x{args.height} · {snap_frames_to_h3_grid(args.frames)[0]}帧 · {args.steps}步 · 修正器={args.corrector_strength}",
+            params={
+                "width": int(args.width),
+                "height": int(args.height),
+                "frames": int(snap_frames_to_h3_grid(args.frames)[0]),
+                "steps": int(args.steps),
+                "fps": 24,
+                "corrector_enabled": bool(float(args.corrector_strength) > 0),
+                "corrector_strength": float(args.corrector_strength),
+            },
+            input_files=[x for x in (args.first_frame, args.last_frame) if x],
+            out_dir=args.out,
+            prefix=args.prefix,
+        )
         try:
             comfy_url, cf_pw = _resolve_comfy_url(args)
             _emit_app_log(
@@ -1853,6 +2683,10 @@ def _execute_cli_command(args: argparse.Namespace) -> int:
                 args.unet, args.clip, args.corrector,
             )
             files = _submit_and_wait_comfy(comfy_url, cf_pw, graph, Path(args.out))
+            _finish_external_task(output_files=files)
+        except Exception as task_err:
+            _finish_external_task(error=str(task_err))
+            raise
         finally:
             if not args.keep_alive:
                 sleep_report = _auto_sleep_runtime(base_url, password or cf_pw, sync_comfy=bool(base_url))
@@ -1879,6 +2713,26 @@ def _execute_cli_command(args: argparse.Namespace) -> int:
         sleep_report = {"triggered": False, "reason": "keep_alive"}
         files = []
         cf_pw = password
+        _begin_external_task(
+            command="comfy-run-tara",
+            model_id="minimax_h3_ref2va_tara",
+            model_name="Ref2VA · TARA 动作复刻",
+            task_mode="motion_transfer",
+            prompt=args.prompt,
+            params_summary=f"{args.width}x{args.height} · {snap_frames_to_h3_grid(args.frames)[0]}帧 · {args.steps}步 · TARA={'ON' if not args.disable_tara else 'OFF'}",
+            params={
+                "width": int(args.width),
+                "height": int(args.height),
+                "frames": int(snap_frames_to_h3_grid(args.frames)[0]),
+                "steps": int(args.steps),
+                "fps": 24,
+                "tara_enabled": bool(not args.disable_tara),
+                "tara_strength": float(args.tara_strength),
+            },
+            input_files=[x for x in [args.ref_video, *args.ref_image, *args.ref_audio] if x],
+            out_dir=args.out,
+            prefix=args.prefix,
+        )
         try:
             comfy_url, cf_pw = _resolve_comfy_url(args)
             _emit_app_log(
@@ -1895,6 +2749,10 @@ def _execute_cli_command(args: argparse.Namespace) -> int:
                 args.tara_max_penalty, args.seed, args.prefix, args.unet, args.clip,
             )
             files = _submit_and_wait_comfy(comfy_url, cf_pw, graph, Path(args.out))
+            _finish_external_task(output_files=files)
+        except Exception as task_err:
+            _finish_external_task(error=str(task_err))
+            raise
         finally:
             if not args.keep_alive:
                 sleep_report = _auto_sleep_runtime(base_url, password or cf_pw, sync_comfy=bool(base_url))
@@ -1918,6 +2776,25 @@ def _execute_cli_command(args: argparse.Namespace) -> int:
         sleep_report = {"triggered": False, "reason": "keep_alive"}
         files = []
         cf_pw = password
+        _begin_external_task(
+            command="comfy-upscale",
+            model_id="seedvr2_upscaler",
+            model_name="SeedVR2 7B · 视频超分",
+            task_mode="video_upscale",
+            prompt=f"SeedVR2 视频超分修复：{Path(args.video).name} -> 短边 {args.resolution}p ({args.model})",
+            params_summary=f"{args.resolution}p · batch={_snap_seedvr2_batch_size(args.batch_size)} · color={args.color_correction}",
+            params={
+                "seedvr2_model": args.model,
+                "seedvr2_resolution": int(args.resolution),
+                "seedvr2_batch_size": int(_snap_seedvr2_batch_size(args.batch_size)),
+                "seedvr2_temporal_overlap": int(args.temporal_overlap),
+                "seedvr2_color_correction": args.color_correction,
+                "seedvr2_keep_audio": bool(not args.no_audio),
+            },
+            input_files=[args.video],
+            out_dir=args.out,
+            prefix=args.prefix,
+        )
         try:
             comfy_url, cf_pw = _resolve_comfy_url(args)
             _emit_app_log(
@@ -1931,6 +2808,10 @@ def _execute_cli_command(args: argparse.Namespace) -> int:
                 decode_tile_size=args.decode_tile_size,
             )
             files = _submit_and_wait_comfy(comfy_url, cf_pw, graph, Path(args.out))
+            _finish_external_task(output_files=files)
+        except Exception as task_err:
+            _finish_external_task(error=str(task_err))
+            raise
         finally:
             if not args.keep_alive:
                 sleep_report = _auto_sleep_runtime(base_url, password or cf_pw, sync_comfy=bool(base_url))
@@ -1952,6 +2833,24 @@ def _execute_cli_command(args: argparse.Namespace) -> int:
         sleep_report = {"triggered": False, "reason": "keep_alive"}
         files = []
         cf_pw = password
+        _begin_external_task(
+            command="comfy-upscale-recavsr",
+            model_id="recavsr_upscaler",
+            model_name="ReCaVSR · 极速流式超分",
+            task_mode="video_upscale",
+            prompt=f"ReCaVSR 流式超分放大：{Path(args.video).name} -> {args.scale}x ({args.transformer})",
+            params_summary=f"{args.scale}x · {args.transformer} · {args.kernels}",
+            params={
+                "recavsr_transformer": args.transformer,
+                "recavsr_scale": float(args.scale),
+                "recavsr_color_fix": args.color_fix,
+                "recavsr_kernels": args.kernels,
+                "recavsr_encoder": args.encoder,
+            },
+            input_files=[args.video],
+            out_dir=args.out,
+            prefix=args.prefix,
+        )
         try:
             comfy_url, cf_pw = _resolve_comfy_url(args)
             _emit_app_log(
@@ -1963,6 +2862,10 @@ def _execute_cli_command(args: argparse.Namespace) -> int:
                 args.kernels, args.encoder, args.seed, args.prefix,
             )
             files = _submit_and_wait_comfy(comfy_url, cf_pw, graph, Path(args.out))
+            _finish_external_task(output_files=files)
+        except Exception as task_err:
+            _finish_external_task(error=str(task_err))
+            raise
         finally:
             if not args.keep_alive:
                 sleep_report = _auto_sleep_runtime(base_url, password or cf_pw, sync_comfy=bool(base_url))
