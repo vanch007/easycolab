@@ -296,6 +296,15 @@ class StudioViewModel: ObservableObject {
     @Published var refImageSizeMode: String = "match"
     @Published var refAudioFileName: String? = nil
     @Published var refAudioBase64: String? = nil
+    @Published var refVideoFileName: String? = nil
+    @Published var refVideoBase64: String? = nil
+    @Published var refVideoSizeMB: Double = 0.0
+    @Published var taraEnabled: Bool = true
+    @Published var taraLoraStrength: Double = 1.0
+    @Published var taraStrength: Double = 2.0
+    @Published var taraWindowSeconds: Double = 0.20
+    @Published var taraFalloffSeconds: Double = 0.25
+    @Published var taraMaxPenalty: Double = 6.0
     @Published var h3CorrectorEnabled: Bool = true
     @Published var h3CorrectorStrength: Double = 1.0
     @Published var h3CorrectorStartStep: Int = 0
@@ -847,6 +856,37 @@ class StudioViewModel: ObservableObject {
         refAudioBase64 = nil
     }
 
+    func setReferenceVideo(from url: URL) {
+        do {
+            let attrs = try FileManager.default.attributesOfItem(atPath: url.path)
+            let bytes = (attrs[.size] as? NSNumber)?.int64Value ?? 0
+            let mb = Double(bytes) / (1024.0 * 1024.0)
+            guard bytes > 0 else { return }
+            if mb > 120.0 {
+                statusMessage = L(
+                    "参考视频体积过大 (\(fmt(mb, 1)) MB > 120 MB)，请先剪辑成 5~15 秒片段后再上传。",
+                    "Reference video is too large (\(fmt(mb, 1)) MB > 120 MB). Please trim to 5–15s first."
+                )
+                return
+            }
+            let data = try Data(contentsOf: url)
+            refVideoBase64 = data.base64EncodedString()
+            refVideoFileName = url.lastPathComponent
+            refVideoSizeMB = mb
+        } catch {
+            statusMessage = L(
+                "读取参考视频失败: \(error.localizedDescription)",
+                "Failed to read reference video: \(error.localizedDescription)"
+            )
+        }
+    }
+
+    func clearReferenceVideo() {
+        refVideoFileName = nil
+        refVideoBase64 = nil
+        refVideoSizeMB = 0.0
+    }
+
     func switchSelectedModel(_ spec: OpenModelSpec) {
         guard selectedModelId != spec.id else { return }
         selectedModelId = spec.id
@@ -868,13 +908,17 @@ class StudioViewModel: ObservableObject {
             }
         }
 
-        if spec.id == "minimax_h3_10eros_max" || spec.id == "minimax_h3_sulphur3",
+        if ["minimax_h3_10eros_max", "minimax_h3_sulphur3", "minimax_h3_ref2va_tara"].contains(spec.id),
            let h3Res = VIDEO_RESOLUTIONS.first(where: { $0.id == "v_1056_608" }) {
             selectedVideoResolution = h3Res
         }
 
         // 自动填入匹配该模态的首条示例提示词（若当前框还是另一模态的默认模板）
         let preferredSample: PresetTemplate? = {
+            if spec.id == "minimax_h3_ref2va_tara",
+               let taraSample = PRESET_TEMPLATES.first(where: { $0.id == "tpl_ref2va_tara_motion" }) {
+                return taraSample
+            }
             if spec.id == "minimax_h3_10eros_max",
                let multiSample = PRESET_TEMPLATES.first(where: { $0.id == "tpl_10eros_multiref" }) {
                 return multiSample
@@ -1350,6 +1394,13 @@ class StudioViewModel: ObservableObject {
             return
         }
 
+        if taskModeId == "motion_transfer" && (refVideoBase64 == nil || referenceImages.isEmpty) {
+            statusMessage = L(
+                "在「视频动作复刻 (TARA)」模式下，请同时上传 1 段参考动作视频 (<Video 1>) 和至少 1 张目标主体图 (<Picture 1>)。",
+                "In Motion Transfer (TARA) mode, please provide both a guide video (<Video 1>) and at least 1 target image (<Picture 1>)."
+            )
+            return
+        }
         if taskModeId == "multiref" && referenceImages.isEmpty && refAudioBase64 == nil {
             statusMessage = L(
                 "在「多图 + 声纹参考」模式下，请至少添加 1 张参考图 (<Picture 1>) 或上传参考音频 (<Audio 1>)。",
@@ -1480,7 +1531,7 @@ class StudioViewModel: ObservableObject {
                     payload["last_frame_base64"] = b64
                 }
             }
-            if taskModeId == "multiref" {
+            if ["multiref", "motion_transfer"].contains(taskModeId) {
                 let encodedRefs = referenceImages.prefix(9).compactMap { encodeImageToBase64($0) }
                 if !encodedRefs.isEmpty {
                     payload["ref_images_base64"] = encodedRefs
@@ -1490,6 +1541,18 @@ class StudioViewModel: ObservableObject {
                     payload["ref_audio_base64"] = audioB64
                     payload["ref_audio_filename"] = refAudioFileName ?? "voice_seed.wav"
                 }
+            }
+            if selectedModelId == "minimax_h3_ref2va_tara" {
+                if let videoB64 = refVideoBase64, !videoB64.isEmpty {
+                    payload["ref_video_base64"] = videoB64
+                    payload["ref_video_filename"] = refVideoFileName ?? "guide_video.mp4"
+                }
+                payload["tara_enabled"] = taraEnabled
+                payload["tara_lora_strength"] = taraLoraStrength
+                payload["tara_strength"] = taraStrength
+                payload["tara_window_seconds"] = taraWindowSeconds
+                payload["tara_falloff_seconds"] = taraFalloffSeconds
+                payload["tara_max_penalty"] = taraMaxPenalty
             }
             if selectedModelId == "minimax_h3_sulphur3" {
                 payload["corrector_enabled"] = h3CorrectorEnabled

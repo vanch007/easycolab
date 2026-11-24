@@ -484,15 +484,98 @@ class ComfyH3OptimizationsTest(unittest.TestCase):
 
     def test_macos_native_ui_exposes_multiref_voice_corrector_and_autosleep(self):
         required_tokens = {
-            os.path.join(REPO_ROOT, "macos_app", "Sources", "ModelsAndCatalogs.swift"): ["multiref", "minimax_h3_10eros_max", "minimax_h3_sulphur3"],
-            os.path.join(REPO_ROOT, "macos_app", "Sources", "StudioViewModel.swift"): ["ref_images_base64", "ref_audio_base64", "corrector_strength", "autoSleepAfterGenerate", "disconnectRemoteColab"],
-            os.path.join(REPO_ROOT, "macos_app", "Sources", "MainStudioView+Workspace.swift"): ["multiref", "h3CorrectorSection", "autoSleepAfterGenerate"],
+            os.path.join(REPO_ROOT, "macos_app", "Sources", "ModelsAndCatalogs.swift"): ["multiref", "motion_transfer", "minimax_h3_10eros_max", "minimax_h3_sulphur3", "minimax_h3_ref2va_tara"],
+            os.path.join(REPO_ROOT, "macos_app", "Sources", "StudioViewModel.swift"): ["ref_images_base64", "ref_audio_base64", "ref_video_base64", "corrector_strength", "tara_strength", "autoSleepAfterGenerate", "disconnectRemoteColab"],
+            os.path.join(REPO_ROOT, "macos_app", "Sources", "MainStudioView+Workspace.swift"): ["multiref", "motion_transfer", "h3CorrectorSection", "h3TaraControlSection", "autoSleepAfterGenerate"],
         }
         for path, tokens in required_tokens.items():
             with open(path, "r", encoding="utf-8") as f:
                 content = f.read()
             for tok in tokens:
                 self.assertIn(tok, content, f"missing {tok} in {path}")
+
+    def test_ref2va_tara_motion_transfer_catalog_pack_graph_and_cli(self):
+        catalog = self.ns["MODEL_CATALOG"]
+        self.assertIn("minimax_h3_ref2va_tara", catalog)
+        self.assertEqual(catalog["minimax_h3_ref2va_tara"]["pipeline_arch"], "comfy_h3_ref2va_tara")
+        self.assertEqual(catalog["minimax_h3_ref2va_tara"]["comfy_pack_id"], "minimax_h3_ref2va_tara")
+
+        packs = {p["id"]: p for p in self.ns["COMFY_PRESET_WORKFLOW_PACKS"]}
+        self.assertIn("minimax_h3_ref2va_tara", packs)
+        pack = packs["minimax_h3_ref2va_tara"]
+        model_files = {fn for _, fn, _, _, _ in pack["models"]}
+        self.assertIn("minimax_h3_ref2va_pruned_int8_convrot.safetensors", model_files)
+        self.assertIn("minimax_h3_motion_transfer_tara_v1.0_ref2va.safetensors", model_files)
+        self.assertIn("minimax_h3_ref2v_turbo_4step_v0.1_comfyui_bf16.safetensors", model_files)
+        cn_names = {c["name"] for c in pack.get("custom_nodes", [])}
+        self.assertIn("ComfyUI-BFSNodes", cn_names)
+
+        builder = self.ns["_build_comfy_h3_api_prompt_for_request"]
+        req_tara = SimpleNamespace(
+            task_mode="motion_transfer",
+            visual_prompt="<Subject 1>: person in <Picture 1>. Replace character in <Video 1>.",
+            soundscape_prompt="",
+            music_prompt="",
+            negative_prompt="",
+            width=1056,
+            height=608,
+            num_frames=124,
+            num_inference_steps=8,
+            fps=24,
+            ref_image_size="match",
+            tara_enabled=True,
+            tara_lora_strength=0.9,
+            tara_strength=2.2,
+            tara_window_seconds=0.2,
+            tara_falloff_seconds=0.25,
+            tara_max_penalty=6.0,
+        )
+        g_on = builder(
+            "comfy_h3_ref2va_tara",
+            req_tara,
+            seed=42,
+            ref_image_filenames=["subject.png"],
+            ref_video_filename="guide.mp4",
+            save_prefix="video/tara_test",
+        )
+        self.assertEqual(g_on["1"]["inputs"]["unet_name"], "minimax_h3_ref2va_pruned_int8_convrot.safetensors")
+        self.assertEqual(g_on["30"]["inputs"]["lora_name"], "minimax_h3_ref2v_turbo_4step_v0.1_comfyui_bf16.safetensors")
+        self.assertEqual(g_on["31"]["inputs"]["lora_name"], "minimax_h3_motion_transfer_tara_v1.0_ref2va.safetensors")
+        self.assertEqual(g_on["31"]["inputs"]["strength_model"], 0.9)
+        self.assertEqual(g_on["32"]["class_type"], "BFSMiniMaxH3NativeTemporal")
+        self.assertEqual(g_on["32"]["inputs"]["strength"], 2.2)
+        self.assertEqual(g_on["29"]["class_type"], "VHS_LoadVideo")
+        self.assertEqual(g_on["8"]["class_type"], "MiniMaxH3ReferenceToVideo")
+        self.assertEqual(g_on["8"]["inputs"]["ref_videos.ref_video_0"], ["29", 0])
+        self.assertEqual(g_on["9"]["inputs"]["model"], ["32", 0])
+        self.assertEqual(g_on["12"]["inputs"]["model"], ["32", 0])
+
+        req_tara.tara_enabled = False
+        g_off = builder(
+            "comfy_h3_ref2va_tara",
+            req_tara,
+            seed=42,
+            ref_image_filenames=["subject.png"],
+            ref_video_filename="guide.mp4",
+        )
+        self.assertNotIn("32", g_off)
+        self.assertEqual(g_off["9"]["inputs"]["model"], ["2", 0])
+        self.assertEqual(g_off["12"]["inputs"]["model"], ["2", 0])
+
+        # Verify Skill CLI comfy-run-tara --dry-run executes cleanly
+        with tempfile.TemporaryDirectory() as tmp:
+            vid = os.path.join(tmp, "guide.mp4")
+            img = os.path.join(tmp, "char.png")
+            open(vid, "wb").write(b"fake_mp4")
+            open(img, "wb").write(b"fake_png")
+            cli_path = os.path.join(REPO_ROOT, "skills", "colab-minimax-h3", "scripts", "colab_h3_cli.py")
+            proc = subprocess.run(
+                [sys.executable, cli_path, "comfy-run-tara", "--ref-video", vid, "--ref-image", img, "--prompt", "<Video 1> <Picture 1>", "--dry-run"],
+                capture_output=True, text=True, check=True,
+            )
+            parsed = json.loads(proc.stdout)
+            self.assertEqual(parsed["prompt"]["32"]["class_type"], "BFSMiniMaxH3NativeTemporal")
+            self.assertIn("ref_videos.ref_video_0", parsed["prompt"]["8"]["inputs"])
 
 
 if __name__ == "__main__":

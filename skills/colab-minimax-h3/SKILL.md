@@ -9,12 +9,13 @@ description: Use when generating audio-video or 4K images with MiniMax-H3 on Goo
 
 End-to-end orchestration and production playbook for running **MiniMax-H3** (33B native joint audio-video and 4K image models) on **Google Colab** (especially 96GB G4 RTX PRO 6000 Blackwell) via **EasyColab** (`colab_bridge.py` + `app.py` `/minimax_api/*` + headless ComfyUI API).
 
-All remote operations are encapsulated in `./scripts/colab_h3_cli.py`. Run `--help` on any subcommand for full flags.
+Use `./scripts/colab_h3_cli.py` for the listed runtime, model, and generation commands. For custom Turbo reference-motion graphs, use the connected ComfyUI instance. Run `--help` on any CLI subcommand for full flags.
 
 ## Model & Engine Selection Matrix
 
 | Engine / Pack ID | Where It Runs | Uncensored | Modalities & Key Strengths | Speed / Steps | Recommended GPU |
 |---|---|---|---|---|---|
+| `minimax_h3_ref2va_tara` (`Ref2VA + TARA`) | ComfyUI (`11`) / Native App | Standard (Uncensored prompt) | **Motion Transfer**: guide video (`<Video 1>`) + 1–9 refs + `ComfyUI-BFSNodes` (`BFSMiniMaxH3NativeTemporal`) + `minimax_h3_motion_transfer_tara_v1.0_ref2va.safetensors` | **4–8 steps** (`Euler / simple`) | G4 96GB / A100 80GB |
 | `minimax_h3_10eros_max` (`TenStrip/10Eros-Max`) | ComfyUI (`07` / `08`) | Yes (`Heretic NVFP4` + `10Eros-Max v1.0`) | Up to **9 ref images** (`<Picture 1..9>`), up to **3 ref audios** (`<Audio 1..3>`), first/last frame (`FLF2V`) | **8 steps** (`LCM / simple`) | G4 96GB / A100 80GB (48GB+ VRAM) |
 | `minimax_h3_sulphur3` (`SulphurAI/Sulphur-3`) | ComfyUI (`09` / `10`) | Yes (`Heretic NVFP4` + `s3.safetensors`) | Full S3 backbone + **`s3_corrector.safetensors`** (fp32 2B velocity residual corrector) + auto-installed `ComfyUI-H3-Corrector` | **20 steps** (`Euler / simple`, `CFG=1`) | G4 96GB / A100 80GB |
 | `minimax_h3_i2v_flf2v` (Official Turbo) | ComfyUI (`03` / `04`) | Standard | Official pruned int8 + 8-step Turbo LoRA, single-image & FLF2V with stereo audio | **4–8 steps** (`res_multistep / simple`) | G4 / A100 / L4 (with offload) |
@@ -28,27 +29,31 @@ All remote operations are encapsulated in `./scripts/colab_h3_cli.py`. Run `--he
      - `./scripts/colab_h3_cli.py snap-frames --seconds 5` (snaps to `17k+5`: `56`, `73`, `124`, `192`, `243`, `362`)
      - `./scripts/colab_h3_cli.py extract-voice-seed --input raw_clip.mp4 --output voice_seed.wav --start 0 --duration 5`
 2. **Stage 1 — Wake or Connect to Colab**:
+   - For an existing EasyColab G4 session, attach and check ComfyUI readiness before requesting another GPU. See [reusing G4 and running reference-motion shots](./references/models-and-workflows.md#reusing-g4-for-turbo-reference-motion-shots).
    - Check OAuth & CU balance: `./scripts/colab_h3_cli.py auth-status`
    - Boot GPU VM & deploy EasyColab (sets a 10-minute cloud idle auto-sleep watchdog by default): `./scripts/colab_h3_cli.py wake --gpu G4`
    - Or attach to an existing server: `./scripts/colab_h3_cli.py connect --url https://xxxx.gradio.live --password <pwd>`
 3. **Stage 2 — Install Pack or Load Native Model**:
-   - ComfyUI uncensored packs:
+   - ComfyUI packs:
+     - `./scripts/colab_h3_cli.py comfy-install-pack --pack minimax_h3_ref2va_tara --wait` (Motion Transfer with TARA)
      - `./scripts/colab_h3_cli.py comfy-install-pack --pack minimax_h3_10eros_max --wait`
      - `./scripts/colab_h3_cli.py comfy-install-pack --pack minimax_h3_sulphur3 --wait`
    - Native DiffSynth models:
      - `./scripts/colab_h3_cli.py download-model --model minimax_h3 --wait`
      - `./scripts/colab_h3_cli.py load-model --model minimax_h3 --wait`
 4. **Stage 3 — Execute Generation & Auto-Sleep (Default)**:
-   - Every generation command (`comfy-run-10eros`, `comfy-run-sulphur3`, `generate-video`, `generate-image`) **automatically pulls outputs, syncs ComfyUI to Drive (if ComfyUI), disconnects, and runs `stop-all` in `finally` — even if an error occurs**.
+   - The generation commands (`comfy-run-tara`, `comfy-run-10eros`, `comfy-run-sulphur3`, `generate-video`, `generate-image`) download successful outputs. With default cleanup enabled, they sync ComfyUI to Drive (if applicable), disconnect, and run `stop-all` in `finally`, including on errors.
+   - Motion Transfer (`Ref2VA + TARA`):
+     `./scripts/colab_h3_cli.py comfy-run-tara --ref-video dance.mp4 --ref-image target_char.png --prompt "<Subject 1>: person in <Picture 1>. Replace character in <Video 1> with <Subject 1>..." --out ./outputs`
    - Multi-image + voice reference (`10Eros-Max`):
      `./scripts/colab_h3_cli.py comfy-run-10eros --mode multiref --prompt "The woman from <Picture 1> (<Audio 1>) in <Picture 2> speaks Mandarin Chinese: ..." --ref-image char.png --ref-image scene.png --ref-audio voice_seed.wav --out ./outputs`
    - Sulphur-3 + H3 Corrector:
      `./scripts/colab_h3_cli.py comfy-run-sulphur3 --mode t2va --prompt-file shot.json --corrector-strength 1.0 --out ./outputs`
    - Native BF16 / 4K Image:
      `./scripts/colab_h3_cli.py generate-video ...` or `./scripts/colab_h3_cli.py generate-image ...`
-   - **Multi-shot batch runs**: pass `--keep-alive` on intermediate shots, and omit `--keep-alive` on the final shot so the last run automatically sleeps and releases the VM.
+   - **Multi-shot batch runs**: use `--keep-alive` on intermediate shots. Omit it on the final shot only when account-wide release is authorized. Keep it on every shot when attaching to a user-owned or shared session without that authorization.
 5. **Stage 4 — Manual Fallback Shutdown (If `--keep-alive` or Setup-Only Run)**:
-   - If you exited early before running a generation command or passed `--keep-alive`, run `./scripts/colab_h3_cli.py stop-all` and verify `active_assignments == 0` & `burn_rate_hourly == 0.0`.
+   - After downloading outputs and confirming the queue is clear, use the authorized shutdown scope. `disconnect` can unassign the connected runtime. `stop-all` terminates all active VMs on the account and requires authorization for that scope. After an authorized account-wide stop, verify `active_assignments == 0` and `burn_rate_hourly == 0.0`.
 
 ## CLI Quick Reference (`./scripts/colab_h3_cli.py`)
 
@@ -57,7 +62,7 @@ All remote operations are encapsulated in `./scripts/colab_h3_cli.py`. Run `--he
 | Auth & VM | `auth-status`, `auth-url`, `auth-code`, `wake`, `connect`, `config-idle`, `keepalive`, `disconnect`, `stop-all` | `wake` sets `--idle-minutes 10` watchdog; saves active URL + Basic Auth password (`0600`) |
 | Native H3 | `status`, `download-model`, `load-model`, `unload-model`, `generate-video`, `generate-image` | Talks to `/minimax_api/*`; generation commands **auto-sleep on finish/error** unless `--keep-alive` is passed |
 | ComfyUI | `comfy-status`, `comfy-start`, `comfy-stop`, `comfy-free-vram`, `comfy-sync-drive`, `comfy-install-pack`, `comfy-download-weight`, `comfy-download-output` | Uses EasyColab NVMe hybrid symlinks, `custom_nodes_bundle.tar.gz`, and G4 `--highvram --disable-mmap --fast` |
-| Direct H3 Pipelines | `comfy-run-10eros`, `comfy-run-sulphur3` | Uploads inputs, runs API graph, downloads MP4, **auto-syncs & auto-sleeps on finish/error** unless `--keep-alive` is passed; supports `--dry-run` |
+| Direct H3 Pipelines | `comfy-run-tara`, `comfy-run-10eros`, `comfy-run-sulphur3` | Uploads inputs, runs API graph, downloads MP4, **auto-syncs & auto-sleeps on finish/error** unless `--keep-alive` is passed; supports `--dry-run` |
 | 0-CCU Local | `snap-frames`, `extract-voice-seed` | Offline `17k+5` calculator & `ffmpeg` 32kHz stereo voice seed extractor |
 
 ## Critical Production Rules & Gotchas
@@ -79,7 +84,7 @@ All remote operations are encapsulated in `./scripts/colab_h3_cli.py`. Run `--he
    - Lock screen positions explicitly (`<Picture 1> on screen-left facing right`), use **1 camera move per 5s clip**, and end with a silent closed-mouth hold + `No subtitles`.
 6. **Security & Auto-Sleep Cost Hygiene**:
    - Never share `*.gradio.live`, `*.trycloudflare.com`, or admin passwords in screenshots or logs.
-   - Auto-sleep is **ON by default** for every generation command (`finally` block runs `comfyui/sync_drive` + `disconnect` + `stop-all` after pulling outputs). Only pass `--keep-alive` during consecutive multi-shot runs, and always omit it on the last shot (or run `stop-all`).
+   - The generation CLI's default `finally` cleanup calls `disconnect` and `stop-all`, including on errors. Direct ComfyUI graph submission does not invoke that CLI wrapper. Check scope and ownership before using the default cleanup.
 
 ## Deep References
 

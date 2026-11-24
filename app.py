@@ -1448,6 +1448,42 @@ MODEL_CATALOG: Dict[str, Dict[str, Any]] = {
             ),
         ],
     },
+    "minimax_h3_ref2va_tara": {
+        "id": "minimax_h3_ref2va_tara",
+        "name": "Ref2VA · TARA 动作复刻",
+        "repo_id": "Alissonerdx/Minimax-H3-ComfyUI",
+        "modality": "video_audio",
+        "pipeline_arch": "comfy_h3_ref2va_tara",
+        "comfy_pack_id": "minimax_h3_ref2va_tara",
+        "category": "视频动作复刻 · Ref2VA + ComfyUI-BFSNodes (TARA 逐帧时序对齐) + Motion Transfer LoRA · 8 步极速",
+        "approx_size_gb": 40.9,
+        "files": [
+            (
+                "diffusion_models/minimax_h3_ref2va_pruned_int8_convrot.safetensors",
+                "MiniMax-H3 Ref2VA 剪枝 int8 主干 (21.0 GB)",
+            ),
+            (
+                "text_encoders/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
+                "Qwen3-VL 32B NVFP4 编码器 (14.6 GB)",
+            ),
+            (
+                "vae/minimax_h3_video_vae_int8_convrot.safetensors",
+                "MiniMax-H3 视频 VAE int8 (2.6 GB)",
+            ),
+            (
+                "vae/minimax_h3_audio_vae_fp32.safetensors",
+                "MiniMax-H3 32kHz 立体声音频 VAE fp32 (0.56 GB)",
+            ),
+            (
+                "loras/minimax_h3_ref2v_turbo_4step_v0.1_comfyui_bf16.safetensors",
+                "Ref2VA 极速 Turbo 加速器 LoRA (1.96 GB)",
+            ),
+            (
+                "loras/minimax_h3_motion_transfer_tara_v1.0_ref2va.safetensors",
+                "TARA 动作复刻专用 Motion Transfer LoRA v1.0 (0.13 GB)",
+            ),
+        ],
+    },
     "minimax_h3_image": {
         "id": "minimax_h3_image",
         "name": "MiniMax-H3-Image (33B · 4K)",
@@ -5097,7 +5133,7 @@ def load_model_to_vram_core(
             elif pipeline_arch in ("qwen38_27b_gguf", "gguf"):
                 q4_kv_gb = (ctx_len / 262144.0) * 4.6
                 required_free_gb = min(max(12.0, approx_gb + 2.0 + q4_kv_gb), max(12.0, total_vram_gb - 1.2))
-            elif pipeline_arch in ("minimax_h3", "minimax_h3_image", "comfy_h3_10eros_max", "comfy_h3_sulphur3"):
+            elif pipeline_arch in ("minimax_h3", "minimax_h3_image", "comfy_h3_10eros_max", "comfy_h3_sulphur3", "comfy_h3_ref2va_tara"):
                 # BF16 单阶段峰值约 62.5GB；在 G4 (96GB) 上可与 Qwen3.8-GGUF (~21GB) 同时共驻显存
                 required_free_gb = min(65.0, max(24.0, total_vram_gb - 5.0))
             elif pipeline_arch == "transformers":
@@ -5506,7 +5542,7 @@ def load_model_to_vram_core(
                 )
                 mode_label = new_llm["mode_label"]
 
-            elif pipeline_arch in ("comfy_h3_10eros_max", "comfy_h3_sulphur3"):
+            elif pipeline_arch in ("comfy_h3_10eros_max", "comfy_h3_sulphur3", "comfy_h3_ref2va_tara"):
                 MODEL_DOWNLOAD_STATE["progress"] = 0.25
                 MODEL_DOWNLOAD_STATE["message"] = f"正在启动并预热 {spec['name']} 无限制 ComfyUI 推理引擎 (--highvram)..."
                 stop_sync = threading.Event()
@@ -6181,6 +6217,32 @@ COMFY_PRESET_WORKFLOW_PACKS: List[Dict[str, Any]] = [
                 "name": "ComfyUI-H3-Corrector",
                 "url": "https://huggingface.co/SulphurAI/Sulphur-3/resolve/main/S3_ComfyUI.zip",
                 "subdir": "ComfyUI-H3-Corrector",
+            }
+        ],
+    },
+    {
+        "id": "minimax_h3_ref2va_tara",
+        "title": "Ref2VA · TARA 视频动作复刻 (BFSNodes + Motion LoRA)",
+        "badge": "动作复刻 · TARA 时序对齐",
+        "scenario": "基于 MiniMax-H3 Ref2VA 主干 + ComfyUI-BFSNodes (TARA 逐帧时序对齐) + Motion Transfer LoRA，传入参考动作视频 (<Video 1>) 与目标角色图 (<Picture 1>) 实现换人不丢动作",
+        "approx_size_gb": 40.9,
+        "workflows": [
+            "11_MiniMax-H3_Ref2VA_TARA动作复刻(视频驱动换人).json",
+        ],
+        "models": [
+            ("diffusion_models", "minimax_h3_ref2va_pruned_int8_convrot.safetensors", "Comfy-Org/MiniMax-H3", "diffusion_models/minimax_h3_ref2va_pruned_int8_convrot.safetensors", 20.97),
+            ("text_encoders", "qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors", "Comfy-Org/MiniMax-H3", "text_encoders/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors", 14.61),
+            ("vae", "minimax_h3_video_vae_int8_convrot.safetensors", "Comfy-Org/MiniMax-H3", "vae/minimax_h3_video_vae_int8_convrot.safetensors", 2.62),
+            ("vae", "minimax_h3_audio_vae_fp32.safetensors", "Comfy-Org/MiniMax-H3", "vae/minimax_h3_audio_vae_fp32.safetensors", 0.56),
+            ("loras", "minimax_h3_ref2v_turbo_4step_v0.1_comfyui_bf16.safetensors", "Comfy-Org/MiniMax-H3", "loras/minimax_h3_ref2v_turbo_4step_v0.1_comfyui_bf16.safetensors", 1.96),
+            ("loras", "minimax_h3_motion_transfer_tara_v1.0_ref2va.safetensors", "Alissonerdx/Minimax-H3-ComfyUI", "loras/minimax_h3_motion_transfer_tara_v1.0_ref2va.safetensors", 0.13),
+        ],
+        "custom_nodes": [
+            {
+                "type": "git",
+                "name": "ComfyUI-BFSNodes",
+                "url": "https://github.com/alisson-anjos/ComfyUI-BFSNodes.git",
+                "subdir": "ComfyUI-BFSNodes",
             }
         ],
     },
@@ -7403,6 +7465,411 @@ def _build_sulphur3_workflow(is_i2v: bool = False) -> Dict[str, Any]:
     return wf
 
 
+def _build_ref2va_tara_workflow() -> Dict[str, Any]:
+    """构建 MiniMax-H3 Ref2VA + TARA (BFSMiniMaxH3NativeTemporal) + Motion Transfer LoRA 视频动作复刻工作流"""
+    prompt_text = (
+        "<Subject 1>: the character in <Picture 1>. The target video is an edited version of <Video 1>. "
+        "Replace the character in <Video 1> with <Subject 1>. Reproduce <Video 1>'s exact body movements, "
+        "gestures, and timing precisely, keeping <Subject 1>'s identity consistent.\n"
+        "Audio: clear synchronized ambient motion sounds matching the video rhythm."
+    )
+    nodes: List[Dict[str, Any]] = [
+        {
+            "id": 1,
+            "type": "UNETLoader",
+            "pos": [0, 0],
+            "size": [420, 82],
+            "flags": {},
+            "order": 0,
+            "mode": 0,
+            "inputs": [
+                {"name": "unet_name", "type": "COMBO", "widget": {"name": "unet_name"}, "link": None},
+                {"name": "weight_dtype", "type": "COMBO", "widget": {"name": "weight_dtype"}, "link": None},
+            ],
+            "outputs": [{"name": "MODEL", "type": "MODEL", "links": [1]}],
+            "title": "加载 Ref2VA 剪枝 int8 主干",
+            "properties": {"Node name for S&R": "UNETLoader"},
+            "widgets_values": ["minimax_h3_ref2va_pruned_int8_convrot.safetensors", "default"],
+            "widgets_values_named": {
+                "unet_name": "minimax_h3_ref2va_pruned_int8_convrot.safetensors",
+                "weight_dtype": "default",
+            },
+        },
+        {
+            "id": 20,
+            "type": "LoraLoaderModelOnly",
+            "pos": [460, -80],
+            "size": [380, 82],
+            "flags": {},
+            "order": 1,
+            "mode": 0,
+            "inputs": [
+                {"name": "model", "type": "MODEL", "link": 1},
+                {"name": "lora_name", "type": "COMBO", "widget": {"name": "lora_name"}, "link": None},
+                {"name": "strength_model", "type": "FLOAT", "widget": {"name": "strength_model"}, "link": None},
+            ],
+            "outputs": [{"name": "MODEL", "type": "MODEL", "links": [2]}],
+            "title": "Ref2VA Turbo 加速 LoRA",
+            "properties": {"Node name for S&R": "LoraLoaderModelOnly"},
+            "widgets_values": ["minimax_h3_ref2v_turbo_4step_v0.1_comfyui_bf16.safetensors", 1.0],
+        },
+        {
+            "id": 21,
+            "type": "LoraLoaderModelOnly",
+            "pos": [460, 40],
+            "size": [380, 82],
+            "flags": {},
+            "order": 2,
+            "mode": 0,
+            "inputs": [
+                {"name": "model", "type": "MODEL", "link": 2},
+                {"name": "lora_name", "type": "COMBO", "widget": {"name": "lora_name"}, "link": None},
+                {"name": "strength_model", "type": "FLOAT", "widget": {"name": "strength_model"}, "link": None},
+            ],
+            "outputs": [{"name": "MODEL", "type": "MODEL", "links": [3]}],
+            "title": "Motion Transfer TARA LoRA v1.0",
+            "properties": {"Node name for S&R": "LoraLoaderModelOnly"},
+            "widgets_values": ["minimax_h3_motion_transfer_tara_v1.0_ref2va.safetensors", 1.0],
+        },
+        {
+            "id": 2,
+            "type": "MiniMaxH3SigmaShift",
+            "pos": [460, 170],
+            "size": [320, 82],
+            "flags": {},
+            "order": 3,
+            "mode": 0,
+            "inputs": [
+                {"name": "model", "type": "MODEL", "link": 3},
+                {"name": "shift_video", "type": "FLOAT", "widget": {"name": "shift_video"}, "link": None},
+                {"name": "shift_audio", "type": "FLOAT", "widget": {"name": "shift_audio"}, "link": None},
+            ],
+            "outputs": [{"name": "MODEL", "type": "MODEL", "links": [4]}],
+            "title": "Sigma Shift (12 视频 / 3 音频)",
+            "properties": {"Node name for S&R": "MiniMaxH3SigmaShift"},
+            "widgets_values": [12, 3],
+        },
+        {
+            "id": 22,
+            "type": "BFSMiniMaxH3NativeTemporal",
+            "pos": [460, 290],
+            "size": [380, 210],
+            "flags": {},
+            "order": 4,
+            "mode": 0,
+            "inputs": [
+                {"name": "model", "type": "MODEL", "link": 4},
+            ],
+            "outputs": [{"name": "MODEL", "type": "MODEL", "links": [5, 6]}],
+            "title": "TARA 逐帧时序对齐 (BFSNodes)",
+            "properties": {"Node name for S&R": "BFSMiniMaxH3NativeTemporal"},
+            "widgets_values": [1, 2.0, 0.2, 0.25, 6.0, "flash partitions (no compile)", 1.0, 0.0],
+        },
+        {
+            "id": 3,
+            "type": "CLIPLoader",
+            "pos": [0, 130],
+            "size": [420, 106],
+            "flags": {},
+            "order": 5,
+            "mode": 0,
+            "inputs": [],
+            "outputs": [{"name": "CLIP", "type": "CLIP", "links": [7]}],
+            "title": "Qwen3-VL 32B NVFP4 编码器",
+            "properties": {"Node name for S&R": "CLIPLoader"},
+            "widgets_values": ["qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors", "minimax", "default"],
+        },
+        {
+            "id": 4,
+            "type": "VAELoader",
+            "pos": [0, 280],
+            "size": [420, 58],
+            "flags": {},
+            "order": 6,
+            "mode": 0,
+            "inputs": [],
+            "outputs": [{"name": "VAE", "type": "VAE", "links": [8, 17]}],
+            "title": "MiniMax-H3 视频 VAE",
+            "properties": {"Node name for S&R": "VAELoader"},
+            "widgets_values": ["minimax_h3_video_vae_int8_convrot.safetensors"],
+        },
+        {
+            "id": 5,
+            "type": "VAELoader",
+            "pos": [0, 380],
+            "size": [420, 58],
+            "flags": {},
+            "order": 7,
+            "mode": 0,
+            "inputs": [],
+            "outputs": [{"name": "VAE", "type": "VAE", "links": [9, 19]}],
+            "title": "MiniMax-H3 音频 VAE (32kHz)",
+            "properties": {"Node name for S&R": "VAELoader"},
+            "widgets_values": ["minimax_h3_audio_vae_fp32.safetensors"],
+        },
+        {
+            "id": 6,
+            "type": "LoadImage",
+            "pos": [0, 480],
+            "size": [320, 314],
+            "flags": {},
+            "order": 8,
+            "mode": 0,
+            "inputs": [],
+            "outputs": [
+                {"name": "IMAGE", "type": "IMAGE", "links": [10]},
+                {"name": "MASK", "type": "MASK", "links": None},
+            ],
+            "title": "① 目标人物参考图 (<Picture 1>)",
+            "properties": {"Node name for S&R": "LoadImage"},
+            "widgets_values": ["easycolab_sample_start.png", "image"],
+        },
+        {
+            "id": 7,
+            "type": "VHS_LoadVideo",
+            "pos": [0, 840],
+            "size": [320, 260],
+            "flags": {},
+            "order": 9,
+            "mode": 0,
+            "inputs": [],
+            "outputs": [
+                {"name": "IMAGE", "type": "IMAGE", "links": [11]},
+                {"name": "frame_count", "type": "INT", "links": None},
+                {"name": "audio", "type": "AUDIO", "links": None},
+                {"name": "video_info", "type": "VHS_VIDEOINFO", "links": None},
+            ],
+            "title": "② 参考动作引导视频 (<Video 1> · 24fps)",
+            "properties": {"Node name for S&R": "VHS_LoadVideo"},
+            "widgets_values": {"video": "guide_motion.mp4", "force_rate": 24, "custom_width": 0, "custom_height": 0, "frame_load_cap": 124, "skip_first_frames": 0, "select_every_nth": 1},
+        },
+        {
+            "id": 8,
+            "type": "MiniMaxH3ReferenceToVideo",
+            "pos": [900, 200],
+            "size": [430, 520],
+            "flags": {},
+            "order": 10,
+            "mode": 0,
+            "inputs": [
+                {"name": "clip", "type": "CLIP", "link": 7},
+                {"name": "vae", "type": "VAE", "shape": 7, "link": 8},
+                {"name": "audio_vae", "type": "VAE", "shape": 7, "link": 9},
+                {"label": "ref_image_0", "name": "ref_images.ref_image_0", "type": "IMAGE", "shape": 7, "link": 10},
+                {"label": "ref_video_0", "name": "ref_videos.ref_video_0", "type": "IMAGE", "shape": 7, "link": 11},
+                {"name": "prompt", "type": "STRING", "widget": {"name": "prompt"}, "link": None},
+                {"name": "width", "type": "INT", "widget": {"name": "width"}, "link": None},
+                {"name": "height", "type": "INT", "widget": {"name": "height"}, "link": None},
+                {"name": "length", "type": "INT", "widget": {"name": "length"}, "link": None},
+                {"name": "ref_image_size", "type": "COMBO", "widget": {"name": "ref_image_size"}, "link": None},
+            ],
+            "outputs": [
+                {"name": "positive", "type": "CONDITIONING", "links": [12]},
+                {"name": "LATENT", "type": "LATENT", "links": [13]},
+            ],
+            "title": "③ Ref2VA 多模态动作参考条件 (<Video 1> + <Picture 1>)",
+            "properties": {"Node name for S&R": "MiniMaxH3ReferenceToVideo"},
+            "widgets_values": [prompt_text, 1056, 608, 124, "match"],
+        },
+        {
+            "id": 9,
+            "type": "BasicScheduler",
+            "pos": [1400, 0],
+            "size": [300, 106],
+            "flags": {},
+            "order": 11,
+            "mode": 0,
+            "inputs": [
+                {"name": "model", "type": "MODEL", "link": 5},
+            ],
+            "outputs": [{"name": "SIGMAS", "type": "SIGMAS", "links": [14]}],
+            "title": "调度器 (simple · 8步极速)",
+            "properties": {"Node name for S&R": "BasicScheduler"},
+            "widgets_values": ["simple", 8, 1.0],
+        },
+        {
+            "id": 10,
+            "type": "KSamplerSelect",
+            "pos": [1400, 140],
+            "size": [300, 58],
+            "flags": {},
+            "order": 12,
+            "mode": 0,
+            "inputs": [],
+            "outputs": [{"name": "SAMPLER", "type": "SAMPLER", "links": [15]}],
+            "title": "采样器 (Euler)",
+            "properties": {"Node name for S&R": "KSamplerSelect"},
+            "widgets_values": ["euler"],
+        },
+        {
+            "id": 11,
+            "type": "RandomNoise",
+            "pos": [1400, 230],
+            "size": [300, 82],
+            "flags": {},
+            "order": 13,
+            "mode": 0,
+            "inputs": [],
+            "outputs": [{"name": "NOISE", "type": "NOISE", "links": [16]}],
+            "title": "随机种子",
+            "properties": {"Node name for S&R": "RandomNoise"},
+            "widgets_values": [42, "randomize"],
+        },
+        {
+            "id": 12,
+            "type": "BasicGuider",
+            "pos": [1400, 350],
+            "size": [300, 60],
+            "flags": {},
+            "order": 14,
+            "mode": 0,
+            "inputs": [
+                {"name": "model", "type": "MODEL", "link": 6},
+                {"name": "conditioning", "type": "CONDITIONING", "link": 12},
+            ],
+            "outputs": [{"name": "GUIDER", "type": "GUIDER", "links": [18]}],
+            "title": "BasicGuider (CFG=1)",
+            "properties": {"Node name for S&R": "BasicGuider"},
+            "widgets_values": [],
+        },
+        {
+            "id": 13,
+            "type": "SamplerCustomAdvanced",
+            "pos": [1760, 150],
+            "size": [320, 140],
+            "flags": {},
+            "order": 15,
+            "mode": 0,
+            "inputs": [
+                {"name": "noise", "type": "NOISE", "link": 16},
+                {"name": "guider", "type": "GUIDER", "link": 18},
+                {"name": "sampler", "type": "SAMPLER", "link": 15},
+                {"name": "sigmas", "type": "SIGMAS", "link": 14},
+                {"name": "latent_image", "type": "LATENT", "link": 13},
+            ],
+            "outputs": [
+                {"name": "output", "type": "LATENT", "links": [20, 21]},
+                {"name": "denoised_output", "type": "LATENT", "links": None},
+            ],
+            "title": "音视频联合扩散采样器",
+            "properties": {"Node name for S&R": "SamplerCustomAdvanced"},
+            "widgets_values": [],
+        },
+        {
+            "id": 14,
+            "type": "VAEDecode",
+            "pos": [2120, 110],
+            "size": [220, 46],
+            "flags": {},
+            "order": 16,
+            "mode": 0,
+            "inputs": [
+                {"name": "samples", "type": "LATENT", "link": 20},
+                {"name": "vae", "type": "VAE", "link": 17},
+            ],
+            "outputs": [{"name": "IMAGE", "type": "IMAGE", "links": [22]}],
+            "title": "视频 VAE 解码",
+            "properties": {"Node name for S&R": "VAEDecode"},
+            "widgets_values": [],
+        },
+        {
+            "id": 15,
+            "type": "VAEDecodeAudio",
+            "pos": [2120, 230],
+            "size": [220, 46],
+            "flags": {},
+            "order": 17,
+            "mode": 0,
+            "inputs": [
+                {"name": "samples", "type": "LATENT", "link": 21},
+                {"name": "vae", "type": "VAE", "link": 19},
+            ],
+            "outputs": [{"name": "AUDIO", "type": "AUDIO", "links": [23]}],
+            "title": "音频 VAE 解码",
+            "properties": {"Node name for S&R": "VAEDecodeAudio"},
+            "widgets_values": [],
+        },
+        {
+            "id": 16,
+            "type": "CreateVideo",
+            "pos": [2390, 150],
+            "size": [260, 120],
+            "flags": {},
+            "order": 18,
+            "mode": 0,
+            "inputs": [
+                {"name": "images", "type": "IMAGE", "link": 22},
+                {"name": "audio", "type": "AUDIO", "shape": 7, "link": 23},
+            ],
+            "outputs": [{"name": "VIDEO", "type": "VIDEO", "links": [24]}],
+            "title": "封装 24fps 有声视频",
+            "properties": {"Node name for S&R": "CreateVideo"},
+            "widgets_values": [24, "auto", "sRGB", "none"],
+        },
+        {
+            "id": 17,
+            "type": "SaveVideo",
+            "pos": [2700, 150],
+            "size": [380, 420],
+            "flags": {},
+            "order": 19,
+            "mode": 0,
+            "inputs": [{"name": "video", "type": "VIDEO", "link": 24}],
+            "outputs": [{"name": "video", "type": "VIDEO", "links": []}],
+            "title": "④ 成片预览与自动保存",
+            "properties": {"Node name for S&R": "SaveVideo"},
+            "widgets_values": ["video/Ref2VA_TARA_动作复刻", "auto", "auto"],
+        },
+        _make_zh_guide_note(
+            515,
+            [-470, 0],
+            "【EasyColab · Ref2VA TARA 视频动作复刻工作流指南】",
+            "## Ref2VA + ComfyUI-BFSNodes (TARA) · 逐帧动作复刻\n\n"
+            "1. 在 **「① 目标人物参考图」** 上传换人后的目标角色图（`<Picture 1>`）。\n"
+            "2. 在 **「② 参考动作引导视频」** 上传原动作/舞蹈视频（`<Video 1>`，强制 24fps）。\n"
+            "3. 已默认串联 **TARA 时序对齐 (`BFSMiniMaxH3NativeTemporal`)** 与 `minimax_h3_motion_transfer_tara_v1.0_ref2va` LoRA，可直接点运行！",
+        ),
+    ]
+    links = [
+        [1, 1, 0, 20, 0, "MODEL"],
+        [2, 20, 0, 21, 0, "MODEL"],
+        [3, 21, 0, 2, 0, "MODEL"],
+        [4, 2, 0, 22, 0, "MODEL"],
+        [5, 22, 0, 9, 0, "MODEL"],
+        [6, 22, 0, 12, 0, "MODEL"],
+        [7, 3, 0, 8, 0, "CLIP"],
+        [8, 4, 0, 8, 1, "VAE"],
+        [9, 5, 0, 8, 2, "VAE"],
+        [10, 6, 0, 8, 3, "IMAGE"],
+        [11, 7, 0, 8, 4, "IMAGE"],
+        [12, 8, 0, 12, 1, "CONDITIONING"],
+        [13, 8, 1, 13, 4, "LATENT"],
+        [14, 9, 0, 13, 3, "SIGMAS"],
+        [15, 10, 0, 13, 2, "SAMPLER"],
+        [16, 11, 0, 13, 0, "NOISE"],
+        [17, 4, 0, 14, 1, "VAE"],
+        [18, 12, 0, 13, 1, "GUIDER"],
+        [19, 5, 0, 15, 1, "VAE"],
+        [20, 13, 0, 14, 0, "LATENT"],
+        [21, 13, 0, 15, 0, "LATENT"],
+        [22, 14, 0, 16, 0, "IMAGE"],
+        [23, 15, 0, 16, 1, "AUDIO"],
+        [24, 16, 0, 17, 0, "VIDEO"],
+    ]
+    wf = {
+        "last_node_id": 520,
+        "last_link_id": 30,
+        "nodes": nodes,
+        "links": links,
+        "groups": [],
+        "config": {},
+        "extra": {"ds": {"scale": 0.65, "offset": [520, 80]}},
+        "version": 0.4,
+    }
+    _prune_workflow_dangling_links(wf)
+    return wf
+
+
 def _build_and_install_comfy_preset_workflows(
     persist_root: str,
     pack_ids: Optional[List[str]] = None,
@@ -7805,6 +8272,16 @@ def _build_and_install_comfy_preset_workflows(
             installed_files.append(os.path.basename(out_10))
         except Exception as e:
             print(f"[ComfyUI 工作流生成] Sulphur-3 模板处理异常: {e}")
+
+    # 7. Ref2VA + ComfyUI-BFSNodes (TARA 逐帧时序动作复刻)
+    if "minimax_h3_ref2va_tara" in target_set:
+        try:
+            out_11 = os.path.join(wf_dir, "11_MiniMax-H3_Ref2VA_TARA动作复刻(视频驱动换人).json")
+            with open(out_11, "w", encoding="utf-8") as wf:
+                json.dump(_build_ref2va_tara_workflow(), wf, ensure_ascii=False, indent=2)
+            installed_files.append(os.path.basename(out_11))
+        except Exception as e:
+            print(f"[ComfyUI 工作流生成] Ref2VA TARA 模板处理异常: {e}")
 
     if installed_files:
         try:
@@ -9523,6 +10000,14 @@ class GenerateVideoRequest(BaseModel):
     corrector_budget_fraction: float = 0.5
     corrector_start_step: int = 0
     corrector_end_step: int = -1
+    ref_video_base64: Optional[str] = None
+    ref_video_filename: Optional[str] = None
+    tara_enabled: bool = True
+    tara_lora_strength: float = 1.0
+    tara_strength: float = 2.0
+    tara_window_seconds: float = 0.20
+    tara_falloff_seconds: float = 0.25
+    tara_max_penalty: float = 6.0
 
 
 def decode_base64_image(b64_str: Optional[str]) -> Optional[Image.Image]:
@@ -9984,8 +10469,9 @@ def _build_comfy_h3_api_prompt_for_request(
     first_frame_filename: Optional[str] = None,
     last_frame_filename: Optional[str] = None,
     save_prefix: str = "video/EasyColab_H3",
+    ref_video_filename: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """构建可直接提交至 ComfyUI /prompt 接口的 10Eros-Max / Sulphur-3 无头有声视频节点图"""
+    """构建可直接提交至 ComfyUI /prompt 接口的 10Eros-Max / Sulphur-3 / Ref2VA-TARA 无头有声视频节点图"""
     full_prompt = build_structured_prompt(
         req.visual_prompt, req.soundscape_prompt, req.music_prompt
     )
@@ -9993,29 +10479,32 @@ def _build_comfy_h3_api_prompt_for_request(
     height = max(256, (int(req.height or 608) // 32) * 32)
     length = _snap_h3_frames(int(req.num_frames or 124))
     fps = max(12, min(60, int(req.fps or 24)))
-    steps = max(4, min(60, int(req.num_inference_steps or (8 if pipeline_arch == "comfy_h3_10eros_max" else 20))))
-
     is_eros = pipeline_arch == "comfy_h3_10eros_max"
-    unet_name = (
-        "10Eros_Max_8stepTurbo_v1.0_hybrid-int8_HQ.safetensors"
-        if is_eros
-        else "s3.safetensors"
-    )
-    sampler_name = "lcm" if is_eros else "euler"
+    is_tara = pipeline_arch == "comfy_h3_ref2va_tara"
+    steps = max(4, min(60, int(req.num_inference_steps or (8 if (is_eros or is_tara) else 20))))
+
+    if is_eros:
+        unet_name = "10Eros_Max_8stepTurbo_v1.0_hybrid-int8_HQ.safetensors"
+        clip_name = "qwen3vl_32b_heretic_minimax_h3_nvfp4.safetensors"
+        sampler_name = "lcm"
+    elif is_tara:
+        unet_name = "minimax_h3_ref2va_pruned_int8_convrot.safetensors"
+        clip_name = "qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors"
+        sampler_name = "euler"
+    else:
+        unet_name = "s3.safetensors"
+        clip_name = "qwen3vl_32b_heretic_minimax_h3_nvfp4.safetensors"
+        sampler_name = "euler"
 
     prompt: Dict[str, Any] = {
         "1": {
             "class_type": "UNETLoader",
             "inputs": {"unet_name": unet_name, "weight_dtype": "default"},
         },
-        "2": {
-            "class_type": "MiniMaxH3SigmaShift",
-            "inputs": {"model": ["1", 0], "shift_video": 12.0, "shift_audio": 3.0},
-        },
         "3": {
             "class_type": "CLIPLoader",
             "inputs": {
-                "clip_name": "qwen3vl_32b_heretic_minimax_h3_nvfp4.safetensors",
+                "clip_name": clip_name,
                 "type": "minimax",
                 "device": "default",
             },
@@ -10030,8 +10519,50 @@ def _build_comfy_h3_api_prompt_for_request(
         },
     }
 
+    base_model_ref: List[Any] = ["1", 0]
+    if is_tara:
+        prompt["30"] = {
+            "class_type": "LoraLoaderModelOnly",
+            "inputs": {
+                "model": ["1", 0],
+                "lora_name": "minimax_h3_ref2v_turbo_4step_v0.1_comfyui_bf16.safetensors",
+                "strength_model": 1.0,
+            },
+        }
+        prompt["31"] = {
+            "class_type": "LoraLoaderModelOnly",
+            "inputs": {
+                "model": ["30", 0],
+                "lora_name": "minimax_h3_motion_transfer_tara_v1.0_ref2va.safetensors",
+                "strength_model": float(getattr(req, "tara_lora_strength", 1.0)),
+            },
+        }
+        base_model_ref = ["31", 0]
+
+    prompt["2"] = {
+        "class_type": "MiniMaxH3SigmaShift",
+        "inputs": {"model": base_model_ref, "shift_video": 12.0, "shift_audio": 3.0},
+    }
+    patched_model_ref: List[Any] = ["2", 0]
+    if is_tara and bool(getattr(req, "tara_enabled", True)) and ref_video_filename:
+        prompt["32"] = {
+            "class_type": "BFSMiniMaxH3NativeTemporal",
+            "inputs": {
+                "model": ["2", 0],
+                "motion_video_index": 1,
+                "strength": float(getattr(req, "tara_strength", 2.0)),
+                "window_seconds": float(getattr(req, "tara_window_seconds", 0.20)),
+                "falloff_seconds": float(getattr(req, "tara_falloff_seconds", 0.25)),
+                "max_penalty": float(getattr(req, "tara_max_penalty", 6.0)),
+                "attention_backend": "flash partitions (no compile)",
+                "structure_guidance": 1.0,
+                "structure_sigma_min": 0.0,
+            },
+        }
+        patched_model_ref = ["32", 0]
+
     node_seq = 20
-    if is_eros and req.task_mode == "multiref":
+    if (is_eros and req.task_mode == "multiref") or is_tara:
         cond_inputs: Dict[str, Any] = {
             "clip": ["3", 0],
             "vae": ["4", 0],
@@ -10054,9 +10585,22 @@ def _build_comfy_h3_api_prompt_for_request(
                 "inputs": {"image": fn, "upload": "image"},
             }
             cond_inputs[f"ref_images.ref_image_{idx}"] = [nid, 0]
+        if ref_video_filename:
+            prompt["29"] = {
+                "class_type": "VHS_LoadVideo",
+                "inputs": {
+                    "video": ref_video_filename,
+                    "force_rate": float(fps),
+                    "custom_width": 0,
+                    "custom_height": 0,
+                    "frame_load_cap": int(length),
+                    "skip_first_frames": 0,
+                    "select_every_nth": 1,
+                },
+            }
+            cond_inputs["ref_videos.ref_video_0"] = ["29", 0]
         if ref_audio_filename:
-            aid = str(node_seq)
-            node_seq += 1
+            aid = "33"
             prompt[aid] = {
                 "class_type": "LoadAudio",
                 "inputs": {"audio": ref_audio_filename},
@@ -10103,15 +10647,15 @@ def _build_comfy_h3_api_prompt_for_request(
 
     prompt["9"] = {
         "class_type": "BasicScheduler",
-        "inputs": {"model": ["2", 0], "scheduler": "simple", "steps": steps, "denoise": 1.0},
+        "inputs": {"model": patched_model_ref, "scheduler": "simple", "steps": steps, "denoise": 1.0},
     }
     prompt["10"] = {"class_type": "KSamplerSelect", "inputs": {"sampler_name": sampler_name}}
     prompt["11"] = {"class_type": "RandomNoise", "inputs": {"noise_seed": int(seed)}}
 
-    if is_eros:
+    if is_eros or is_tara:
         prompt["12"] = {
             "class_type": "BasicGuider",
-            "inputs": {"model": ["2", 0], "conditioning": ["8", 0]},
+            "inputs": {"model": patched_model_ref, "conditioning": ["8", 0]},
         }
     else:
         prompt["7"] = {
@@ -10236,6 +10780,17 @@ def _execute_comfy_h3_api_job(
             raw_audio_b64, f"easycolab_{job_id}_voice{ext}", input_dir
         )
 
+    ref_video_filename: Optional[str] = None
+    raw_video_b64 = getattr(req, "ref_video_base64", None)
+    if raw_video_b64:
+        orig_video_name = str(getattr(req, "ref_video_filename", "") or "guide_video.mp4")
+        vext = os.path.splitext(orig_video_name)[1].lower()
+        if vext not in (".mp4", ".mov", ".webm", ".mkv", ".avi", ".m4v"):
+            vext = ".mp4"
+        ref_video_filename = _save_b64_to_comfy_input(
+            raw_video_b64, f"easycolab_{job_id}_guide{vext}", input_dir
+        )
+
     first_fn: Optional[str] = None
     last_fn: Optional[str] = None
     if req.task_mode == "fl2va":
@@ -10256,6 +10811,7 @@ def _execute_comfy_h3_api_job(
         first_frame_filename=first_fn,
         last_frame_filename=last_fn,
         save_prefix=save_prefix,
+        ref_video_filename=ref_video_filename,
     )
 
     try:
@@ -10416,7 +10972,12 @@ def _run_async_generation_job(job_id: str, req: GenerateVideoRequest):
                 JOBS[job_id]["status"] = "failed"
                 JOBS[job_id]["message"] = "首尾帧模式下请至少提供首帧或尾帧图片"
                 return
-        elif pipeline_arch == "comfy_h3_10eros_max" and req.task_mode == "multiref":
+        elif pipeline_arch == "comfy_h3_ref2va_tara" and req.task_mode == "motion_transfer":
+            if not getattr(req, "ref_video_base64", None) or (not raw_ref_imgs and first_img is None):
+                JOBS[job_id]["status"] = "failed"
+                JOBS[job_id]["message"] = "视频动作复刻模式下请同时提供参考动作视频 (<Video 1>) 和至少 1 张目标角色图 (<Picture 1>)"
+                return
+        elif pipeline_arch in ("comfy_h3_10eros_max", "comfy_h3_ref2va_tara") and req.task_mode == "multiref":
             if not raw_ref_imgs and first_img is None and last_img is None and not getattr(req, "ref_audio_base64", None):
                 JOBS[job_id]["status"] = "failed"
                 JOBS[job_id]["message"] = "多图参考模式下请至少提供 1 张参考图 (<Picture 1>) 或声纹参考音频 (<Audio 1>)"
@@ -10476,7 +11037,7 @@ def _run_async_generation_job(job_id: str, req: GenerateVideoRequest):
 
                 _guard_ctx = (
                     contextlib.nullcontext()
-                    if pipeline_arch in ("comfy_h3_10eros_max", "comfy_h3_sulphur3")
+                    if pipeline_arch in ("comfy_h3_10eros_max", "comfy_h3_sulphur3", "comfy_h3_ref2va_tara")
                     else _pipeline_job_execution_guard(
                         pipe=active_pipe,
                         job_id=job_id,
@@ -10490,7 +11051,7 @@ def _run_async_generation_job(job_id: str, req: GenerateVideoRequest):
                     )
                 )
                 with _guard_ctx as step_progress_bar:
-                    if pipeline_arch in ("comfy_h3_10eros_max", "comfy_h3_sulphur3"):
+                    if pipeline_arch in ("comfy_h3_10eros_max", "comfy_h3_sulphur3", "comfy_h3_ref2va_tara"):
                         filename, output_path = _execute_comfy_h3_api_job(
                             job_id=job_id,
                             pipeline_arch=pipeline_arch,

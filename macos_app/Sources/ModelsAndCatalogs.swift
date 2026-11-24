@@ -280,6 +280,46 @@ let OPEN_MODEL_CATALOG: [OpenModelSpec] = [
         ]
     ),
     OpenModelSpec(
+        id: "minimax_h3_ref2va_tara",
+        nameZh: "Ref2VA · TARA 动作复刻",
+        nameEn: "Ref2VA · TARA Motion Transfer",
+        repoId: "Alissonerdx/Minimax-H3-ComfyUI",
+        badgeZh: "视频动作复刻 · TARA · 41 GB",
+        badgeEn: "Motion Transfer · TARA · 41 GB",
+        summaryZh: "MiniMax-H3 Ref2VA 主干 + ComfyUI-BFSNodes (TARA 逐帧时序对齐) + Motion Transfer LoRA，传入参考动作视频 (<Video 1>) 与目标角色图 (<Picture 1..9>) 一键换人复刻动作",
+        summaryEn: "MiniMax-H3 Ref2VA + ComfyUI-BFSNodes TARA temporal alignment + Motion Transfer LoRA: feed a guide video (<Video 1>) & target subject (<Picture 1..9>) for frame-accurate motion transfer",
+        approxSizeGB: 40.9,
+        icon: "figure.dance",
+        modality: .videoAudio,
+        defaultSteps: 8,
+        modes: [
+            TaskModeItem(
+                id: "motion_transfer",
+                titleZh: "视频动作复刻 (TARA)",
+                titleEn: "Motion Transfer (TARA)",
+                subtitleZh: "上传参考动作视频 (<Video 1>) + 目标人物图 (<Picture 1>) + 可选声纹 (<Audio 1>)，逐帧复刻肢体动作与节奏",
+                subtitleEn: "Upload motion guide video (<Video 1>) + target character (<Picture 1>) + optional voice (<Audio 1>) with TARA alignment",
+                icon: "figure.run"
+            ),
+            TaskModeItem(
+                id: "multiref",
+                titleZh: "多图 + 声纹参考生视频",
+                titleEn: "Multi-Image + Voice to Video",
+                subtitleZh: "仅用 1~9 张参考图 (<Picture 1..9>) + 可选声纹 (<Audio 1>) 直接生成有声视频（不传引导视频）",
+                subtitleEn: "Generate from 1–9 reference images (<Picture 1..9>) & optional voice (<Audio 1>) without guide video",
+                icon: "person.2.crop.square.stack"
+            )
+        ],
+        defaultFiles: [
+            ModelFileItem(name: "diffusion_models/minimax_h3_ref2va_pruned_int8_convrot.safetensors", desc: "Ref2VA 剪枝 int8 主干 (21.0 GB)", exists: false, size_gb: 0),
+            ModelFileItem(name: "text_encoders/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors", desc: "Qwen3-VL 32B NVFP4 编码器 (14.6 GB)", exists: false, size_gb: 0),
+            ModelFileItem(name: "vae/minimax_h3_video_vae_int8_convrot.safetensors", desc: "MiniMax-H3 视频 VAE int8 (2.6 GB)", exists: false, size_gb: 0),
+            ModelFileItem(name: "vae/minimax_h3_audio_vae_fp32.safetensors", desc: "MiniMax-H3 32kHz 音频 VAE fp32 (0.56 GB)", exists: false, size_gb: 0),
+            ModelFileItem(name: "loras/minimax_h3_ref2v_turbo_4step_v0.1_comfyui_bf16.safetensors", desc: "Ref2VA Turbo 加速 LoRA (1.96 GB)", exists: false, size_gb: 0),
+            ModelFileItem(name: "loras/minimax_h3_motion_transfer_tara_v1.0_ref2va.safetensors", desc: "TARA 动作复刻 LoRA v1.0 (0.13 GB)", exists: false, size_gb: 0)
+        ]
+    ),
+    OpenModelSpec(
         id: "minimax_h3_image",
         nameZh: "MiniMax-H3-Image (33B · 4K)",
         nameEn: "MiniMax-H3-Image (33B · 4K)",
@@ -640,6 +680,16 @@ let PRESET_TEMPLATES: [PresetTemplate] = [
         music: "Warm minimalist piano and subtle cinematic strings."
     ),
     PresetTemplate(
+        id: "tpl_ref2va_tara_motion",
+        category: .videoAudio,
+        nameZh: "[动作复刻 TARA] <Video 1> 动作驱动 <Picture 1> 角色换人表演",
+        nameEn: "[Motion Transfer TARA] <Video 1> Driving <Picture 1> Subject",
+        visualZh: "<Subject 1>: the character in <Picture 1>. The target video is an edited version of <Video 1>. Replace the character in <Video 1> with <Subject 1>. Reproduce <Video 1>'s exact body movements, choreography, gestures, head turns, and timing precisely, while keeping <Subject 1>'s identity, clothing, and studio lighting consistent across every frame.",
+        visualEn: "<Subject 1>: the character in <Picture 1>. The target video is an edited version of <Video 1>. Replace the character in <Video 1> with <Subject 1>. Reproduce <Video 1>'s exact body movements, choreography, gestures, head turns, and timing precisely, while keeping <Subject 1>'s identity, clothing, and studio lighting consistent across every frame.",
+        soundscape: "Natural footsteps, cloth rustle matching every movement, and crisp room ambiance.",
+        music: "Rhythmic upbeat electronic soundtrack synchronized with the motion beat."
+    ),
+    PresetTemplate(
         id: "tpl_cyber_poster",
         category: .image,
         nameZh: "[生图] 东方赛博霓虹商业海报（含中文排版）",
@@ -946,6 +996,20 @@ let DEFAULT_COMFY_PRESET_PACKS: [ComfyPresetPackItem] = [
         ],
         installed_models: 0,
         total_models: 5,
+        workflows_installed: false,
+        ready: false
+    ),
+    ComfyPresetPackItem(
+        id: "minimax_h3_ref2va_tara",
+        title: "Ref2VA · TARA 视频动作复刻 (BFSNodes + Motion LoRA)",
+        badge: "动作复刻 · TARA 时序对齐",
+        scenario: "基于 MiniMax-H3 Ref2VA 主干 + ComfyUI-BFSNodes (TARA) + Motion Transfer LoRA，传入参考动作视频 (<Video 1>) 与目标角色图 (<Picture 1>) 实现换人不丢动作",
+        approx_size_gb: 40.9,
+        workflows: [
+            "11_MiniMax-H3_Ref2VA_TARA动作复刻(视频驱动换人).json"
+        ],
+        installed_models: 0,
+        total_models: 6,
         workflows_installed: false,
         ready: false
     )

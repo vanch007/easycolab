@@ -25,12 +25,30 @@
   - `10_Sulphur-3_无限制图生首尾帧有声视频(含H3修正器).json`
 - **Optimal Sampling**: `Euler / simple`, **20 steps**, `MiniMaxH3SigmaShift(12.0, 3.0)`, `CFGGuider(cfg=1.0)`.
 
+### B2. Motion Transfer ComfyUI Pack: `minimax_h3_ref2va_tara` (~40.9 GB)
+
+- **Main DiT**: `Comfy-Org/MiniMax-H3` -> `minimax_h3_ref2va_pruned_int8_convrot.safetensors` (`models/diffusion_models/`, 20.97 GiB)
+- **Encoder**: `Comfy-Org/MiniMax-H3` -> `qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors` (`models/text_encoders/`, 14.61 GiB)
+- **Turbo LoRA**: `Comfy-Org/MiniMax-H3` -> `minimax_h3_ref2v_turbo_4step_v0.1_comfyui_bf16.safetensors` (`models/loras/`, 1.96 GiB)
+- **Motion Transfer TARA LoRA**: `Alissonerdx/Minimax-H3-ComfyUI` -> `minimax_h3_motion_transfer_tara_v1.0_ref2va.safetensors` (`models/loras/`, 0.13 GiB)
+- **Custom Nodes (auto-cloned)**: `ComfyUI-BFSNodes` (`https://github.com/alisson-anjos/ComfyUI-BFSNodes.git`) -> provides `BFSMiniMaxH3NativeTemporal`
+- **Shared VAEs**: same Video/Audio VAEs.
+- **TARA Defaults**: `w=0.20s`, `f=0.25s`, `strength=2.0`, `max_penalty=6.0`, `attention_backend="flash partitions (no compile)"`, **8 steps** (`Euler / simple`, `CFG=1.0`), 24fps guide video grid.
+
 ### C. Official ComfyUI Pack: `minimax_h3_i2v_flf2v` (~39.1 GB)
 
 - **Main DiT**: `Comfy-Org/MiniMax-H3` -> `minimax_h3_fl2va_pruned_int8_convrot.safetensors` (19.53 GiB)
 - **Encoder**: `Comfy-Org/MiniMax-H3` -> `qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors` (14.61 GiB)
 - **Turbo LoRA**: `lightx2v/Minimax-h3-Turbo` -> `minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors` (1.82 GiB)
 - **Shared VAEs**: same Video/Audio VAEs.
+
+#### Reusing G4 for Turbo reference-motion shots
+
+1. Identify the failing stage before retrying. A Colab HTTP 503 during GPU allocation is a failed allocation attempt. A desktop log that advances to successful G4 allocation and a tunnel address confirms those two stages. Check `comfy-status` separately for ComfyUI running state, the `minimax_h3_i2v_flf2v` pack's readiness, and the queue. A native model-status error can coexist with a healthy ComfyUI queue. When the user already has a healthy session, reuse its authenticated desktop connection. Keep credentials and tunnel URLs in local session state.
+2. If the official Turbo pack is missing and installation is in scope, use `comfy-install-pack --pack minimax_h3_i2v_flf2v --wait`. Use the standard Turbo graph and weights for actual generation. For reference motion in the ComfyUI API graph, use `LoadVideo` → `GetVideoComponents` → `MiniMaxH3ReferenceToVideo` with `ref_videos.ref_video_0` and a target-product `ref_images.ref_image_0`. Use `MiniMaxH3AddGuide` to anchor the required first or later frame. Confirm installed node inputs from `/object_info` before building the shot graph. When the source video causes the wrong product details to appear, use `MiniMaxH3ImageToVideo` with a clean target-product first frame for that shot.
+3. Record each shot's graph, seed, `prompt_id`, and local output. If the wait or download is interrupted, check the queue and `/history/{prompt_id}`, then recover the completed file if present. Once the queue and history confirm a shot failed or was never accepted, resubmit just that shot. Check the downloaded file decodes before treating the shot as done. Apply the authorized shutdown scope after the final downloads.
+
+Verified on an EasyColab G4 with the official pruned INT8 weights and Turbo LoRA, using 576×1024, 24 fps, 8 steps, `res_multistep` / `simple`. Seven short clips used 56, 73 or 107 model frames. These values are an example for short vertical shots. Choose shot lengths from the source timing, round generation lengths to the model frame grid, and set delivery timing in the final assembly.
 
 ### D. EasyColab Native DiffSynth Engines (G4 96GB + 176GB DDR5)
 

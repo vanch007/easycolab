@@ -523,6 +523,132 @@ def _build_sulphur3_api_prompt(
     return graph
 
 
+def _build_ref2va_tara_api_prompt(
+    prompt_text: str,
+    ref_video: str,
+    ref_images: List[str],
+    ref_audios: List[str],
+    width: int,
+    height: int,
+    frames: int,
+    steps: int,
+    sampler: str,
+    scheduler: str,
+    shift_video: float,
+    shift_audio: float,
+    ref_image_size: str,
+    lora_strength: float,
+    tara_enabled: bool,
+    tara_strength: float,
+    tara_window: float,
+    tara_falloff: float,
+    tara_max_penalty: float,
+    seed: int,
+    prefix: str,
+    unet_name: str,
+    clip_name: str,
+) -> Dict[str, Any]:
+    if len(ref_images) > 9:
+        raise ValueError("MiniMaxH3ReferenceToVideo supports at most 9 reference images (<Picture 1>..<Picture 9>).")
+    if len(ref_audios) > 3:
+        raise ValueError("MiniMaxH3ReferenceToVideo supports at most 3 reference audios (<Audio 1>..<Audio 3>).")
+
+    snapped, _ = snap_frames_to_h3_grid(frames)
+    actual_seed = seed if seed >= 0 else secrets.randbelow(2**31 - 1)
+
+    graph: Dict[str, Any] = {
+        "1": {"class_type": "UNETLoader", "inputs": {"unet_name": unet_name, "weight_dtype": "default"}},
+        "30": {
+            "class_type": "LoraLoaderModelOnly",
+            "inputs": {
+                "model": ["1", 0],
+                "lora_name": "minimax_h3_ref2v_turbo_4step_v0.1_comfyui_bf16.safetensors",
+                "strength_model": 1.0,
+            },
+        },
+        "31": {
+            "class_type": "LoraLoaderModelOnly",
+            "inputs": {
+                "model": ["30", 0],
+                "lora_name": "minimax_h3_motion_transfer_tara_v1.0_ref2va.safetensors",
+                "strength_model": float(lora_strength),
+            },
+        },
+        "2": {"class_type": "MiniMaxH3SigmaShift", "inputs": {"model": ["31", 0], "shift_video": shift_video, "shift_audio": shift_audio}},
+        "3": {"class_type": "CLIPLoader", "inputs": {"clip_name": clip_name, "type": "minimax", "device": "default"}},
+        "4": {"class_type": "VAELoader", "inputs": {"vae_name": "minimax_h3_video_vae_int8_convrot.safetensors"}},
+        "5": {"class_type": "VAELoader", "inputs": {"vae_name": "minimax_h3_audio_vae_fp32.safetensors"}},
+    }
+
+    model_ref: List[Any] = ["2", 0]
+    if tara_enabled:
+        graph["32"] = {
+            "class_type": "BFSMiniMaxH3NativeTemporal",
+            "inputs": {
+                "model": ["2", 0],
+                "motion_video_index": 1,
+                "strength": float(tara_strength),
+                "window_seconds": float(tara_window),
+                "falloff_seconds": float(tara_falloff),
+                "max_penalty": float(tara_max_penalty),
+                "attention_backend": "flash partitions (no compile)",
+                "structure_guidance": 1.0,
+                "structure_sigma_min": 0.0,
+            },
+        }
+        model_ref = ["32", 0]
+
+    cond_inputs: Dict[str, Any] = {
+        "clip": ["3", 0],
+        "vae": ["4", 0],
+        "audio_vae": ["5", 0],
+        "prompt": prompt_text,
+        "width": int(width),
+        "height": int(height),
+        "length": snapped,
+        "ref_image_size": ref_image_size,
+    }
+
+    next_id = 40
+    for idx, img_name in enumerate(ref_images):
+        nid = str(next_id)
+        next_id += 1
+        graph[nid] = {"class_type": "LoadImage", "inputs": {"image": img_name}}
+        cond_inputs[f"ref_images.ref_image_{idx}"] = [nid, 0]
+
+    graph["29"] = {
+        "class_type": "VHS_LoadVideo",
+        "inputs": {
+            "video": ref_video,
+            "force_rate": 24.0,
+            "custom_width": 0,
+            "custom_height": 0,
+            "frame_load_cap": snapped,
+            "skip_first_frames": 0,
+            "select_every_nth": 1,
+        },
+    }
+    cond_inputs["ref_videos.ref_video_0"] = ["29", 0]
+
+    for idx, aud_name in enumerate(ref_audios):
+        nid = str(next_id)
+        next_id += 1
+        graph[nid] = {"class_type": "LoadAudio", "inputs": {"audio": aud_name}}
+        cond_inputs[f"ref_audios.ref_audio_{idx}"] = [nid, 0]
+
+    graph["8"] = {"class_type": "MiniMaxH3ReferenceToVideo", "inputs": cond_inputs}
+    graph["9"] = {"class_type": "BasicScheduler", "inputs": {"model": model_ref, "scheduler": scheduler, "steps": steps, "denoise": 1.0}}
+    graph["10"] = {"class_type": "KSamplerSelect", "inputs": {"sampler_name": sampler}}
+    graph["11"] = {"class_type": "RandomNoise", "inputs": {"noise_seed": actual_seed}}
+    graph["12"] = {"class_type": "BasicGuider", "inputs": {"model": model_ref, "conditioning": ["8", 0]}}
+    graph["13"] = {"class_type": "SamplerCustomAdvanced", "inputs": {"noise": ["11", 0], "guider": ["12", 0], "sampler": ["10", 0], "sigmas": ["9", 0], "latent_image": ["8", 1]}}
+    graph["14"] = {"class_type": "VAEDecode", "inputs": {"samples": ["13", 0], "vae": ["4", 0]}}
+    graph["15"] = {"class_type": "VAEDecodeAudio", "inputs": {"samples": ["13", 0], "vae": ["5", 0]}}
+    graph["16"] = {"class_type": "CreateVideo", "inputs": {"images": ["14", 0], "audio": ["15", 0], "fps": 24.0}}
+    graph["17"] = {"class_type": "SaveVideo", "inputs": {"video": ["16", 0], "filename_prefix": prefix, "format": "auto", "codec": "auto"}}
+    return graph
+
+
 def _submit_and_wait_comfy(comfy_url: str, password: str, graph: Dict[str, Any], out_dir: Path, timeout_s: int = 1800) -> List[str]:
     client_id = uuid.uuid4().hex
     res = _http_json(
@@ -879,8 +1005,8 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     p_cip = sub.add_parser("comfy-install-pack", help="1-click install ComfyUI preset pack + custom nodes")
     p_cip.add_argument("--pack", required=True, choices=[
-        "minimax_h3_10eros_max", "minimax_h3_sulphur3", "minimax_h3_i2v_flf2v",
-        "wan22_i2v_flf2v", "ltx23_flf2v", "hunyuan15_i2v_1080p",
+        "minimax_h3_ref2va_tara", "minimax_h3_10eros_max", "minimax_h3_sulphur3",
+        "minimax_h3_i2v_flf2v", "wan22_i2v_flf2v", "ltx23_flf2v", "hunyuan15_i2v_1080p",
     ])
     p_cip.add_argument("--no-auto-start", action="store_true")
     p_cip.add_argument("--hf-token", default="")
@@ -951,6 +1077,35 @@ def main(argv: Optional[List[str]] = None) -> int:
     p_s3.add_argument("--out", default="./outputs")
     p_s3.add_argument("--keep-alive", action="store_true", help="Keep Colab VM awake after this run (default: auto-sleep & release VM to save CU)")
     p_s3.add_argument("--dry-run", action="store_true")
+
+    p_tara = sub.add_parser("comfy-run-tara", help="Run Ref2VA + TARA Motion Transfer via ComfyUI API (<Video 1> + <Picture 1..9>)")
+    p_tara.add_argument("--ref-video", required=True, help="Motion guide video path (<Video 1>)")
+    p_tara.add_argument("--ref-image", action="append", default=[], help="Target character/scene image path (up to 9)")
+    p_tara.add_argument("--ref-audio", action="append", default=[], help="Optional voice reference audio (up to 3)")
+    p_tara.add_argument("--prompt", required=True)
+    p_tara.add_argument("--width", type=int, default=1056)
+    p_tara.add_argument("--height", type=int, default=608)
+    p_tara.add_argument("--frames", type=int, default=124)
+    p_tara.add_argument("--steps", type=int, default=8)
+    p_tara.add_argument("--sampler", default="euler")
+    p_tara.add_argument("--scheduler", default="simple")
+    p_tara.add_argument("--shift-video", type=float, default=12.0)
+    p_tara.add_argument("--shift-audio", type=float, default=3.0)
+    p_tara.add_argument("--ref-image-size", default="match", choices=["match", "max"])
+    p_tara.add_argument("--lora-strength", type=float, default=1.0)
+    p_tara.add_argument("--tara-strength", type=float, default=2.0)
+    p_tara.add_argument("--tara-window", type=float, default=0.20)
+    p_tara.add_argument("--tara-falloff", type=float, default=0.25)
+    p_tara.add_argument("--tara-max-penalty", type=float, default=6.0)
+    p_tara.add_argument("--disable-tara", action="store_true", help="Bypass BFSMiniMaxH3NativeTemporal node")
+    p_tara.add_argument("--seed", type=int, default=-1)
+    p_tara.add_argument("--prefix", default="video/Ref2VA_TARA_CLI")
+    p_tara.add_argument("--unet", default="minimax_h3_ref2va_pruned_int8_convrot.safetensors")
+    p_tara.add_argument("--clip", default="qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors")
+    p_tara.add_argument("--comfy-url", default="")
+    p_tara.add_argument("--out", default="./outputs")
+    p_tara.add_argument("--keep-alive", action="store_true", help="Keep Colab VM awake after this run (default: auto-sleep & release VM to save CU)")
+    p_tara.add_argument("--dry-run", action="store_true")
 
     args = parser.parse_args(argv)
     if args.cmd not in ("snap-frames",):
@@ -1233,6 +1388,48 @@ def _execute_cli_command(args: argparse.Namespace) -> int:
             if not args.keep_alive:
                 sleep_report = _auto_sleep_runtime(base_url, password or cf_pw, sync_comfy=bool(base_url))
         _emit_app_log(f"Sulphur-3 生成完成，输出文件: {', '.join(files)}")
+        print(json.dumps({"ok": True, "files": files, "auto_sleep": sleep_report}, ensure_ascii=False, indent=2))
+        return 0
+
+    if args.cmd == "comfy-run-tara":
+        if not Path(args.ref_video).expanduser().is_file():
+            raise FileNotFoundError(f"Guide video not found: {args.ref_video}")
+        if args.dry_run:
+            ref_imgs = [Path(p).name for p in args.ref_image]
+            ref_auds = [Path(p).name for p in args.ref_audio]
+            vid_name = Path(args.ref_video).name
+            graph = _build_ref2va_tara_api_prompt(
+                args.prompt, vid_name, ref_imgs, ref_auds,
+                args.width, args.height, args.frames, args.steps, args.sampler, args.scheduler,
+                args.shift_video, args.shift_audio, args.ref_image_size, args.lora_strength,
+                not args.disable_tara, args.tara_strength, args.tara_window, args.tara_falloff,
+                args.tara_max_penalty, args.seed, args.prefix, args.unet, args.clip,
+            )
+            print(json.dumps({"auto_sleep_after_run": not args.keep_alive, "prompt": graph}, ensure_ascii=False, indent=2))
+            return 0
+        sleep_report = {"triggered": False, "reason": "keep_alive"}
+        files = []
+        cf_pw = password
+        try:
+            comfy_url, cf_pw = _resolve_comfy_url(args)
+            _emit_app_log(
+                f"提交 Ref2VA TARA 动作复刻 ({args.steps}步, 参考图={len(args.ref_image)}张, TARA={'ON' if not args.disable_tara else 'OFF'})..."
+            )
+            vid_name = _comfy_upload_file(comfy_url, cf_pw, args.ref_video)
+            ref_imgs = [_comfy_upload_file(comfy_url, cf_pw, p) for p in args.ref_image]
+            ref_auds = [_comfy_upload_file(comfy_url, cf_pw, p) for p in args.ref_audio]
+            graph = _build_ref2va_tara_api_prompt(
+                args.prompt, vid_name, ref_imgs, ref_auds,
+                args.width, args.height, args.frames, args.steps, args.sampler, args.scheduler,
+                args.shift_video, args.shift_audio, args.ref_image_size, args.lora_strength,
+                not args.disable_tara, args.tara_strength, args.tara_window, args.tara_falloff,
+                args.tara_max_penalty, args.seed, args.prefix, args.unet, args.clip,
+            )
+            files = _submit_and_wait_comfy(comfy_url, cf_pw, graph, Path(args.out))
+        finally:
+            if not args.keep_alive:
+                sleep_report = _auto_sleep_runtime(base_url, password or cf_pw, sync_comfy=bool(base_url))
+        _emit_app_log(f"Ref2VA TARA 动作复刻完成，输出文件: {', '.join(files)}")
         print(json.dumps({"ok": True, "files": files, "auto_sleep": sleep_report}, ensure_ascii=False, indent=2))
         return 0
 

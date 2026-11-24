@@ -21,17 +21,19 @@ extension MainStudioView {
                     // API 协议网关专属面板（OpenAI + Anthropic 双协议配置与一键复制）
                     apiGatewaySection(palette: palette)
                 } else {
-                    // 2. 参考图与声纹参考上传区（在多图参考、首尾帧、图生视频、指令修图、视觉理解模式下自动展开）
-                    if ["multiref", "fl2va", "i2v", "i2i_edit", "vlm"].contains(vm.taskModeId) {
+                    // 2. 参考图、参考视频与声纹参考上传区（在动作复刻、多图参考、首尾帧、图生视频、指令修图、视觉理解模式下自动展开）
+                    if ["motion_transfer", "multiref", "fl2va", "i2v", "i2i_edit", "vlm"].contains(vm.taskModeId) {
                         referenceImageSection
                     }
 
                     // 3. 提示词与输入工作台
                     promptComposerSection(palette: palette)
 
-                    // 3.5 Sulphur-3 s3_corrector 速度残差修正器原生控制面板
+                    // 3.5 Sulphur-3 s3_corrector 或 Ref2VA TARA 原生控制面板
                     if vm.selectedModelId == "minimax_h3_sulphur3" {
                         h3CorrectorSection(palette: palette)
+                    } else if vm.selectedModelId == "minimax_h3_ref2va_tara" && vm.taskModeId == "motion_transfer" {
+                        h3TaraControlSection(palette: palette)
                     }
 
                     // 4. 生成主按钮与状态条
@@ -1117,123 +1119,174 @@ extension MainStudioView {
     }
 
     @ViewBuilder
+    func multiRefImagesAndVoiceBody() -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 8) {
+                Text(L("参考图列表 (\(vm.referenceImages.count)/9)", "Reference Images (\(vm.referenceImages.count)/9)"))
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Picker(L("参考缩放", "Ref Scale"), selection: $vm.refImageSizeMode) {
+                    Text(L("match (原图适配)", "match (Fit)")).tag("match")
+                    Text(L("max (高分辨率)", "max (High-Res)")).tag("max")
+                }
+                .pickerStyle(.segmented)
+                .frame(width: 240)
+
+                Button {
+                    let panel = NSOpenPanel()
+                    panel.allowsMultipleSelection = true
+                    panel.canChooseDirectories = false
+                    panel.allowedContentTypes = [.image, .png, .jpeg, .webP]
+                    if panel.runModal() == .OK {
+                        vm.addReferenceImages(from: panel.urls)
+                    }
+                } label: {
+                    Label(L("添加参考图", "Add Images"), systemImage: "plus.circle.fill")
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+                .disabled(vm.referenceImages.count >= 9)
+
+                if !vm.referenceImages.isEmpty {
+                    Button(role: .destructive) {
+                        vm.clearReferenceImages()
+                    } label: {
+                        Label(L("清空", "Clear"), systemImage: "trash")
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                }
+            }
+
+            if vm.referenceImages.isEmpty {
+                HStack(spacing: 10) {
+                    Image(systemName: "photo.stack")
+                        .font(.title2)
+                        .foregroundStyle(.secondary)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(L("拖入 1~9 张人物定妆、服装或场景图到此处，或点击右上角「添加参考图」", "Drop 1–9 character, outfit, or scene images here, or click 'Add Images'"))
+                            .font(.callout.weight(.medium))
+                        Text(L("提示词写法示例：The woman from <Picture 1> enters the sunlit room from <Picture 2>...", "Prompt syntax: The woman from <Picture 1> enters the sunlit room from <Picture 2>..."))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                }
+                .padding(14)
+                .frame(maxWidth: .infinity)
+                .background(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .strokeBorder(Color.secondary.opacity(0.35), style: StrokeStyle(lineWidth: 1.2, dash: [6, 4]))
+                )
+            } else {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 112, maximum: 136), spacing: 10)], spacing: 10) {
+                    ForEach(Array(vm.referenceImages.enumerated()), id: \.offset) { idx, img in
+                        ZStack(alignment: .topTrailing) {
+                            VStack(spacing: 4) {
+                                Image(nsImage: img)
+                                    .resizable()
+                                    .aspectRatio(contentMode: .fill)
+                                    .frame(width: 112, height: 84)
+                                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                                Text("<Picture \(idx + 1)>")
+                                    .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                                    .foregroundStyle(Color.accentColor)
+                            }
+                            .padding(5)
+                            .background(
+                                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                    .fill(Color.primary.opacity(0.04))
+                            )
+
+                            Button {
+                                vm.removeReferenceImage(at: idx)
+                            } label: {
+                                Image(systemName: "xmark.circle.fill")
+                                    .font(.system(size: 15))
+                                    .foregroundStyle(.white, Color.red.opacity(0.9))
+                            }
+                            .buttonStyle(.plain)
+                            .padding(4)
+                        }
+                    }
+                }
+            }
+
+            Divider()
+
+            HStack(spacing: 10) {
+                Image(systemName: "waveform.circle.fill")
+                    .font(.title3)
+                    .foregroundStyle(vm.refAudioBase64 != nil ? Color.accentColor : .secondary)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(L("声纹克隆音频参考 (<Audio 1>，可选)", "Voice Clone Audio Seed (<Audio 1>, Optional)"))
+                        .font(.caption.weight(.semibold))
+                    Text(
+                        vm.refAudioFileName != nil
+                            ? L("已绑定声纹：\(vm.refAudioFileName!) — 在音效/对白框写 <Audio 1> 即可复用音色", "Loaded: \(vm.refAudioFileName!) — reference <Audio 1> in dialogue prompt")
+                            : L("上传 3~15 秒干净人声 (.wav / .mp3 / .m4a / .flac)，提示词用 <Audio 1> 指代", "Upload 3–15s clean speech (.wav/.mp3/.m4a/.flac) and write <Audio 1> in prompt")
+                    )
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button {
+                    let panel = NSOpenPanel()
+                    panel.allowsMultipleSelection = false
+                    panel.canChooseDirectories = false
+                    panel.allowedContentTypes = [.audio, .wav, .mp3, .mpeg4Audio]
+                    if panel.runModal() == .OK, let url = panel.url {
+                        vm.setReferenceAudio(from: url)
+                    }
+                } label: {
+                    Label(
+                        vm.refAudioFileName == nil ? L("选择参考音频", "Select Audio") : L("更换音频", "Replace Audio"),
+                        systemImage: "music.note"
+                    )
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+
+                if vm.refAudioBase64 != nil {
+                    Button(role: .destructive) {
+                        vm.clearReferenceAudio()
+                    } label: {
+                        Image(systemName: "xmark.circle")
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
     var referenceImageSection: some View {
         switch vm.taskModeId {
-        case "multiref":
+        case "motion_transfer":
             WorkspaceCard(
-                title: L("多图参考 (<Picture 1..9>) 与声纹克隆 (<Audio 1>)", "Multi-Image Refs (<Picture 1..9>) & Voice Clone (<Audio 1>)"),
+                title: L("参考动作视频 (<Video 1>) 与目标主体 (<Picture 1..9>)", "Motion Guide Video (<Video 1>) & Target Subject (<Picture 1..9>)"),
                 subtitle: L(
-                    "10Eros-Max 支持最多 9 张参考图（按顺序在提示词写 <Picture 1>、<Picture 2>...）及 1 段声纹克隆音频（写 <Audio 1>）",
-                    "10Eros-Max supports up to 9 reference images (<Picture 1>, <Picture 2>...) + optional voice seed (<Audio 1>)"
+                    "上传原动作视频 (<Video 1>) + 至少 1 张目标角色图 (<Picture 1>)，通过 Ref2VA + TARA 逐帧复刻动作与神态",
+                    "Upload motion video (<Video 1>) + 1+ target image (<Picture 1>) for frame-aligned TARA motion transfer"
                 ),
-                icon: "person.2.crop.square.stack"
+                icon: "figure.run"
             ) {
-                VStack(alignment: .leading, spacing: 12) {
-                    HStack(spacing: 8) {
-                        Text(L("参考图列表 (\(vm.referenceImages.count)/9)", "Reference Images (\(vm.referenceImages.count)/9)"))
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(.secondary)
-                        Spacer()
-                        Picker(L("参考缩放", "Ref Scale"), selection: $vm.refImageSizeMode) {
-                            Text(L("match (原图适配)", "match (Fit)")).tag("match")
-                            Text(L("max (高分辨率)", "max (High-Res)")).tag("max")
-                        }
-                        .pickerStyle(.segmented)
-                        .frame(width: 240)
-
-                        Button {
-                            let panel = NSOpenPanel()
-                            panel.allowsMultipleSelection = true
-                            panel.canChooseDirectories = false
-                            panel.allowedContentTypes = [.image, .png, .jpeg, .webP]
-                            if panel.runModal() == .OK {
-                                vm.addReferenceImages(from: panel.urls)
-                            }
-                        } label: {
-                            Label(L("添加参考图", "Add Images"), systemImage: "plus.circle.fill")
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .controlSize(.small)
-                        .disabled(vm.referenceImages.count >= 9)
-
-                        if !vm.referenceImages.isEmpty {
-                            Button(role: .destructive) {
-                                vm.clearReferenceImages()
-                            } label: {
-                                Label(L("清空", "Clear"), systemImage: "trash")
-                            }
-                            .buttonStyle(.bordered)
-                            .controlSize(.small)
-                        }
-                    }
-
-                    if vm.referenceImages.isEmpty {
-                        HStack(spacing: 10) {
-                            Image(systemName: "photo.stack")
-                                .font(.title2)
-                                .foregroundStyle(.secondary)
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(L("拖入 1~9 张人物定妆、服装或场景图到此处，或点击右上角「添加参考图」", "Drop 1–9 character, outfit, or scene images here, or click 'Add Images'"))
-                                    .font(.callout.weight(.medium))
-                                Text(L("提示词写法示例：The woman from <Picture 1> enters the sunlit room from <Picture 2>...", "Prompt syntax: The woman from <Picture 1> enters the sunlit room from <Picture 2>..."))
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                            Spacer()
-                        }
-                        .padding(14)
-                        .frame(maxWidth: .infinity)
-                        .background(
-                            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                .strokeBorder(Color.secondary.opacity(0.35), style: StrokeStyle(lineWidth: 1.2, dash: [6, 4]))
-                        )
-                    } else {
-                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 112, maximum: 136), spacing: 10)], spacing: 10) {
-                            ForEach(Array(vm.referenceImages.enumerated()), id: \.offset) { idx, img in
-                                ZStack(alignment: .topTrailing) {
-                                    VStack(spacing: 4) {
-                                        Image(nsImage: img)
-                                            .resizable()
-                                            .aspectRatio(contentMode: .fill)
-                                            .frame(width: 112, height: 84)
-                                            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-                                        Text("<Picture \(idx + 1)>")
-                                            .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                                            .foregroundStyle(Color.accentColor)
-                                    }
-                                    .padding(5)
-                                    .background(
-                                        RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                            .fill(Color.primary.opacity(0.04))
-                                    )
-
-                                    Button {
-                                        vm.removeReferenceImage(at: idx)
-                                    } label: {
-                                        Image(systemName: "xmark.circle.fill")
-                                            .font(.system(size: 15))
-                                            .foregroundStyle(.white, Color.red.opacity(0.9))
-                                    }
-                                    .buttonStyle(.plain)
-                                    .padding(4)
-                                }
-                            }
-                        }
-                    }
-
-                    Divider()
-
-                    HStack(spacing: 10) {
-                        Image(systemName: "waveform.circle.fill")
-                            .font(.title3)
-                            .foregroundStyle(vm.refAudioBase64 != nil ? Color.accentColor : .secondary)
+                VStack(alignment: .leading, spacing: 14) {
+                    HStack(spacing: 12) {
+                        Image(systemName: "film.stack.fill")
+                            .font(.title2)
+                            .foregroundStyle(vm.refVideoBase64 != nil ? Color.accentColor : .secondary)
                         VStack(alignment: .leading, spacing: 2) {
-                            Text(L("声纹克隆音频参考 (<Audio 1>，可选)", "Voice Clone Audio Seed (<Audio 1>, Optional)"))
+                            Text(L("动作参考引导视频 (<Video 1>，必选)", "Motion Guide Video (<Video 1>, Required)"))
                                 .font(.caption.weight(.semibold))
                             Text(
-                                vm.refAudioFileName != nil
-                                    ? L("已绑定声纹：\(vm.refAudioFileName!) — 在音效/对白框写 <Audio 1> 即可复用音色", "Loaded: \(vm.refAudioFileName!) — reference <Audio 1> in dialogue prompt")
-                                    : L("上传 3~15 秒干净人声 (.wav / .mp3 / .m4a / .flac)，提示词用 <Audio 1> 指代", "Upload 3–15s clean speech (.wav/.mp3/.m4a/.flac) and write <Audio 1> in prompt")
+                                vm.refVideoFileName != nil
+                                    ? L("已绑定动作视频：\(vm.refVideoFileName!) (\(String(format: "%.1f", vm.refVideoSizeMB)) MB) — 提示词用 <Video 1> 指代",
+                                        "Loaded: \(vm.refVideoFileName!) (\(String(format: "%.1f", vm.refVideoSizeMB)) MB) — refer via <Video 1>")
+                                    : L("选择或拖入 3~15 秒 .mp4 / .mov 动作视频 (24fps 最佳，<=120 MB)",
+                                        "Select or drop a 3–15s .mp4 / .mov guide video (24fps recommended, <=120 MB)")
                             )
                             .font(.caption2)
                             .foregroundStyle(.secondary)
@@ -1243,22 +1296,22 @@ extension MainStudioView {
                             let panel = NSOpenPanel()
                             panel.allowsMultipleSelection = false
                             panel.canChooseDirectories = false
-                            panel.allowedContentTypes = [.audio, .wav, .mp3, .mpeg4Audio]
+                            panel.allowedContentTypes = [.mpeg4Movie, .quickTimeMovie, .movie, .avi]
                             if panel.runModal() == .OK, let url = panel.url {
-                                vm.setReferenceAudio(from: url)
+                                vm.setReferenceVideo(from: url)
                             }
                         } label: {
                             Label(
-                                vm.refAudioFileName == nil ? L("选择参考音频", "Select Audio") : L("更换音频", "Replace Audio"),
-                                systemImage: "music.note"
+                                vm.refVideoFileName == nil ? L("选择参考视频", "Select Video") : L("更换视频", "Replace Video"),
+                                systemImage: "video.badge.plus"
                             )
                         }
-                        .buttonStyle(.bordered)
+                        .buttonStyle(.borderedProminent)
                         .controlSize(.small)
 
-                        if vm.refAudioBase64 != nil {
+                        if vm.refVideoBase64 != nil {
                             Button(role: .destructive) {
-                                vm.clearReferenceAudio()
+                                vm.clearReferenceVideo()
                             } label: {
                                 Image(systemName: "xmark.circle")
                             }
@@ -1266,7 +1319,52 @@ extension MainStudioView {
                             .controlSize(.small)
                         }
                     }
+                    .padding(12)
+                    .background(
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .fill(vm.refVideoBase64 != nil ? Color.accentColor.opacity(0.08) : Color.primary.opacity(0.03))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                    .strokeBorder(
+                                        vm.refVideoBase64 != nil ? Color.accentColor.opacity(0.45) : Color.secondary.opacity(0.3),
+                                        style: StrokeStyle(lineWidth: 1.1, dash: vm.refVideoBase64 != nil ? [] : [5, 4])
+                                    )
+                            )
+                    )
+
+                    Divider()
+
+                    multiRefImagesAndVoiceBody()
                 }
+                .onDrop(of: [.fileURL], isTargeted: nil) { providers in
+                    for provider in providers {
+                        _ = provider.loadObject(ofClass: URL.self) { url, _ in
+                            guard let url else { return }
+                            Task { @MainActor in
+                                let ext = url.pathExtension.lowercased()
+                                if ["mp4", "mov", "webm", "mkv", "avi", "m4v"].contains(ext) {
+                                    vm.setReferenceVideo(from: url)
+                                } else if ["wav", "mp3", "m4a", "flac", "ogg", "aac"].contains(ext) {
+                                    vm.setReferenceAudio(from: url)
+                                } else {
+                                    vm.addReferenceImages(from: [url])
+                                }
+                            }
+                        }
+                    }
+                    return true
+                }
+            }
+        case "multiref":
+            WorkspaceCard(
+                title: L("多图参考 (<Picture 1..9>) 与声纹克隆 (<Audio 1>)", "Multi-Image Refs (<Picture 1..9>) & Voice Clone (<Audio 1>)"),
+                subtitle: L(
+                    "支持最多 9 张参考图（按顺序在提示词写 <Picture 1>、<Picture 2>...）及 1 段声纹克隆音频（写 <Audio 1>）",
+                    "Supports up to 9 reference images (<Picture 1>, <Picture 2>...) + optional voice seed (<Audio 1>)"
+                ),
+                icon: "person.2.crop.square.stack"
+            ) {
+                multiRefImagesAndVoiceBody()
                 .onDrop(of: [.fileURL], isTargeted: nil) { providers in
                     for provider in providers {
                         _ = provider.loadObject(ofClass: URL.self) { url, _ in
@@ -1596,6 +1694,120 @@ extension MainStudioView {
                             vm.h3CorrectorStrength = 1.0
                             vm.h3CorrectorStartStep = 0
                             vm.h3CorrectorEndStep = -1
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                    }
+                }
+            }
+            .padding(4)
+        }
+    }
+
+    @ViewBuilder
+    func h3TaraControlSection(palette: StudioPalette) -> some View {
+        WorkspaceCard(
+            title: L("TARA 逐帧时序动作复刻控制 (BFSMiniMaxH3NativeTemporal)", "TARA Temporal Motion Alignment (BFSMiniMaxH3NativeTemporal)"),
+            subtitle: L(
+                "基于 ComfyUI-BFSNodes 锁定 <Video 1> 的 RoPE 时间坐标与注意力惩罚，防止快动作/舞蹈顺序错乱",
+                "Uses ComfyUI-BFSNodes to lock <Video 1> temporal RoPE alignment & prevent timeline shuffling"
+            ),
+            icon: "timeline.selection"
+        ) {
+            VStack(alignment: .leading, spacing: 12) {
+                Toggle(isOn: $vm.taraEnabled) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(L("启用 TARA 时序对齐补丁 (Flash Partitions)", "Enable TARA Temporal Alignment Patch (Flash Partitions)"))
+                            .font(.callout.weight(.medium))
+                        Text(L("关闭时仅保留 Ref2VA 原生 <Video 1> 条件 + Motion Transfer LoRA", "When disabled, uses Ref2VA + Motion LoRA without the TARA attention patch"))
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .toggleStyle(.switch)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack {
+                        Text(L("Motion Transfer LoRA 权重强度", "Motion Transfer LoRA Strength"))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Text(String(format: "%.2f", vm.taraLoraStrength))
+                            .font(.caption.weight(.semibold))
+                            .monospacedDigit()
+                    }
+                    Slider(value: $vm.taraLoraStrength, in: 0.0...1.5, step: 0.05)
+                }
+
+                if vm.taraEnabled {
+                    HStack(spacing: 14) {
+                        VStack(alignment: .leading, spacing: 3) {
+                            HStack {
+                                Text(L("时序惩罚强度 λ", "Strength λ"))
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                Spacer()
+                                Text(String(format: "%.1f", vm.taraStrength))
+                                    .font(.caption.weight(.semibold))
+                                    .monospacedDigit()
+                            }
+                            Slider(value: $vm.taraStrength, in: 0.0...6.0, step: 0.1)
+                        }
+
+                        VStack(alignment: .leading, spacing: 3) {
+                            HStack {
+                                Text(L("最大惩罚上限 c", "Max Penalty c"))
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                Spacer()
+                                Text(String(format: "%.1f", vm.taraMaxPenalty))
+                                    .font(.caption.weight(.semibold))
+                                    .monospacedDigit()
+                            }
+                            Slider(value: $vm.taraMaxPenalty, in: 0.0...12.0, step: 0.5)
+                        }
+                    }
+
+                    HStack(spacing: 14) {
+                        VStack(alignment: .leading, spacing: 3) {
+                            HStack {
+                                Text(L("自由时间窗口 w (秒)", "Free Window w (s)"))
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                Spacer()
+                                Text(String(format: "%.2fs", vm.taraWindowSeconds))
+                                    .font(.caption.weight(.semibold))
+                                    .monospacedDigit()
+                            }
+                            Slider(value: $vm.taraWindowSeconds, in: 0.0...1.0, step: 0.02)
+                        }
+
+                        VStack(alignment: .leading, spacing: 3) {
+                            HStack {
+                                Text(L("衰减尺度 f (秒)", "Falloff f (s)"))
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                Spacer()
+                                Text(String(format: "%.2fs", vm.taraFalloffSeconds))
+                                    .font(.caption.weight(.semibold))
+                                    .monospacedDigit()
+                            }
+                            Slider(value: $vm.taraFalloffSeconds, in: 0.05...1.0, step: 0.05)
+                        }
+                    }
+
+                    HStack {
+                        Text(L("推荐初值：w=0.20s · f=0.25s · λ=2.0 · c=6.0（参考视频建议 24fps）",
+                               "Recommended defaults: w=0.20s · f=0.25s · λ=2.0 · c=6.0 (24fps guide video)"))
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Button(L("恢复默认", "Defaults")) {
+                            vm.taraLoraStrength = 1.0
+                            vm.taraStrength = 2.0
+                            vm.taraWindowSeconds = 0.20
+                            vm.taraFalloffSeconds = 0.25
+                            vm.taraMaxPenalty = 6.0
                         }
                         .buttonStyle(.bordered)
                         .controlSize(.small)

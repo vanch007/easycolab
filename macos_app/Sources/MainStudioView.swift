@@ -1679,7 +1679,7 @@ struct MainStudioView: View {
                         .font(.caption.weight(.medium))
                         .monospacedDigit()
                 }
-                if vm.selectedModelId == "minimax_h3_10eros_max" {
+                if vm.selectedModelId == "minimax_h3_10eros_max" || vm.selectedModelId == "minimax_h3_ref2va_tara" {
                     Slider(
                         value: Binding(
                             get: { vm.inferenceSteps.clamped(to: 4...20) },
