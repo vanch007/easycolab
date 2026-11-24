@@ -525,10 +525,12 @@ class ExternalCLILogBusTests(unittest.TestCase):
 
         multi_checks = {
             os.path.join(REPO_ROOT, "macos_app", "EasyColabStudio.swift"): ["account-workspace", "boundAccountEmail"],
-            os.path.join(REPO_ROOT, "macos_app", "Sources", "ModelsAndCatalogs.swift"): ["accelerators", "status_ok", "total_active_vms", "total_burn_rate_hourly"],
-            os.path.join(REPO_ROOT, "macos_app", "Sources", "StudioViewModel.swift"): ["boundAccountEmail", "activeBridgeAccountEmail", "perAccountURLDefaultsKey", "showMultiAccountWakeSheet", "totalSavedAccountsActiveVMs", "otherAccountsWithActiveVMs", "lastConnectionError", "isRecoveringTunnel"],
-            os.path.join(REPO_ROOT, "macos_app", "Sources", "StudioViewModel+Services.swift"): ["EASYCOLAB_ACCOUNT", "scopedAccount", "wakeColabMultiRace", "launchMultiAccountBatchWake", "auth_status_all", "stopAccountRemoteVMs", "recover_tunnel", "recoverRunningColabConnection"],
-            os.path.join(REPO_ROOT, "macos_app", "Sources", "MainStudioView.swift"): ["openWindow", "account-workspace", "boundAccountEmail", "MultiAccountWakeSheet", "MultiAccountLiveMonitorView", "pendingStopAccountEmail", "运行中 · 未连", "已释放", "恢复连接"],
+            os.path.join(REPO_ROOT, "macos_app", "Sources", "ModelsAndCatalogs.swift"): ["accelerators", "status_ok", "total_active_vms", "total_burn_rate_hourly", "ComfyLiveTaskProgress", "live_task", "ExternalTaskSnapshot"],
+            os.path.join(REPO_ROOT, "macos_app", "Sources", "StudioViewModel.swift"): ["boundAccountEmail", "activeBridgeAccountEmail", "perAccountURLDefaultsKey", "showMultiAccountWakeSheet", "totalSavedAccountsActiveVMs", "otherAccountsWithActiveVMs", "lastConnectionError", "isRecoveringTunnel", "activeLogTaskProgress", "comfyLiveTask", "externalCLITaskProgress", "activeExternalTask", "visibleExternalTask"],
+            os.path.join(REPO_ROOT, "macos_app", "Sources", "StudioViewModel+Services.swift"): ["EASYCOLAB_ACCOUNT", "scopedAccount", "wakeColabMultiRace", "launchMultiAccountBatchWake", "auth_status_all", "stopAccountRemoteVMs", "recover_tunnel", "recoverRunningColabConnection", "updateExternalCLIProgress", "checkExternalActiveTaskIfNeeded", "syncWorkspaceToExternalTask"],
+            os.path.join(REPO_ROOT, "macos_app", "Sources", "MainStudioView+Workspace.swift"): ["ScrollViewReader", "externalTaskScrollNonce"],
+            os.path.join(REPO_ROOT, "macos_app", "Sources", "ExternalTaskPreviewCard.swift"): ["ExternalTaskSnapshot", "syncWorkspaceToExternalTask", "externalTaskCardDismissedId"],
+            os.path.join(REPO_ROOT, "macos_app", "Sources", "MainStudioView.swift"): ["openWindow", "account-workspace", "boundAccountEmail", "MultiAccountWakeSheet", "MultiAccountLiveMonitorView", "pendingStopAccountEmail", "运行中 · 未连", "已释放", "恢复连接", "activeLogTaskProgress", "ExternalTaskPreviewCard", "visibleExternalTask"],
             os.path.join(REPO_ROOT, "macos_app", "Sources", "MultiAccountWakeSheet.swift"): ["MultiAccountWakeCoordinator", "MultiAccountWakeMode", "firstWins", "allParallel", "MultiAccountLiveMonitorView"],
             os.path.join(REPO_ROOT, "skills", "colab-minimax-h3", "scripts", "colab_h3_cli.py"): ["--account", "EASYCOLAB_ACCOUNT", "wake-multi", "auth-status-all", "auth_switch"],
             os.path.join(REPO_ROOT, "skills", "colab-minimax-h3", "SKILL.md"): ["auth-status-all", "wake-multi --gpu G4 --mode first --persistent"],
@@ -959,6 +961,8 @@ class ExternalCLILogBusTests(unittest.TestCase):
             "_quiet_colab_cli": contextlib.nullcontext,
             "_session_from_listed_assignment": lambda a, session_name="easycolab", existing=None: None,
             "_wait_for_runtime_ready": lambda s, timeout_s=18: True,
+            "_sync_active_session_file": lambda *a, **kw: None,
+            "_get_account_email": lambda: "test@example.com",
         }
         exec(compile(mod, "colab_bridge.py", "exec"), ns)
 
@@ -992,6 +996,287 @@ class ExternalCLILogBusTests(unittest.TestCase):
         self.assertIn("RECOVER_URL:https://reconnected42.gradio.live", out2)
         self.assertNotIn("RECOVER_ERROR:", out2)
         self.assertEqual(client_calls, [])
+
+    def test_app_py_and_cli_format_live_comfy_step_and_node_progress(self):
+        import ast
+        import threading
+        import time
+        from collections import deque
+        from datetime import datetime
+
+        app_path = os.path.join(REPO_ROOT, "app.py")
+        with open(app_path, "r", encoding="utf-8") as f:
+            app_src = f.read()
+        tree = ast.parse(app_src, filename="app.py")
+        wanted_funcs = {
+            "_describe_comfy_node_stage",
+            "_format_ascii_progress_bar",
+            "get_comfyui_live_task_snapshot",
+            "_update_comfy_live_task_from_ws_event",
+        }
+        selected = [
+            n for n in tree.body
+            if isinstance(n, ast.FunctionDef) and n.name in wanted_funcs
+        ]
+        mod = ast.Module(body=selected, type_ignores=[])
+        ast.fix_missing_locations(mod)
+        ns = {
+            "time": time,
+            "datetime": datetime,
+            "Optional": __import__("typing").Optional,
+            "Dict": __import__("typing").Dict,
+            "Any": __import__("typing").Any,
+            "CONSOLE_LOCK": threading.Lock(),
+            "CONSOLE_LINES": deque(maxlen=50),
+            "ACTIVE_TQDM_BARS": {},
+            "COMFYUI_LIVE_TASK_LOCK": threading.Lock(),
+            "COMFYUI_LIVE_TASK": {
+                "active": False, "prompt_id": "", "progress": 0.0,
+                "step_value": 0, "step_max": 0, "node_id": "", "node_type": "",
+                "node_done": 0, "node_total": 0, "stage_label": "",
+                "started_at": 0.0, "step_started_at": 0.0, "elapsed_s": 0.0,
+                "eta_s": None, "summary_line": "", "_done_nodes": set(),
+                "_last_log_pct": -1, "_last_log_node": "",
+            },
+        }
+        exec(compile(mod, "app.py", "exec"), ns)
+
+        prompt_nodes = {
+            "p-1": {
+                "1": "UNETLoader",
+                "13": "SamplerCustomAdvanced",
+                "14": "VAEDecode",
+                "17": "SaveVideo",
+            }
+        }
+        ns["_update_comfy_live_task_from_ws_event"]({"type": "execution_start", "data": {"prompt_id": "p-1"}}, prompt_nodes, now_ts=100.0)
+        ns["_update_comfy_live_task_from_ws_event"]({"type": "executing", "data": {"prompt_id": "p-1", "node": "1"}}, prompt_nodes, now_ts=102.0)
+        ns["_update_comfy_live_task_from_ws_event"]({"type": "executing", "data": {"prompt_id": "p-1", "node": "13"}}, prompt_nodes, now_ts=105.0)
+        line = ns["_update_comfy_live_task_from_ws_event"](
+            {"type": "progress", "data": {"prompt_id": "p-1", "node": "13", "value": 4, "max": 8}},
+            prompt_nodes,
+            now_ts=125.0,
+        )
+        snap = ns["get_comfyui_live_task_snapshot"]()
+        self.assertTrue(snap["active"])
+        self.assertEqual(snap["step_value"], 4)
+        self.assertEqual(snap["step_max"], 8)
+        self.assertEqual(snap["node_type"], "SamplerCustomAdvanced")
+        self.assertIn("4/8 步", line)
+        self.assertIn("%|", line)
+        self.assertIn("comfy_live", ns["ACTIVE_TQDM_BARS"])
+
+        ns["_update_comfy_live_task_from_ws_event"]({"type": "execution_success", "data": {"prompt_id": "p-1"}}, prompt_nodes, now_ts=150.0)
+        snap_done = ns["get_comfyui_live_task_snapshot"]()
+        self.assertFalse(snap_done["active"])
+        self.assertNotIn("comfy_live", ns["ACTIVE_TQDM_BARS"])
+
+        # Verify Skill CLI _ComfyWSProgressTracker formats step/node progress clearly
+        cli_mod = _load_module(SKILL_CLI_REPO_PATH, "colab_h3_cli_prog_test")
+        graph = {
+            "1": {"class_type": "UNETLoader"},
+            "13": {"class_type": "SamplerCustomAdvanced"},
+            "14": {"class_type": "VAEDecode"},
+            "17": {"class_type": "SaveVideo"},
+        }
+        tracker = cli_mod._ComfyWSProgressTracker("https://mock.trycloudflare.com", "", "cid-1", graph)
+        tracker.set_prompt_id("p-2")
+        tracker.handle_event({"type": "execution_start", "data": {"prompt_id": "p-2"}}, now_ts=200.0)
+        tracker.handle_event({"type": "executing", "data": {"prompt_id": "p-2", "node": "1"}}, now_ts=202.0)
+        tracker.handle_event({"type": "executing", "data": {"prompt_id": "p-2", "node": "13"}}, now_ts=205.0)
+        tracker.handle_event({"type": "progress", "data": {"prompt_id": "p-2", "node": "13", "value": 4, "max": 8}}, now_ts=225.0)
+        cli_line = tracker.format_status_line(25.0)
+        self.assertIn("4/8 步", cli_line)
+        self.assertIn("SamplerCustomAdvanced", cli_line)
+        self.assertIn("% [", cli_line)
+        self.assertIn("扩散去噪采样", cli_line)
+
+    def test_external_task_bus_and_comfy_queue_prompt_introspection(self):
+        import ast
+
+        # 1. Verify CLI _infer_project_info & _begin_external_task / _finish_external_task
+        cli_mod = _load_module(SKILL_CLI_REPO_PATH, "colab_h3_cli_task_bus_test")
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = os.path.join(tmp, "228-gesture-dance-2", "work", "tara-v1-outputs")
+            os.makedirs(out_dir, exist_ok=True)
+            proj_name, proj_dir = cli_mod._infer_project_info(out_dir)
+            self.assertEqual(proj_name, "228-gesture-dance-2")
+            self.assertTrue(proj_dir.endswith("228-gesture-dance-2"))
+
+            task_file = os.path.join(tmp, "active_external_task.json")
+            src_video = os.path.join(tmp, "dance.mp4")
+            src_img = os.path.join(tmp, "char.png")
+            open(src_video, "wb").close()
+            open(src_img, "wb").close()
+            with mock.patch.dict(os.environ, {"EASYCOLAB_ACTIVE_TASK_PATH": task_file, "EASYCOLAB_ACCOUNT": "vanchnew@gmail.com"}):
+                cli_mod._begin_external_task(
+                    command="comfy-run-tara",
+                    model_id="minimax_h3_ref2va_tara",
+                    model_name="Ref2VA · TARA 动作复刻",
+                    task_mode="motion_transfer",
+                    prompt="<Subject 1> dances smoothly under warm sunlight",
+                    params_summary="1056x608 · 124帧 · 8步",
+                    params={"width": 1056, "height": 608, "frames": 124, "steps": 8, "tara_enabled": True},
+                    input_files=[src_video, src_img],
+                    out_dir=out_dir,
+                    prefix="video/228_dance2",
+                )
+                with open(task_file, "r", encoding="utf-8") as f:
+                    snap_run = json.load(f)
+                self.assertEqual(snap_run["status"], "running")
+                self.assertEqual(snap_run["project_name"], "228-gesture-dance-2")
+                self.assertEqual(snap_run["model_id"], "minimax_h3_ref2va_tara")
+                self.assertEqual(snap_run["task_mode"], "motion_transfer")
+                self.assertEqual(snap_run["input_files"], ["dance.mp4", "char.png"])
+                self.assertEqual(
+                    snap_run["input_paths"],
+                    [os.path.realpath(src_video), os.path.realpath(src_img)],
+                )
+                self.assertEqual(snap_run["params"]["width"], 1056)
+                self.assertEqual(snap_run["params"]["steps"], 8)
+                self.assertIn("dances smoothly", snap_run["prompt"])
+
+                cli_mod._update_external_task_progress(0.5, "ComfyUI 进度 50%")
+                out_file = os.path.join(out_dir, "out.mp4")
+                open(out_file, "wb").close()
+                # Relative path against project_dir should resolve to absolute path on finish
+                cli_mod._finish_external_task(output_files=["work/tara-v1-outputs/out.mp4"])
+                with open(task_file, "r", encoding="utf-8") as f:
+                    snap_done = json.load(f)
+                self.assertEqual(snap_done["status"], "completed")
+                self.assertEqual(snap_done["progress"], 1.0)
+                self.assertEqual(snap_done["output_files"], [os.path.realpath(out_file)])
+
+                # Verify lifecycle commands publish external task updates too
+                sess_stub = {"url": "https://demo.gradio.live", "password": "pw", "account": "vanchnew@gmail.com"}
+                recorded = []
+
+                def fake_sync(payload):
+                    recorded.append(json.loads(json.dumps(payload)))
+
+                with mock.patch.object(cli_mod, "_load_session", return_value=sess_stub), \
+                     mock.patch.object(cli_mod, "_save_session", return_value=None), \
+                     mock.patch.object(cli_mod, "_http_json", return_value={"ok": True, "comfyui": {"public_url": ""}}), \
+                     mock.patch.object(cli_mod, "_sync_app_external_task", side_effect=fake_sync), \
+                     mock.patch.object(cli_mod, "_emit_app_log", return_value=None), \
+                     mock.patch("sys.stdout", new_callable=io.StringIO):
+                    for argv in (
+                        ["comfy-start"],
+                        ["comfy-install-pack", "--pack", "recavsr_upscaler"],
+                        ["download-model", "--model", "minimax_h3"],
+                        ["load-model", "--model", "minimax_h3"],
+                    ):
+                        cli_mod.main(argv)
+                cmds_seen = [r.get("command") for r in recorded]
+                for expected_cmd in ("comfy-start", "comfy-install-pack", "download-model", "load-model"):
+                    self.assertIn(expected_cmd, cmds_seen)
+                pack_rows = [r for r in recorded if r.get("command") == "comfy-install-pack"]
+                self.assertTrue(any(r.get("model_id") == "recavsr_upscaler" for r in pack_rows))
+
+        # 2. Verify macOS Swift wiring for pinned task card, auto-follow sync & ScrollViewReader
+        swift_wiring = {
+            os.path.join(REPO_ROOT, "macos_app", "Sources", "ModelsAndCatalogs.swift"): [
+                "struct ExternalTaskParams",
+                "resolvedOutputURLs",
+                "input_paths",
+            ],
+            os.path.join(REPO_ROOT, "macos_app", "Sources", "MainStudioView.swift"): [
+                "ExternalTaskPreviewCard(vm: vm, task: extTask, palette: palette)",
+                "userManuallyLeftExternalTaskId",
+                "CLI 运行中",
+            ],
+            os.path.join(REPO_ROOT, "macos_app", "Sources", "MainStudioView+Workspace.swift"): [
+                "ScrollViewReader",
+                "externalTaskScrollNonce",
+                "activeRunningExternalTaskForSelectedModel",
+            ],
+            os.path.join(REPO_ROOT, "macos_app", "Sources", "StudioViewModel+Services.swift"): [
+                "autoFollowExternalTasks",
+                "syncWorkspaceToExternalTask",
+                "resolvedOutputURLs",
+            ],
+        }
+        for sp, toks in swift_wiring.items():
+            txt = open(sp, "r", encoding="utf-8").read()
+            for t in toks:
+                self.assertIn(t, txt, f"missing {t} in {sp}")
+
+        # 3. Verify app.py _extract_comfy_prompt_metadata from ComfyUI graph
+        app_path = os.path.join(REPO_ROOT, "app.py")
+        with open(app_path, "r", encoding="utf-8") as f:
+            app_src = f.read()
+        tree = ast.parse(app_src, filename="app.py")
+        selected = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "_extract_comfy_prompt_metadata"]
+        mod = ast.Module(body=selected, type_ignores=[])
+        ast.fix_missing_locations(mod)
+        ns = {"Dict": __import__("typing").Dict, "Any": __import__("typing").Any, "List": __import__("typing").List}
+        exec(compile(mod, "app.py", "exec"), ns)
+
+        meta = ns["_extract_comfy_prompt_metadata"]({
+            "1": {"class_type": "UNETLoader", "inputs": {"unet_name": "minimax_h3_ref2va_pruned_int8_convrot.safetensors"}},
+            "6": {"class_type": "BFSMiniMaxH3NativeTemporal", "inputs": {"prompt": "Cyberpunk dancer in neon rain"}},
+            "17": {"class_type": "SaveVideo", "inputs": {"filename_prefix": "video/228_dance2"}},
+        })
+        self.assertEqual(meta["prompt_text"], "Cyberpunk dancer in neon rain")
+        self.assertEqual(meta["filename_prefix"], "video/228_dance2")
+        self.assertEqual(meta["inferred_model_id"], "minimax_h3_ref2va_tara")
+        self.assertEqual(meta["inferred_task_mode"], "motion_transfer")
+
+    def test_comfy_nvme_models_root_arg_and_two_way_session_sync(self):
+        import ast
+
+        # 1. Verify app.py _find_comfy_pack_model_file passes `mode` to _get_comfy_nvme_models_root (no TypeError)
+        app_path = os.path.join(REPO_ROOT, "app.py")
+        with open(app_path, "r", encoding="utf-8") as f:
+            app_src = f.read()
+        tree = ast.parse(app_src, filename="app.py")
+        wanted = {"_get_comfy_nvme_models_root", "_find_comfy_pack_model_file"}
+        selected = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in wanted]
+        mod = ast.Module(body=selected, type_ignores=[])
+        ast.fix_missing_locations(mod)
+        with tempfile.TemporaryDirectory() as tmp:
+            fake_persist = os.path.join(tmp, "persist")
+            target_file = os.path.join(fake_persist, "models", "diffusion_models", "s3.safetensors")
+            os.makedirs(os.path.dirname(target_file), exist_ok=True)
+            with open(target_file, "wb") as wf:
+                wf.write(b"x" * (1024 * 1024 + 10))
+            ns = {
+                "os": os,
+                "Optional": __import__("typing").Optional,
+                "_resolve_comfyui_persistence_paths": lambda: ("/content/ComfyUI", fake_persist, "drive_symlink", "Drive", True),
+            }
+            exec(compile(mod, "app.py", "exec"), ns)
+            hit = ns["_find_comfy_pack_model_file"]("diffusion_models", "s3.safetensors")
+            self.assertEqual(hit, target_file)
+
+        # 2. Verify colab_h3_cli._load_session adopts fresher active_session.json published by EasyColab app
+        cli_mod = _load_module(SKILL_CLI_REPO_PATH, "colab_h3_cli_two_way_sess_test")
+        with tempfile.TemporaryDirectory() as tmp:
+            cli_sess = os.path.join(tmp, "session.json")
+            app_sess = os.path.join(tmp, "active_session.json")
+            with open(cli_sess, "w", encoding="utf-8") as f:
+                json.dump({"url": "https://old404.gradio.live", "password": "oldpw", "updated_at": 100.0}, f)
+            with open(app_sess, "w", encoding="utf-8") as f:
+                json.dump({
+                    "url": "https://fresh200.gradio.live",
+                    "password": "freshpw_123456789012345678",
+                    "gpu": "G4",
+                    "sleeping": False,
+                    "source": "easycolab-app",
+                    "updated_at": 200.0,
+                }, f)
+            with mock.patch.object(cli_mod, "SESSION_PATH", __import__("pathlib").Path(cli_sess)), \
+                 mock.patch.dict(os.environ, {"EASYCOLAB_ACTIVE_SESSION_PATH": app_sess}):
+                loaded = cli_mod._load_session()
+            self.assertEqual(loaded["url"], "https://fresh200.gradio.live")
+            self.assertEqual(loaded["password"], "freshpw_123456789012345678")
+
+        # 3. Verify bridge process isolation and Swift two-way session sync symbols
+        bridge_src = open(COLAB_BRIDGE_PATH, "r", encoding="utf-8").read()
+        self.assertGreaterEqual(bridge_src.count("start_new_session=True"), 2)
+        svc_src = open(os.path.join(REPO_ROOT, "macos_app", "Sources", "StudioViewModel+Services.swift"), "r", encoding="utf-8").read()
+        self.assertIn("publishLocalActiveSessionToSharedFiles", svc_src)
+        self.assertIn("normalizedBaseURL.isEmpty && !cleanURL.isEmpty", svc_src)
 
 
 if __name__ == "__main__":
