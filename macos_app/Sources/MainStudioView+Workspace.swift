@@ -21,19 +21,25 @@ extension MainStudioView {
                     // API 协议网关专属面板（OpenAI + Anthropic 双协议配置与一键复制）
                     apiGatewaySection(palette: palette)
                 } else {
-                    // 2. 参考图、参考视频与声纹参考上传区（在动作复刻、多图参考、首尾帧、图生视频、指令修图、视觉理解模式下自动展开）
-                    if ["motion_transfer", "multiref", "fl2va", "i2v", "i2i_edit", "vlm"].contains(vm.taskModeId) {
+                    // 2. 参考图、参考视频与声纹参考上传区（在动作复刻、视频超分、多图参考、首尾帧、图生视频、指令修图、视觉理解模式下自动展开）
+                    if ["video_upscale", "motion_transfer", "multiref", "fl2va", "i2v", "i2i_edit", "vlm"].contains(vm.taskModeId) {
                         referenceImageSection
                     }
 
-                    // 3. 提示词与输入工作台
-                    promptComposerSection(palette: palette)
+                    // 3. 提示词与输入工作台（超分模式无需文本提示词）
+                    if vm.taskModeId != "video_upscale" {
+                        promptComposerSection(palette: palette)
+                    }
 
-                    // 3.5 Sulphur-3 s3_corrector 或 Ref2VA TARA 原生控制面板
+                    // 3.5 Sulphur-3 s3_corrector、Ref2VA TARA、SeedVR2 或 ReCaVSR 视频超分控制面板
                     if vm.selectedModelId == "minimax_h3_sulphur3" {
                         h3CorrectorSection(palette: palette)
                     } else if vm.selectedModelId == "minimax_h3_ref2va_tara" && vm.taskModeId == "motion_transfer" {
                         h3TaraControlSection(palette: palette)
+                    } else if vm.selectedModelId == "recavsr_upscaler" {
+                        recavsrControlSection(palette: palette)
+                    } else if vm.selectedModelId == "seedvr2_upscaler" || vm.taskModeId == "video_upscale" {
+                        seedvr2ControlSection(palette: palette)
                     }
 
                     // 4. 生成主按钮与状态条
@@ -72,6 +78,8 @@ extension MainStudioView {
             ("upscale_models", L("upscale_models (高清超分放大)", "upscale_models (Super-Resolution Upscalers)")),
             ("audio_encoders", L("audio_encoders (音频驱动 / 配音节点)", "audio_encoders (Audio-Driven / Foley Nodes)")),
             ("h3_correctors", L("h3_correctors (Sulphur-3 效果修正器)", "h3_correctors (Sulphur-3 Correctors)")),
+            ("SEEDVR2", L("SEEDVR2 (SeedVR2 7B/3B 视频超分)", "SEEDVR2 (SeedVR2 7B/3B Video Upscaler)")),
+            ("recavsr", L("recavsr (ReCaVSR 极速流式超分)", "recavsr (ReCaVSR Streaming Upscaler)")),
             ("gguf", L("gguf (量化视频/图像主干)", "gguf (Quantized Video / Image Backbones)"))
         ]
 
@@ -1264,6 +1272,101 @@ extension MainStudioView {
     @ViewBuilder
     var referenceImageSection: some View {
         switch vm.taskModeId {
+        case "video_upscale":
+            WorkspaceCard(
+                title: L("待超分原视频 (<Video 1>)", "Source Video to Upscale (<Video 1>)"),
+                subtitle: vm.selectedModelId == "recavsr_upscaler"
+                    ? L(
+                        "选择本地视频文件或一键导入当前右侧预览成片，通过 ReCaVSR + FlashDecoder 一步流式 1.5× / 2× / 4× 超分",
+                        "Select a local clip or import the current preview video for ReCaVSR + FlashDecoder 1-step streaming 1.5x / 2x / 4x upscaling"
+                    )
+                    : L(
+                        "选择本地视频文件或一键导入当前右侧预览成片，经由 SeedVR2 7B 一步扩散放大至 1080p / 2K / 4K",
+                        "Select a local clip or import the current preview video for SeedVR2 7B 1-step diffusion 1080p / 2K / 4K upscaling"
+                    ),
+                icon: vm.selectedModelId == "recavsr_upscaler" ? "bolt.circle.fill" : "sparkles.tv"
+            ) {
+                HStack(spacing: 12) {
+                    Image(systemName: "film.stack.fill")
+                        .font(.title2)
+                        .foregroundStyle(vm.refVideoBase64 != nil ? Color.accentColor : .secondary)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(L("输入视频 (<Video 1>，必选)", "Input Video (<Video 1>, Required)"))
+                            .font(.caption.weight(.semibold))
+                        Text(
+                            vm.refVideoFileName != nil
+                                ? L("已加载待超分视频：\(vm.refVideoFileName!) (\(String(format: "%.1f", vm.refVideoSizeMB)) MB)",
+                                    "Loaded: \(vm.refVideoFileName!) (\(String(format: "%.1f", vm.refVideoSizeMB)) MB)")
+                                : L("选择或拖入 .mp4 / .mov / .webm 原视频 (<=120 MB)",
+                                    "Select or drop an .mp4 / .mov / .webm clip (<=120 MB)")
+                        )
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    if let curURL = vm.currentMediaURL, vm.currentPreviewImage == nil, FileManager.default.fileExists(atPath: curURL.path) {
+                        Button {
+                            vm.setReferenceVideo(from: curURL)
+                        } label: {
+                            Label(L("导入当前预览视频", "Use Preview Video"), systemImage: "arrow.uturn.left.circle")
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                    }
+                    Button {
+                        let panel = NSOpenPanel()
+                        panel.allowsMultipleSelection = false
+                        panel.canChooseDirectories = false
+                        panel.allowedContentTypes = [.mpeg4Movie, .quickTimeMovie, .movie, .avi]
+                        if panel.runModal() == .OK, let url = panel.url {
+                            vm.setReferenceVideo(from: url)
+                        }
+                    } label: {
+                        Label(
+                            vm.refVideoFileName == nil ? L("选择原视频", "Select Video") : L("更换视频", "Replace Video"),
+                            systemImage: "video.badge.plus"
+                        )
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+
+                    if vm.refVideoBase64 != nil {
+                        Button(role: .destructive) {
+                            vm.clearReferenceVideo()
+                        } label: {
+                            Image(systemName: "xmark.circle")
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                    }
+                }
+                .padding(12)
+                .background(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(vm.refVideoBase64 != nil ? Color.accentColor.opacity(0.08) : Color.primary.opacity(0.03))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                .strokeBorder(
+                                    vm.refVideoBase64 != nil ? Color.accentColor.opacity(0.45) : Color.secondary.opacity(0.3),
+                                    style: StrokeStyle(lineWidth: 1.1, dash: vm.refVideoBase64 != nil ? [] : [5, 4])
+                                )
+                        )
+                )
+                .onDrop(of: [.fileURL], isTargeted: nil) { providers in
+                    for provider in providers {
+                        _ = provider.loadObject(ofClass: URL.self) { url, _ in
+                            guard let url else { return }
+                            Task { @MainActor in
+                                let ext = url.pathExtension.lowercased()
+                                if ["mp4", "mov", "webm", "mkv", "avi", "m4v"].contains(ext) {
+                                    vm.setReferenceVideo(from: url)
+                                }
+                            }
+                        }
+                    }
+                    return true
+                }
+            }
         case "motion_transfer":
             WorkspaceCard(
                 title: L("参考动作视频 (<Video 1>) 与目标主体 (<Picture 1..9>)", "Motion Guide Video (<Video 1>) & Target Subject (<Picture 1..9>)"),
@@ -1812,6 +1915,293 @@ extension MainStudioView {
                         .buttonStyle(.bordered)
                         .controlSize(.small)
                     }
+                }
+            }
+            .padding(4)
+        }
+    }
+
+    @ViewBuilder
+    func seedvr2ControlSection(palette: StudioPalette) -> some View {
+        WorkspaceCard(
+            title: L("SeedVR2 7B 视频超分控制 (PRO 6000 自适应满血)", "SeedVR2 7B Upscaler Controls (Adaptive PRO 6000)"),
+            subtitle: L(
+                "1080p 原生无切块直出；2K/4K 自动开启 2048px 大块 VAE 解码防爆显存并提速 ~3 倍，支持 7B / 7B-sharp / 3B 切换",
+                "Untiled at 1080p; 2K/4K auto-enables 2048px large-tile VAE decoding to prevent OOM & boost speed ~3x"
+            ),
+            icon: "wand.and.stars"
+        ) {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(spacing: 14) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(L("超分模型权重", "SeedVR2 DiT Checkpoint"))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Picker(L("超分权重", "SeedVR2 Checkpoint"), selection: $vm.seedvr2Model) {
+                            Text(L("7B FP16 满血均衡 (默认推荐)", "7B FP16 Balanced (Default)")).tag("seedvr2_ema_7b_fp16.safetensors")
+                            Text(L("7B-sharp FP16 极致锐度 (风景/CG)", "7B-sharp FP16 Ultra-Sharp")).tag("seedvr2_ema_7b_sharp_fp16.safetensors")
+                            Text(L("3B FP16 高速轻量", "3B FP16 Fast")).tag("seedvr2_ema_3b_fp16.safetensors")
+                        }
+                        .labelsHidden()
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(L("色彩还原校正 (color_correction)", "Color Correction"))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Picker(L("色彩校正", "Color Correction"), selection: $vm.seedvr2ColorCorrection) {
+                            Text(L("lab 感知色彩保真 (推荐)", "lab (Recommended)")).tag("lab")
+                            Text("wavelet").tag("wavelet")
+                            Text("wavelet_adaptive").tag("wavelet_adaptive")
+                            Text("hsv").tag("hsv")
+                            Text("adain").tag("adain")
+                            Text(L("none (关闭)", "none")).tag("none")
+                        }
+                        .labelsHidden()
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+
+                VStack(alignment: .leading, spacing: 5) {
+                    HStack {
+                        Text(L("目标输出短边分辨率", "Target Short-Edge Resolution"))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Text("\(vm.seedvr2Resolution)p")
+                            .font(.caption.weight(.semibold))
+                            .monospacedDigit()
+                    }
+                    HStack(spacing: 8) {
+                        ForEach([(1080, "1080p (FHD)"), (1440, "1440p (2K)"), (2160, "2160p (4K)")], id: \.0) { resVal, label in
+                            let isSel = vm.seedvr2Resolution == resVal
+                            Button {
+                                vm.seedvr2Resolution = resVal
+                            } label: {
+                                Text(label)
+                                    .font(.system(size: 11.5, weight: isSel ? .semibold : .medium, design: .rounded))
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 6)
+                                    .background(
+                                        RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                            .fill(isSel ? Color.accentColor.opacity(0.18) : palette.inputFill)
+                                    )
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                            .strokeBorder(isSel ? Color.accentColor.opacity(0.6) : palette.cardBorder, lineWidth: 1)
+                                    )
+                                    .foregroundStyle(isSel ? Color.accentColor : Color.primary)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+
+                HStack(spacing: 14) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        HStack {
+                            Text(L("单批帧数 (4n+1 窗口)", "Batch Size (4n+1)"))
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                            Text(L("\(vm.seedvr2BatchSize) 帧", "\(vm.seedvr2BatchSize) frames"))
+                                .font(.caption.weight(.semibold))
+                                .monospacedDigit()
+                        }
+                        Slider(
+                            value: Binding(
+                                get: { Double(vm.seedvr2BatchSize) },
+                                set: {
+                                    let snapped = max(5, min(41, Int((($0 - 1.0) / 4.0).rounded()) * 4 + 1))
+                                    vm.seedvr2BatchSize = snapped
+                                }
+                            ),
+                            in: 5...41,
+                            step: 4
+                        )
+                    }
+
+                    VStack(alignment: .leading, spacing: 3) {
+                        HStack {
+                            Text(L("批次时序重叠 (temporal_overlap)", "Temporal Overlap"))
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                            Text(L("\(vm.seedvr2TemporalOverlap) 帧", "\(vm.seedvr2TemporalOverlap) frames"))
+                                .font(.caption.weight(.semibold))
+                                .monospacedDigit()
+                        }
+                        Slider(
+                            value: Binding(
+                                get: { Double(vm.seedvr2TemporalOverlap) },
+                                set: { vm.seedvr2TemporalOverlap = Int($0.rounded()).clamped(to: 0...8) }
+                            ),
+                            in: 0...8,
+                            step: 1
+                        )
+                    }
+                }
+
+                if vm.seedvr2Resolution >= 1440 {
+                    HStack(spacing: 10) {
+                        Text(L("2K/4K VAE 解码分块 (防止 Phase 3 显存溢出)", "2K/4K VAE Decode Tile Size"))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Picker(L("解码分块", "Decode Tile"), selection: $vm.seedvr2DecodeTileSize) {
+                            Text("2048px (PRO 6000 极速)").tag(2048)
+                            Text("1536px (均衡)").tag(1536)
+                            Text("1024px (低显存稳妥)").tag(1024)
+                        }
+                        .labelsHidden()
+                        .frame(width: 190)
+                    }
+                }
+
+                HStack {
+                    Toggle(isOn: $vm.seedvr2KeepAudio) {
+                        Text(L("无损透传并封装原视频音轨", "Preserve & mux original audio track"))
+                            .font(.callout.weight(.medium))
+                    }
+                    .toggleStyle(.switch)
+
+                    Spacer()
+
+                    Button(L("恢复推荐", "Defaults")) {
+                        vm.seedvr2Model = "seedvr2_ema_7b_fp16.safetensors"
+                        vm.seedvr2Resolution = 1080
+                        vm.seedvr2BatchSize = 17
+                        vm.seedvr2TemporalOverlap = 2
+                        vm.seedvr2ColorCorrection = "lab"
+                        vm.seedvr2KeepAudio = true
+                        vm.seedvr2AttentionMode = "sdpa"
+                        vm.seedvr2DecodeTileSize = 2048
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                }
+            }
+            .padding(4)
+        }
+    }
+
+    @ViewBuilder
+    func recavsrControlSection(palette: StudioPalette) -> some View {
+        WorkspaceCard(
+            title: L("ReCaVSR 极速流式超分控制 (Wan2.2-5B + FlashDecoder)", "ReCaVSR Streaming Upscaler Controls (Wan2.2-5B + FlashDecoder)"),
+            subtitle: L(
+                "21 帧起步 + 每批 8 帧逐块直出编码，4K 相比 SeedVR2 快 15~20 倍且不爆显存，原生透传音轨与帧率",
+                "Streaming 21+8 frame blocks with FlashDecoder: ~15-20x faster 4K without OOM, preserving original audio & FPS"
+            ),
+            icon: "bolt.circle.fill"
+        ) {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(spacing: 14) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(L("主干精度 (Transformer)", "Transformer Precision"))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Picker(L("主干精度", "Transformer"), selection: $vm.recavsrTransformer) {
+                            Text(L("BF16 满血画质 (10.6 GB · PRO 6000 推荐)", "BF16 Full Quality (10.6 GB)")).tag("transformer.safetensors")
+                            Text(L("INT8 ConvRot 极速 1.8× (6.3 GB)", "INT8 ConvRot 1.8× Speed (6.3 GB)")).tag("transformer_int8_convrot.safetensors")
+                        }
+                        .labelsHidden()
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(L("色彩校正 (color_fix)", "Color Fix"))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Picker(L("色彩校正", "Color Fix"), selection: $vm.recavsrColorFix) {
+                            Text(L("none (原色直出 · 推荐)", "none (Recommended)")).tag("none")
+                            Text("adain").tag("adain")
+                            Text("wavelet").tag("wavelet")
+                        }
+                        .labelsHidden()
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+
+                VStack(alignment: .leading, spacing: 5) {
+                    HStack {
+                        Text(L("超分缩放倍率 (Scale)", "Upscale Factor"))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Text(String(format: "%.2g×", vm.recavsrScale))
+                            .font(.caption.weight(.semibold))
+                            .monospacedDigit()
+                    }
+                    HStack(spacing: 8) {
+                        ForEach([(1.5, "1.5× (轻度超分)"), (2.0, "2× (H3 720p→2K 推荐)"), (4.0, "4× (480p→4K 原生倍率)")], id: \.0) { scVal, label in
+                            let isSel = abs(vm.recavsrScale - scVal) < 0.01
+                            Button {
+                                vm.recavsrScale = scVal
+                            } label: {
+                                Text(label)
+                                    .font(.system(size: 11.5, weight: isSel ? .semibold : .medium, design: .rounded))
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 6)
+                                    .background(
+                                        RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                            .fill(isSel ? Color.accentColor.opacity(0.18) : palette.inputFill)
+                                    )
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                            .strokeBorder(isSel ? Color.accentColor.opacity(0.6) : palette.cardBorder, lineWidth: 1)
+                                    )
+                                    .foregroundStyle(isSel ? Color.accentColor : Color.primary)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+
+                HStack(spacing: 14) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(L("算子内核 (Kernels)", "Kernels"))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Picker(L("内核", "Kernels"), selection: $vm.recavsrKernels) {
+                            Text(L("fast (极速 · 推荐)", "fast (Recommended)")).tag("fast")
+                            Text(L("exact (位精确对齐)", "exact (Bit-Exact)")).tag("exact")
+                        }
+                        .labelsHidden()
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(L("硬件视频编码器 (Encoder)", "Video Encoder"))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Picker(L("编码器", "Encoder"), selection: $vm.recavsrEncoder) {
+                            Text(L("auto (NVENC 自动首选)", "auto (NVENC Preferred)")).tag("auto")
+                            Text("hevc nvenc").tag("hevc nvenc")
+                            Text("h264 nvenc").tag("h264 nvenc")
+                            Text("h264 (CPU CRF 14)").tag("h264")
+                        }
+                        .labelsHidden()
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+
+                HStack {
+                    Text(L("提示：1056×608 或 720p 视频选 2× ≈ 2K；如需精修极糊老片可切换左侧 SeedVR2 7B。",
+                           "Tip: Use 2× for 720p/H3 clips (~2K); switch to SeedVR2 7B for heavily degraded legacy footage."))
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button(L("恢复推荐", "Defaults")) {
+                        vm.recavsrTransformer = "transformer.safetensors"
+                        vm.recavsrScale = 2.0
+                        vm.recavsrColorFix = "none"
+                        vm.recavsrKernels = "fast"
+                        vm.recavsrEncoder = "auto"
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
                 }
             }
             .padding(4)

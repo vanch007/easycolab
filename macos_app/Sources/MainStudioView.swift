@@ -1611,100 +1611,110 @@ struct MainStudioView: View {
             seedAndBatchControls(unitLabelZh: "张")
 
         case .videoAudio, .video:
-            VStack(alignment: .leading, spacing: 4) {
-                Text(L("视频分辨率", "Video Resolution"))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Picker(L("分辨率", "Resolution"), selection: $vm.selectedVideoResolution) {
-                    ForEach(VIDEO_RESOLUTIONS) { opt in
-                        Text(opt.label).tag(opt)
-                    }
-                }
-                .labelsHidden()
-                .frame(maxWidth: .infinity)
-            }
-
-            VStack(alignment: .leading, spacing: 5) {
-                HStack {
-                    Text(L("视频总帧数 (4~15 秒)", "Total Frames (4–15s)"))
+            if vm.selectedModelId == "seedvr2_upscaler" || vm.selectedModelId == "recavsr_upscaler" || vm.taskModeId == "video_upscale" {
+                Text(L(
+                    "视频超分会自动沿用原视频宽高比与帧率；请在右侧超分控制面板调节目标分辨率/倍率与编码参数。",
+                    "Video upscaler preserves source aspect ratio & FPS; adjust target resolution/scale and encoder settings on the right."
+                ))
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .padding(.vertical, 2)
+            } else {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(L("视频分辨率", "Video Resolution"))
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                    Spacer()
-                    Text(L(
-                        "\(Int(vm.numFrames)) 帧 · 约 \(fmt(vm.numFrames / vm.fps, 1)) 秒",
-                        "\(Int(vm.numFrames)) frames · ~\(fmt(vm.numFrames / vm.fps, 1))s"
-                    ))
-                        .font(.caption.weight(.medium))
-                        .monospacedDigit()
-                }
-                Slider(
-                    value: Binding(
-                        get: { vm.numFrames },
-                        set: { vm.numFrames = (((($0 - 5) / 17).rounded() * 17) + 5).clamped(to: 90...362) }
-                    ),
-                    in: 90...362
-                )
-                HStack(spacing: 4) {
-                    ForEach([(90, "4s"), (124, "5s"), (192, "8s"), (243, "10s"), (294, "12s"), (362, "15s")], id: \.0) { frames, tag in
-                        let isSel = Int(vm.numFrames) == frames
-                        Button {
-                            vm.numFrames = Double(frames)
-                        } label: {
-                            Text(tag)
-                                .font(.system(size: 10, weight: isSel ? .semibold : .regular, design: .monospaced))
-                                .frame(maxWidth: .infinity)
-                                .padding(.vertical, 2.5)
-                                .background(
-                                    RoundedRectangle(cornerRadius: 5, style: .continuous)
-                                        .fill(isSel ? Color.accentColor.opacity(0.18) : Color.secondary.opacity(0.10))
-                                )
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 5, style: .continuous)
-                                        .stroke(isSel ? Color.accentColor.opacity(0.55) : Color.clear, lineWidth: 1)
-                                )
-                                .foregroundStyle(isSel ? Color.accentColor : Color.secondary)
+                    Picker(L("分辨率", "Resolution"), selection: $vm.selectedVideoResolution) {
+                        ForEach(VIDEO_RESOLUTIONS) { opt in
+                            Text(opt.label).tag(opt)
                         }
-                        .buttonStyle(.plain)
+                    }
+                    .labelsHidden()
+                    .frame(maxWidth: .infinity)
+                }
+
+                VStack(alignment: .leading, spacing: 5) {
+                    HStack {
+                        Text(L("视频总帧数 (4~15 秒)", "Total Frames (4–15s)"))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Text(L(
+                            "\(Int(vm.numFrames)) 帧 · 约 \(fmt(vm.numFrames / vm.fps, 1)) 秒",
+                            "\(Int(vm.numFrames)) frames · ~\(fmt(vm.numFrames / vm.fps, 1))s"
+                        ))
+                            .font(.caption.weight(.medium))
+                            .monospacedDigit()
+                    }
+                    Slider(
+                        value: Binding(
+                            get: { vm.numFrames },
+                            set: { vm.numFrames = (((($0 - 5) / 17).rounded() * 17) + 5).clamped(to: 90...362) }
+                        ),
+                        in: 90...362
+                    )
+                    HStack(spacing: 4) {
+                        ForEach([(90, "4s"), (124, "5s"), (192, "8s"), (243, "10s"), (294, "12s"), (362, "15s")], id: \.0) { frames, tag in
+                            let isSel = Int(vm.numFrames) == frames
+                            Button {
+                                vm.numFrames = Double(frames)
+                            } label: {
+                                Text(tag)
+                                    .font(.system(size: 10, weight: isSel ? .semibold : .regular, design: .monospaced))
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 2.5)
+                                    .background(
+                                        RoundedRectangle(cornerRadius: 5, style: .continuous)
+                                            .fill(isSel ? Color.accentColor.opacity(0.18) : Color.secondary.opacity(0.10))
+                                    )
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 5, style: .continuous)
+                                            .stroke(isSel ? Color.accentColor.opacity(0.55) : Color.clear, lineWidth: 1)
+                                    )
+                                    .foregroundStyle(isSel ? Color.accentColor : Color.secondary)
+                            }
+                            .buttonStyle(.plain)
+                        }
                     }
                 }
-            }
 
-            VStack(alignment: .leading, spacing: 3) {
-                HStack {
-                    Text(L("采样步数", "Sampling Steps"))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    Text(L("\(Int(vm.inferenceSteps)) 步", "\(Int(vm.inferenceSteps)) steps"))
-                        .font(.caption.weight(.medium))
-                        .monospacedDigit()
-                }
-                if vm.selectedModelId == "minimax_h3_10eros_max" || vm.selectedModelId == "minimax_h3_ref2va_tara" {
-                    Slider(
-                        value: Binding(
-                            get: { vm.inferenceSteps.clamped(to: 4...20) },
-                            set: { vm.inferenceSteps = $0.rounded().clamped(to: 4...20) }
-                        ),
-                        in: 4...20,
-                        step: 1
-                    )
-                } else if vm.selectedModelId == "minimax_h3_sulphur3" {
-                    Slider(
-                        value: Binding(
-                            get: { vm.inferenceSteps.clamped(to: 8...40) },
-                            set: { vm.inferenceSteps = $0.rounded().clamped(to: 8...40) }
-                        ),
-                        in: 8...40,
-                        step: 1
-                    )
-                } else {
-                    Slider(
-                        value: Binding(
-                            get: { vm.inferenceSteps },
-                            set: { vm.inferenceSteps = (($0 / 5).rounded() * 5).clamped(to: 10...60) }
-                        ),
-                        in: 10...60
-                    )
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack {
+                        Text(L("采样步数", "Sampling Steps"))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Text(L("\(Int(vm.inferenceSteps)) 步", "\(Int(vm.inferenceSteps)) steps"))
+                            .font(.caption.weight(.medium))
+                            .monospacedDigit()
+                    }
+                    if vm.selectedModelId == "minimax_h3_10eros_max" || vm.selectedModelId == "minimax_h3_ref2va_tara" {
+                        Slider(
+                            value: Binding(
+                                get: { vm.inferenceSteps.clamped(to: 4...20) },
+                                set: { vm.inferenceSteps = $0.rounded().clamped(to: 4...20) }
+                            ),
+                            in: 4...20,
+                            step: 1
+                        )
+                    } else if vm.selectedModelId == "minimax_h3_sulphur3" {
+                        Slider(
+                            value: Binding(
+                                get: { vm.inferenceSteps.clamped(to: 8...40) },
+                                set: { vm.inferenceSteps = $0.rounded().clamped(to: 8...40) }
+                            ),
+                            in: 8...40,
+                            step: 1
+                        )
+                    } else {
+                        Slider(
+                            value: Binding(
+                                get: { vm.inferenceSteps },
+                                set: { vm.inferenceSteps = (($0 / 5).rounded() * 5).clamped(to: 10...60) }
+                            ),
+                            in: 10...60
+                        )
+                    }
                 }
             }
 

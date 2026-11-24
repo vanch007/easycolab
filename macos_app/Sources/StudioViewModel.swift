@@ -305,6 +305,19 @@ class StudioViewModel: ObservableObject {
     @Published var taraWindowSeconds: Double = 0.20
     @Published var taraFalloffSeconds: Double = 0.25
     @Published var taraMaxPenalty: Double = 6.0
+    @Published var seedvr2Model: String = "seedvr2_ema_7b_fp16.safetensors"
+    @Published var seedvr2Resolution: Int = 1080
+    @Published var seedvr2BatchSize: Int = 17
+    @Published var seedvr2TemporalOverlap: Int = 2
+    @Published var seedvr2ColorCorrection: String = "lab"
+    @Published var seedvr2KeepAudio: Bool = true
+    @Published var seedvr2AttentionMode: String = "sdpa"
+    @Published var seedvr2DecodeTileSize: Int = 2048
+    @Published var recavsrTransformer: String = "transformer.safetensors"
+    @Published var recavsrScale: Double = 2.0
+    @Published var recavsrColorFix: String = "none"
+    @Published var recavsrKernels: String = "fast"
+    @Published var recavsrEncoder: String = "auto"
     @Published var h3CorrectorEnabled: Bool = true
     @Published var h3CorrectorStrength: Double = 1.0
     @Published var h3CorrectorStartStep: Int = 0
@@ -1387,13 +1400,22 @@ class StudioViewModel: ObservableObject {
 
     func startGeneration() async {
         let promptTrimmed = visualPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !promptTrimmed.isEmpty else {
-            statusMessage = activeModelSpec.modality == .llmVLM
-                ? L("请输入对话问题或视觉指令！", "Please enter a question or vision prompt!")
-                : L("请输入画面描述提示词！", "Please enter a visual scene prompt!")
-            return
+        if taskModeId != "video_upscale" {
+            guard !promptTrimmed.isEmpty else {
+                statusMessage = activeModelSpec.modality == .llmVLM
+                    ? L("请输入对话问题或视觉指令！", "Please enter a question or vision prompt!")
+                    : L("请输入画面描述提示词！", "Please enter a visual scene prompt!")
+                return
+            }
         }
 
+        if taskModeId == "video_upscale" && refVideoBase64 == nil {
+            statusMessage = L(
+                "在「SeedVR2 7B 视频超分」模式下，请先上传待超分的原视频 (<Video 1>) 或一键导入当前预览视频。",
+                "In SeedVR2 Video Upscale mode, please upload a source video (<Video 1>) or import the current preview clip first."
+            )
+            return
+        }
         if taskModeId == "motion_transfer" && (refVideoBase64 == nil || referenceImages.isEmpty) {
             statusMessage = L(
                 "在「视频动作复刻 (TARA)」模式下，请同时上传 1 段参考动作视频 (<Video 1>) 和至少 1 张目标主体图 (<Picture 1>)。",
@@ -1553,6 +1575,32 @@ class StudioViewModel: ObservableObject {
                 payload["tara_window_seconds"] = taraWindowSeconds
                 payload["tara_falloff_seconds"] = taraFalloffSeconds
                 payload["tara_max_penalty"] = taraMaxPenalty
+            }
+            if selectedModelId == "seedvr2_upscaler" {
+                if let videoB64 = refVideoBase64, !videoB64.isEmpty {
+                    payload["ref_video_base64"] = videoB64
+                    payload["ref_video_filename"] = refVideoFileName ?? "source_video.mp4"
+                }
+                payload["seedvr2_model"] = seedvr2Model
+                payload["seedvr2_resolution"] = seedvr2Resolution
+                payload["seedvr2_max_resolution"] = 0
+                payload["seedvr2_batch_size"] = seedvr2BatchSize
+                payload["seedvr2_temporal_overlap"] = seedvr2TemporalOverlap
+                payload["seedvr2_color_correction"] = seedvr2ColorCorrection
+                payload["seedvr2_keep_audio"] = seedvr2KeepAudio
+                payload["seedvr2_attention_mode"] = seedvr2AttentionMode
+                payload["seedvr2_decode_tile_size"] = seedvr2DecodeTileSize
+            }
+            if selectedModelId == "recavsr_upscaler" {
+                if let videoB64 = refVideoBase64, !videoB64.isEmpty {
+                    payload["ref_video_base64"] = videoB64
+                    payload["ref_video_filename"] = refVideoFileName ?? "source_video.mp4"
+                }
+                payload["recavsr_transformer"] = recavsrTransformer
+                payload["recavsr_scale"] = recavsrScale
+                payload["recavsr_color_fix"] = recavsrColorFix
+                payload["recavsr_kernels"] = recavsrKernels
+                payload["recavsr_encoder"] = recavsrEncoder
             }
             if selectedModelId == "minimax_h3_sulphur3" {
                 payload["corrector_enabled"] = h3CorrectorEnabled

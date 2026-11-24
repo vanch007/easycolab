@@ -320,6 +320,64 @@ let OPEN_MODEL_CATALOG: [OpenModelSpec] = [
         ]
     ),
     OpenModelSpec(
+        id: "seedvr2_upscaler",
+        nameZh: "SeedVR2 7B · 视频超分",
+        nameEn: "SeedVR2 7B · Video Upscaler",
+        repoId: "numz/SeedVR2_comfyUI",
+        badgeZh: "一步扩散 4K 超分 · 17 GB",
+        badgeEn: "1-Step 4K Upscaler · 17 GB",
+        summaryZh: "ByteDance SeedVR2 7B FP16 一步扩散电影级视频超分修复（支持 7B / 7B-sharp / 3B 切换），适配 PRO 6000 96GB 无切块大窗口推理，保留原音轨",
+        summaryEn: "ByteDance SeedVR2 7B FP16 1-step diffusion video super-resolution (7B / 7B-sharp / 3B), untiled 96GB PRO 6000 pipeline with original audio passthrough",
+        approxSizeGB: 17.0,
+        icon: "sparkles.tv",
+        modality: .videoAudio,
+        defaultSteps: 1,
+        modes: [
+            TaskModeItem(
+                id: "video_upscale",
+                titleZh: "SeedVR2 7B 视频超分 (4K)",
+                titleEn: "SeedVR2 7B Video Upscale (4K)",
+                subtitleZh: "上传待超分视频 (<Video 1>) 或一键导入当前预览视频，提升至 1080p / 2K / 4K 并重建发丝与皮肤质感",
+                subtitleEn: "Upload source video (<Video 1>) or import current preview clip to upscale to 1080p / 2K / 4K with crisp textures",
+                icon: "arrow.up.left.and.arrow.down.right"
+            )
+        ],
+        defaultFiles: [
+            ModelFileItem(name: "SEEDVR2/seedvr2_ema_7b_fp16.safetensors", desc: "SeedVR2 7B FP16 满血超分 DiT 主干 (16.5 GB)", exists: false, size_gb: 0),
+            ModelFileItem(name: "SEEDVR2/ema_vae_fp16.safetensors", desc: "SeedVR2 共享视频 VAE FP16 (0.48 GB)", exists: false, size_gb: 0)
+        ]
+    ),
+    OpenModelSpec(
+        id: "recavsr_upscaler",
+        nameZh: "ReCaVSR · 极速流式超分",
+        nameEn: "ReCaVSR · Fast Streaming Upscaler",
+        repoId: "kopper/ReCaVSR",
+        badgeZh: "4K 快 15× · FlashDecoder · 17 GB",
+        badgeEn: "15× Faster 4K · FlashDecoder · 17 GB",
+        summaryZh: "USTC Wan2.2-5B 一步流式扩散超分 + FlashDecoder（21 帧起步 + 每批 8 帧直出封装），PRO 6000 跑 300 帧 4K 仅约 1 分钟且不爆显存，支持 bf16 / int8 与 1.5×/2×/4×",
+        summaryEn: "USTC Wan2.2-5B 1-step streaming VSR + FlashDecoder: ~15× faster 4K without OOM on PRO 6000, supports bf16 / int8_convrot & 1.5x/2x/4x scaling",
+        approxSizeGB: 17.3,
+        icon: "bolt.circle.fill",
+        modality: .videoAudio,
+        defaultSteps: 1,
+        modes: [
+            TaskModeItem(
+                id: "video_upscale",
+                titleZh: "ReCaVSR 极速流式超分 (2K/4K)",
+                titleEn: "ReCaVSR Fast Streaming Upscale (2K/4K)",
+                subtitleZh: "上传原视频 (<Video 1>) 或一键导入预览成片，一步流式 1.5× / 2× / 4× 放大并保留原音轨与帧率",
+                subtitleEn: "Upload video (<Video 1>) or import current preview clip for 1-step streaming 1.5x / 2x / 4x upscaling with audio",
+                icon: "bolt.fill"
+            )
+        ],
+        defaultFiles: [
+            ModelFileItem(name: "recavsr/transformer.safetensors", desc: "ReCaVSR Wan2.2-5B BF16 满血主干 (10.6 GB)", exists: false, size_gb: 0),
+            ModelFileItem(name: "recavsr/transformer_int8_convrot.safetensors", desc: "ReCaVSR INT8 ConvRot 极速主干 (6.3 GB · 提速 1.8×)", exists: false, size_gb: 0),
+            ModelFileItem(name: "recavsr/flashdecoder.safetensors", desc: "ReCaVSR FlashDecoder 流式解码器 (0.23 GB · 快 25-40×)", exists: false, size_gb: 0),
+            ModelFileItem(name: "recavsr/prompt.safetensors", desc: "ReCaVSR 预计算文本条件嵌入 (0.17 GB)", exists: false, size_gb: 0)
+        ]
+    ),
+    OpenModelSpec(
         id: "minimax_h3_image",
         nameZh: "MiniMax-H3-Image (33B · 4K)",
         nameEn: "MiniMax-H3-Image (33B · 4K)",
