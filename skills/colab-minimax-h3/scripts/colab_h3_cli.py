@@ -1120,6 +1120,172 @@ def cmd_wake(args: argparse.Namespace) -> None:
     }, indent=2))
 
 
+def _scoped_session_path(account_email: str) -> Path:
+    em = (account_email or "").strip().lower()
+    if not em:
+        return SESSION_PATH
+    acct_tag = hashlib.sha256(em.encode("utf-8")).hexdigest()[:12]
+    return Path.home() / ".config" / "colab-minimax-h3" / f"session_{acct_tag}.json"
+
+
+def _save_scoped_session_file(path: Path, data: Dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, path)
+    os.chmod(path, 0o600)
+
+
+def cmd_wake_multi(args: argparse.Namespace) -> None:
+    root = _find_easycolab_root()
+    pwd = args.password or _generate_admin_password()
+    if not re.fullmatch(r"[A-Za-z0-9_-]{24,256}", pwd):
+        raise ValueError("Password must be 24-256 URL-safe ASCII characters ([A-Za-z0-9_-]).")
+    idle_mins = max(1, int(getattr(args, "idle_minutes", 10) or 10))
+    accounts_csv = (getattr(args, "accounts", "") or "").strip()
+    mode = getattr(args, "mode", "first") or "first"
+
+    _emit_app_log(
+        f"正在通过 Skill CLI 启动多账号同时申请 ({args.gpu} GPU, mode={mode}, accounts={accounts_csv or 'auto-idle'})..."
+    )
+    bridge_args = [
+        "wake_multi",
+        "--gpu",
+        args.gpu,
+        "--app-py",
+        str(root / "app.py"),
+        "--mode",
+        mode,
+    ]
+    if accounts_csv:
+        bridge_args += ["--accounts", accounts_csv]
+    if getattr(args, "persistent", False):
+        bridge_args += ["--persistent", "--retry-interval", str(max(5, int(getattr(args, "retry_interval", 60) or 60)))]
+
+    rc, out = _run_bridge(
+        bridge_args,
+        env_extra={
+            "EASYCOLAB_ADMIN_PASSWORD": pwd,
+            "EASYCOLAB_IDLE_TIMEOUT_MINUTES": str(idle_mins),
+        },
+        stream=True,
+    )
+    if rc != 0:
+        raise RuntimeError(f"colab_bridge wake_multi exited with code {rc}")
+
+    if mode == "all":
+        m_json = re.findall(r"^WAKE_MULTI_JSON:\s*(\{.*\})\s*$", out, flags=re.MULTILINE)
+        if not m_json:
+            raise RuntimeError("wake_multi (all) finished without WAKE_MULTI_JSON summary.")
+        summary = json.loads(m_json[-1])
+        results = summary.get("results") or {}
+        prev_acct = os.environ.get("EASYCOLAB_ACCOUNT", "")
+        try:
+            for em in summary.get("succeeded") or []:
+                info = results.get(em) or {}
+                url = str(info.get("url") or "").strip().rstrip("/")
+                if not url:
+                    continue
+                try:
+                    _http_json(
+                        f"{url}/minimax_api/config_idle",
+                        method="POST",
+                        payload={"idle_timeout_minutes": idle_mins},
+                        password=pwd,
+                        base_url=url,
+                        timeout=15,
+                    )
+                except Exception:
+                    pass
+                sp = _scoped_session_path(em)
+                sess_obj: Dict[str, Any] = {}
+                if sp.is_file():
+                    try:
+                        sess_obj = json.loads(sp.read_text(encoding="utf-8"))
+                    except Exception:
+                        sess_obj = {}
+                sess_obj.update({"url": url, "password": pwd, "gpu": args.gpu, "account": em, "sleeping": False, "idle_timeout_minutes": idle_mins})
+                _save_scoped_session_file(sp, sess_obj)
+                os.environ["EASYCOLAB_ACCOUNT"] = em
+                _sync_app_active_session(url, pwd, gpu=args.gpu, sleeping=False)
+                info["session_file"] = str(sp)
+        finally:
+            if prev_acct:
+                os.environ["EASYCOLAB_ACCOUNT"] = prev_acct
+            else:
+                os.environ.pop("EASYCOLAB_ACCOUNT", None)
+        if not summary.get("ok"):
+            raise RuntimeError("No account succeeded in wake_multi (all)")
+        print(json.dumps(summary, ensure_ascii=False, indent=2))
+        return
+
+    m_url = re.search(r"https://[A-Za-z0-9.-]+\.gradio\.live", out)
+    if not m_url:
+        raise RuntimeError("wake_multi completed but no gradio.live URL found in output.")
+    url = m_url.group(0)
+    m_win = re.search(r"^WAKE_WINNER:\s*(\S+)\s*$", out, flags=re.MULTILINE)
+    winner = m_win.group(1).strip() if m_win else ""
+    idle_configured = False
+    try:
+        _http_json(
+            f"{url}/minimax_api/config_idle",
+            method="POST",
+            payload={"idle_timeout_minutes": idle_mins},
+            password=pwd,
+            base_url=url,
+            timeout=15,
+        )
+        idle_configured = True
+    except Exception:
+        idle_configured = False
+
+    sp = _scoped_session_path(winner)
+    sess_obj = {}
+    if sp.is_file():
+        try:
+            sess_obj = json.loads(sp.read_text(encoding="utf-8"))
+        except Exception:
+            sess_obj = {}
+    sess_obj.update({"url": url, "password": pwd, "gpu": args.gpu, "account": winner, "sleeping": False, "idle_timeout_minutes": idle_mins})
+    _save_scoped_session_file(sp, sess_obj)
+    default_session_path = Path.home() / ".config" / "colab-minimax-h3" / "session.json"
+    if sp != default_session_path:
+        _save_scoped_session_file(default_session_path, sess_obj)
+
+    switched_default = False
+    explicit_account = (getattr(args, "account", "") or "").strip()
+    if winner and not explicit_account:
+        try:
+            sw_rc, _ = _run_bridge(["auth_switch", winner])
+            switched_default = (sw_rc == 0)
+        except Exception:
+            switched_default = False
+
+    prev_acct = os.environ.get("EASYCOLAB_ACCOUNT", "")
+    try:
+        if winner:
+            os.environ["EASYCOLAB_ACCOUNT"] = winner
+        _sync_app_active_session(url, pwd, gpu=args.gpu, sleeping=False)
+    finally:
+        if prev_acct:
+            os.environ["EASYCOLAB_ACCOUNT"] = prev_acct
+        else:
+            os.environ.pop("EASYCOLAB_ACCOUNT", None)
+    _emit_app_log(f"多账号竞速成功：[{winner or 'active'}] {args.gpu} 就绪 ({url})。")
+    print(json.dumps({
+        "ok": True,
+        "mode": "first",
+        "winner": winner,
+        "switched_default_account": switched_default,
+        "url": url,
+        "gpu": args.gpu,
+        "idle_timeout_minutes": idle_mins,
+        "idle_watchdog_set": idle_configured,
+        "session_file": str(sp),
+    }, indent=2))
+
+
 def cmd_connect(args: argparse.Namespace) -> None:
     url = args.url.rstrip("/")
     pwd = args.password or ""
@@ -1162,7 +1328,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     p_voice.add_argument("--duration", type=float, default=5.0)
 
     # Colab lifecycle
-    sub.add_parser("auth-status", help="Check Google Colab OAuth & CU balance")
+    sub.add_parser("auth-status", help="Check active Google Colab OAuth & CU balance")
+    sub.add_parser("auth-status-all", help="Concurrently query OAuth health, CU balance, active VMs & GPU models across ALL saved accounts")
     sub.add_parser("auth-url", help="Get Google Colab OAuth login URL")
     sub.add_parser("auth-list", help="List all saved Google Colab accounts")
     p_asw = sub.add_parser("auth-switch", help="Switch active Google Colab account in 1 command")
@@ -1177,6 +1344,14 @@ def main(argv: Optional[List[str]] = None) -> int:
     p_wake.add_argument("--idle-minutes", type=int, default=10, help="Cloud idle auto-sleep timeout in minutes (default: 10)")
     p_wake.add_argument("--persistent", action="store_true", help="Keep retrying every --retry-interval seconds if 3 allocation attempts fail")
     p_wake.add_argument("--retry-interval", type=int, default=60, help="Seconds to wait before next 3-attempt round when --persistent is set (default: 60)")
+    p_wmulti = sub.add_parser("wake-multi", help="Concurrently wake Colab GPUs across multiple saved accounts (first-wins race or all-parallel)")
+    p_wmulti.add_argument("--accounts", default="", help="Comma-separated Google emails (empty = auto-pick idle saved accounts)")
+    p_wmulti.add_argument("--gpu", default="G4", choices=["G4", "H100", "A100", "L4", "T4"])
+    p_wmulti.add_argument("--mode", default="first", choices=["first", "all"], help="first = race and stop others on first win; all = provision one GPU per account")
+    p_wmulti.add_argument("--password", default="")
+    p_wmulti.add_argument("--idle-minutes", type=int, default=10, help="Cloud idle auto-sleep timeout in minutes (default: 10)")
+    p_wmulti.add_argument("--persistent", action="store_true", help="Keep retrying every --retry-interval seconds when allocation fails")
+    p_wmulti.add_argument("--retry-interval", type=int, default=60, help="Seconds between 3-attempt rounds when --persistent is set (default: 60)")
     p_conn = sub.add_parser("connect", help="Save and test connection to an already running EasyColab instance")
     p_conn.add_argument("--url", required=True)
     p_conn.add_argument("--password", default="")
@@ -1413,7 +1588,7 @@ def _execute_cli_command(args: argparse.Namespace) -> int:
         cmd_extract_voice_seed(args)
         _emit_app_log(f"声纹音频切片完成 -> {args.output}")
         return 0
-    if args.cmd in ("auth-status", "auth-url", "auth-list", "keepalive", "stop-all"):
+    if args.cmd in ("auth-status", "auth-status-all", "auth-url", "auth-list", "keepalive", "stop-all"):
         rc, out = _run_bridge([args.cmd.replace("-", "_")])
         if args.cmd == "stop-all":
             _emit_app_log(f"已执行 stop-all 释放全部 Colab 实例 (rc={rc})", level=("info" if rc == 0 else "error"))
@@ -1429,6 +1604,9 @@ def _execute_cli_command(args: argparse.Namespace) -> int:
         return rc
     if args.cmd == "wake":
         cmd_wake(args)
+        return 0
+    if args.cmd == "wake-multi":
+        cmd_wake_multi(args)
         return 0
     if args.cmd == "connect":
         cmd_connect(args)

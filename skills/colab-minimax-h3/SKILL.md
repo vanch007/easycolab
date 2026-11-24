@@ -31,10 +31,12 @@ Use `./scripts/colab_h3_cli.py` for the listed runtime, model, and generation co
      - `./scripts/colab_h3_cli.py snap-frames --seconds 5` (snaps to `17k+5`: `56`, `73`, `124`, `192`, `243`, `362`)
      - `./scripts/colab_h3_cli.py extract-voice-seed --input raw_clip.mp4 --output voice_seed.wav --start 0 --duration 5`
 2. **Stage 1 — Wake or Connect to Colab**:
-   - For an existing EasyColab G4 session, attach and check ComfyUI readiness before requesting another GPU. See [reusing G4 and running reference-motion shots](./references/models-and-workflows.md#reusing-g4-for-turbo-reference-motion-shots).
-   - Check OAuth & CU balance: `./scripts/colab_h3_cli.py auth-status`
-   - Boot GPU VM & deploy EasyColab (sets a 10-minute cloud idle auto-sleep watchdog by default; add `--persistent --retry-interval 60` to keep retrying every 60s when 3 allocation attempts fail): `./scripts/colab_h3_cli.py wake --gpu G4 --persistent`
-   - Or attach to an existing server: `./scripts/colab_h3_cli.py connect --url https://xxxx.gradio.live --password <pwd>`
+   - Check live status across **all** saved accounts at once (CU balance, active VMs & GPU models without switching accounts):
+     `./scripts/colab_h3_cli.py auth-status-all`
+   - **Default when booting a new GPU VM (multi-account concurrent race, first-wins)**:
+     `./scripts/colab_h3_cli.py wake-multi --gpu G4 --mode first --persistent`
+     - Automatically queries live status across all saved accounts, skips accounts that already have an active VM, races all idle accounts in parallel (`--retry-interval 60` after 3 failed attempts), immediately cancels losing accounts + cleans any duplicate millisecond allocation on first win, switches the default active account & session to whichever account succeeded, and syncs `active_session.json`. (Works seamlessly even if only 1 account is saved; pass `--accounts a@g.com,b@g.com` or `--mode all` for parallel GPUs).
+   - For an existing EasyColab G4 session, attach (`./scripts/colab_h3_cli.py connect --url https://xxxx.gradio.live --password <pwd>`) or wake a specific single account (`./scripts/colab_h3_cli.py --account <email> wake --gpu G4 --persistent`). See [reusing G4 and running reference-motion shots](./references/models-and-workflows.md#reusing-g4-for-turbo-reference-motion-shots).
 3. **Stage 2 — Install Pack or Load Native Model**:
    - ComfyUI packs:
      - `./scripts/colab_h3_cli.py comfy-install-pack --pack recavsr_upscaler --wait` (ReCaVSR Fast Streaming 4K Video Upscaler)
@@ -67,7 +69,7 @@ Use `./scripts/colab_h3_cli.py` for the listed runtime, model, and generation co
 
 | Group | Subcommands | Notes |
 |---|---|---|
-| Auth & VM | `auth-status`, `auth-url`, `auth-code`, `auth-list`, `auth-switch`, `auth-remove`, `wake`, `connect`, `config-idle`, `keepalive`, `disconnect`, `stop-all` | Multi-account vault (`accounts/`); pass global `--account <email>` to run parallel GPUs cleanly; `wake` supports `--persistent` & saves `0600` session |
+| Auth & VM | `auth-status`, `auth-status-all`, `auth-url`, `auth-code`, `auth-list`, `auth-switch`, `auth-remove`, `wake`, `wake-multi`, `connect`, `config-idle`, `keepalive`, `disconnect`, `stop-all` | Multi-account vault (`accounts/`); `auth-status-all` probes all accounts concurrently; default `wake-multi --gpu G4 --mode first --persistent` races all idle accounts and auto-switches to whichever wins; pass `--account <email>` for parallel GPUs |
 | Native H3 | `status`, `download-model`, `load-model`, `unload-model`, `generate-video`, `generate-image` | Talks to `/minimax_api/*`; generation commands **auto-sleep on finish/error** unless `--keep-alive` is passed |
 | ComfyUI | `comfy-status`, `comfy-start`, `comfy-stop`, `comfy-free-vram`, `comfy-sync-drive`, `comfy-install-pack`, `comfy-download-weight`, `comfy-download-output` | Uses EasyColab NVMe hybrid symlinks, `custom_nodes_bundle.tar.gz`, and G4 `--highvram --disable-mmap --fast` |
 | Direct H3 Pipelines | `comfy-upscale-recavsr`, `comfy-upscale`, `comfy-run-tara`, `comfy-run-10eros`, `comfy-run-sulphur3` | Uploads inputs, runs API graph, downloads MP4, **auto-syncs & auto-sleeps on finish/error** unless `--keep-alive` is passed; supports `--dry-run` |
