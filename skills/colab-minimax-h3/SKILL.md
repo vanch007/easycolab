@@ -33,7 +33,7 @@ Use `./scripts/colab_h3_cli.py` for the listed runtime, model, and generation co
 2. **Stage 1 — Wake or Connect to Colab**:
    - For an existing EasyColab G4 session, attach and check ComfyUI readiness before requesting another GPU. See [reusing G4 and running reference-motion shots](./references/models-and-workflows.md#reusing-g4-for-turbo-reference-motion-shots).
    - Check OAuth & CU balance: `./scripts/colab_h3_cli.py auth-status`
-   - Boot GPU VM & deploy EasyColab (sets a 10-minute cloud idle auto-sleep watchdog by default): `./scripts/colab_h3_cli.py wake --gpu G4`
+   - Boot GPU VM & deploy EasyColab (sets a 10-minute cloud idle auto-sleep watchdog by default; add `--persistent --retry-interval 60` to keep retrying every 60s when 3 allocation attempts fail): `./scripts/colab_h3_cli.py wake --gpu G4 --persistent`
    - Or attach to an existing server: `./scripts/colab_h3_cli.py connect --url https://xxxx.gradio.live --password <pwd>`
 3. **Stage 2 — Install Pack or Load Native Model**:
    - ComfyUI packs:
@@ -67,7 +67,7 @@ Use `./scripts/colab_h3_cli.py` for the listed runtime, model, and generation co
 
 | Group | Subcommands | Notes |
 |---|---|---|
-| Auth & VM | `auth-status`, `auth-url`, `auth-code`, `wake`, `connect`, `config-idle`, `keepalive`, `disconnect`, `stop-all` | `wake` sets `--idle-minutes 10` watchdog; saves active URL + Basic Auth password (`0600`) |
+| Auth & VM | `auth-status`, `auth-url`, `auth-code`, `auth-list`, `auth-switch`, `auth-remove`, `wake`, `connect`, `config-idle`, `keepalive`, `disconnect`, `stop-all` | Multi-account vault (`accounts/`); `wake` sets `--idle-minutes 10` (supports `--persistent`) & saves active URL + password (`0600`) |
 | Native H3 | `status`, `download-model`, `load-model`, `unload-model`, `generate-video`, `generate-image` | Talks to `/minimax_api/*`; generation commands **auto-sleep on finish/error** unless `--keep-alive` is passed |
 | ComfyUI | `comfy-status`, `comfy-start`, `comfy-stop`, `comfy-free-vram`, `comfy-sync-drive`, `comfy-install-pack`, `comfy-download-weight`, `comfy-download-output` | Uses EasyColab NVMe hybrid symlinks, `custom_nodes_bundle.tar.gz`, and G4 `--highvram --disable-mmap --fast` |
 | Direct H3 Pipelines | `comfy-upscale-recavsr`, `comfy-upscale`, `comfy-run-tara`, `comfy-run-10eros`, `comfy-run-sulphur3` | Uploads inputs, runs API graph, downloads MP4, **auto-syncs & auto-sleeps on finish/error** unless `--keep-alive` is passed; supports `--dry-run` |

@@ -1075,8 +1075,14 @@ def cmd_wake(args: argparse.Namespace) -> None:
     pwd = args.password or _generate_admin_password()
     if not re.fullmatch(r"[A-Za-z0-9_-]{24,256}", pwd):
         raise ValueError("Password must be 24-256 URL-safe ASCII characters ([A-Za-z0-9_-]).")
-    _emit_app_log(f"正在通过 Skill CLI 唤醒 {args.gpu} GPU 实例并部署 app.py...")
-    rc, out = _run_bridge(["wake", "--gpu", args.gpu, "--app-py", str(root / "app.py")], env_extra={"EASYCOLAB_ADMIN_PASSWORD": pwd}, stream=True)
+    _emit_app_log(
+        f"正在通过 Skill CLI 唤醒 {args.gpu} GPU 实例并部署 app.py"
+        f"{'（已开启持续每 ' + str(int(args.retry_interval)) + 's 自动重申）' if getattr(args, 'persistent', False) else ''}..."
+    )
+    bridge_args = ["wake", "--gpu", args.gpu, "--app-py", str(root / "app.py")]
+    if getattr(args, "persistent", False):
+        bridge_args += ["--persistent", "--retry-interval", str(max(5, int(getattr(args, "retry_interval", 60) or 60)))]
+    rc, out = _run_bridge(bridge_args, env_extra={"EASYCOLAB_ADMIN_PASSWORD": pwd}, stream=True)
     if rc != 0:
         raise RuntimeError(f"colab_bridge wake exited with code {rc}")
     m = re.search(r"https://[A-Za-z0-9.-]+\.gradio\.live", out)
@@ -1155,12 +1161,19 @@ def main(argv: Optional[List[str]] = None) -> int:
     # Colab lifecycle
     sub.add_parser("auth-status", help="Check Google Colab OAuth & CU balance")
     sub.add_parser("auth-url", help="Get Google Colab OAuth login URL")
+    sub.add_parser("auth-list", help="List all saved Google Colab accounts")
+    p_asw = sub.add_parser("auth-switch", help="Switch active Google Colab account in 1 command")
+    p_asw.add_argument("email", help="Saved Google account email to activate")
+    p_arm = sub.add_parser("auth-remove", help="Remove a saved Google Colab account from local vault")
+    p_arm.add_argument("email", help="Saved Google account email to remove")
     p_ac = sub.add_parser("auth-code", help="Exchange OAuth authorization code")
     p_ac.add_argument("code")
     p_wake = sub.add_parser("wake", help="Wake Colab GPU VM and deploy EasyColab")
     p_wake.add_argument("--gpu", default="G4", choices=["G4", "H100", "A100", "L4", "T4"])
     p_wake.add_argument("--password", default="")
     p_wake.add_argument("--idle-minutes", type=int, default=10, help="Cloud idle auto-sleep timeout in minutes (default: 10)")
+    p_wake.add_argument("--persistent", action="store_true", help="Keep retrying every --retry-interval seconds if 3 allocation attempts fail")
+    p_wake.add_argument("--retry-interval", type=int, default=60, help="Seconds to wait before next 3-attempt round when --persistent is set (default: 60)")
     p_conn = sub.add_parser("connect", help="Save and test connection to an already running EasyColab instance")
     p_conn.add_argument("--url", required=True)
     p_conn.add_argument("--password", default="")
@@ -1392,10 +1405,14 @@ def _execute_cli_command(args: argparse.Namespace) -> int:
         cmd_extract_voice_seed(args)
         _emit_app_log(f"声纹音频切片完成 -> {args.output}")
         return 0
-    if args.cmd in ("auth-status", "auth-url", "keepalive", "stop-all"):
+    if args.cmd in ("auth-status", "auth-url", "auth-list", "keepalive", "stop-all"):
         rc, out = _run_bridge([args.cmd.replace("-", "_")])
         if args.cmd == "stop-all":
             _emit_app_log(f"已执行 stop-all 释放全部 Colab 实例 (rc={rc})", level=("info" if rc == 0 else "error"))
+        print(out)
+        return rc
+    if args.cmd in ("auth-switch", "auth-remove"):
+        rc, out = _run_bridge([args.cmd.replace("-", "_"), args.email])
         print(out)
         return rc
     if args.cmd == "auth-code":
