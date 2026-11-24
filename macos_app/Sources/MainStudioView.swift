@@ -533,6 +533,61 @@ struct MainStudioView: View {
         }
 
         VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 5) {
+                StatusDot(color: vm.liveMonitoringEnabled ? (vm.isConnected ? .green : .orange) : .gray)
+                Button {
+                    vm.liveMonitoringEnabled.toggle()
+                } label: {
+                    Text(vm.liveMonitoringEnabled
+                         ? L("实时监控中 (1.5s)", "Live Monitor (1.5s)")
+                         : L("监控已暂停", "Monitor Paused"))
+                        .font(.system(size: 10.5, weight: .semibold))
+                        .foregroundStyle(vm.liveMonitoringEnabled ? .primary : .secondary)
+                }
+                .buttonStyle(.plain)
+                .help(L("点击切换实时监控轮询开关（含外部 CLI 会话自动接管）", "Click to toggle 1.5s live Colab monitoring & external CLI session attach"))
+
+                if let syncAt = vm.lastMonitorSyncAt {
+                    Text(syncAt, style: .time)
+                        .font(.system(size: 9.5, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 4)
+                if vm.attachedExternalSessionSource != nil && vm.isConnected {
+                    Text(L("已接管 CLI 会话", "CLI Attached"))
+                        .font(.system(size: 9.5, weight: .semibold))
+                        .foregroundStyle(Color(red: 0.46, green: 0.80, blue: 0.98))
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 1.5)
+                        .background(Capsule().fill(Color(red: 0.46, green: 0.80, blue: 0.98).opacity(0.14)))
+                }
+            }
+
+            if !vm.isConnected && vm.activeVMCount > 0 {
+                HStack(spacing: 6) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(.orange)
+                    Text(L(
+                        "检测到 \(vm.activeVMCount) 台运行中 (\(fmt(vm.displayBurnRate)) CU/h)",
+                        "\(vm.activeVMCount) active VM(s) (\(fmt(vm.displayBurnRate)) CU/h)"
+                    ))
+                        .font(.system(size: 10.5, weight: .medium))
+                        .foregroundStyle(.orange)
+                        .lineLimit(1)
+                    Spacer(minLength: 4)
+                    Button(L("释放", "Stop")) {
+                        Task { await vm.disconnectRemoteColab() }
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.mini)
+                    .tint(.red)
+                }
+                .padding(.horizontal, 7)
+                .padding(.vertical, 4)
+                .background(RoundedRectangle(cornerRadius: 6).fill(Color.orange.opacity(0.12)))
+            }
+
             HStack(spacing: 6) {
                 StatusDot(color: vm.isConnected ? .green : .orange)
                 Text(vm.displayGpuName)
@@ -572,6 +627,39 @@ struct MainStudioView: View {
                           ? L("切换为显存/内存/硬盘独立折线面积图", "Switch to separate VRAM / RAM / Disk area charts")
                           : L("切换为显存/内存/硬盘三线同屏对比图", "Switch to combined 3-line telemetry comparison chart"))
                 }
+            }
+
+            if vm.isConnected && (vm.gpuUtilPct >= 0 || vm.gpuTempC >= 0 || vm.comfyRunning) {
+                HStack(spacing: 6) {
+                    if vm.gpuUtilPct >= 0 {
+                        Text("GPU \(Int(vm.gpuUtilPct.rounded()))%")
+                            .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                            .foregroundStyle(vm.gpuUtilPct >= 85 ? Color.green : Color.accentColor)
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 1.5)
+                            .background(Capsule().fill(Color.accentColor.opacity(0.11)))
+                    }
+                    if vm.gpuTempC >= 0 {
+                        Text("\(Int(vm.gpuTempC.rounded()))°C")
+                            .font(.system(size: 10, weight: .medium, design: .monospaced))
+                            .foregroundStyle(vm.gpuTempC >= 82 ? .orange : .secondary)
+                    }
+                    if vm.gpuPowerW >= 0 {
+                        Text("\(Int(vm.gpuPowerW.rounded()))W")
+                            .font(.system(size: 10, weight: .medium, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer(minLength: 4)
+                    if vm.comfyRunning {
+                        Text(L(
+                            "ComfyUI 队列: \(vm.comfyQueueRunning) 运行 / \(vm.comfyQueuePending) 排队",
+                            "ComfyUI Q: \(vm.comfyQueueRunning) run / \(vm.comfyQueuePending) pend"
+                        ))
+                            .font(.system(size: 9.5, weight: .medium, design: .monospaced))
+                            .foregroundStyle((vm.comfyQueueRunning + vm.comfyQueuePending) > 0 ? Color.green : .secondary)
+                    }
+                }
+                .padding(.horizontal, 2)
             }
 
             if vm.vramTotalGB > 0 || vm.ramTotalGB > 0 || vm.diskTotalGB > 0 {

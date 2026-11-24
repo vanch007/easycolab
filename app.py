@@ -3498,12 +3498,45 @@ def _get_storage_metrics_dict(refresh_drive: bool = False) -> Dict[str, Any]:
     }
 
 
+def _sample_nvidia_smi_metrics() -> Dict[str, float]:
+    """实时采样 GPU 利用率、核心温度与实时功耗（非阻塞超时保护）"""
+    defaults = {"gpu_util_pct": -1.0, "gpu_temp_c": -1.0, "gpu_power_w": -1.0}
+    try:
+        out = subprocess.check_output(
+            [
+                "nvidia-smi",
+                "--query-gpu=utilization.gpu,temperature.gpu,power.draw",
+                "--format=csv,noheader,nounits",
+            ],
+            stderr=subprocess.DEVNULL,
+            timeout=1.5,
+            text=True,
+        ).strip()
+        if not out:
+            return defaults
+        first_line = out.splitlines()[0]
+        parts = [p.strip() for p in first_line.split(",")]
+        def _parse_f(val: str) -> float:
+            try:
+                return float(val)
+            except Exception:
+                return -1.0
+        return {
+            "gpu_util_pct": _parse_f(parts[0]) if len(parts) > 0 else -1.0,
+            "gpu_temp_c": _parse_f(parts[1]) if len(parts) > 1 else -1.0,
+            "gpu_power_w": _parse_f(parts[2]) if len(parts) > 2 else -1.0,
+        }
+    except Exception:
+        return defaults
+
+
 def _sample_live_hardware_telemetry_once() -> Dict[str, Any]:
     if not torch.cuda.is_available():
         gpu_name = "CPU Mode (未检测到 GPU)"
         cuda_avail = False
         free_gb, total_gb, used_gb = 0.0, 0.0, 0.0
         cu_rate = 0.10
+        gpu_dyn = {"gpu_util_pct": -1.0, "gpu_temp_c": -1.0, "gpu_power_w": -1.0}
     else:
         gpu_name = torch.cuda.get_device_name(0)
         cuda_avail = True
@@ -3512,6 +3545,7 @@ def _sample_live_hardware_telemetry_once() -> Dict[str, Any]:
         total_gb = round(total_mem / (1024 ** 3), 2)
         used_gb = round(total_gb - free_gb, 2)
         cu_rate = estimate_cu_burn_rate(gpu_name)
+        gpu_dyn = _sample_nvidia_smi_metrics()
 
     snap = {
         "cuda_available": cuda_avail,
@@ -3520,6 +3554,9 @@ def _sample_live_hardware_telemetry_once() -> Dict[str, Any]:
         "vram_total_gb": total_gb,
         "vram_used_gb": used_gb,
         "cu_burn_rate_per_hour": cu_rate,
+        "gpu_util_pct": gpu_dyn["gpu_util_pct"],
+        "gpu_temp_c": gpu_dyn["gpu_temp_c"],
+        "gpu_power_w": gpu_dyn["gpu_power_w"],
     }
     snap.update(_get_storage_metrics_dict(refresh_drive=False))
     if "_poll_local_comfyui_runtime_quiet" in globals():
@@ -3639,6 +3676,8 @@ def get_gpu_status_dict(model_id: Optional[str] = None) -> Dict[str, Any]:
         "drive_total_gb", "drive_used_gb", "drive_free_gb",
     ):
         base[k] = hw.get(k, 0.0)
+    for gk in ("gpu_util_pct", "gpu_temp_c", "gpu_power_w"):
+        base[gk] = hw.get(gk, -1.0)
     base.update(file_status)
     if _has_rclone_drive_remote():
         base["drive_persisted"] = True

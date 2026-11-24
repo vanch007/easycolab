@@ -139,6 +139,45 @@ _APP_LOG_PATH = os.path.expanduser(
     os.environ.get("EASYCOLAB_APP_LOG_PATH", "").strip()
     or "~/Library/Application Support/EasyColab/external_cli_logs.jsonl"
 )
+_ACTIVE_SESSION_PATH = os.path.expanduser(
+    os.environ.get("EASYCOLAB_ACTIVE_SESSION_PATH", "").strip()
+    or "~/Library/Application Support/EasyColab/active_session.json"
+)
+
+
+def _sync_active_session_file(
+    url: str,
+    password: str,
+    gpu: str = "",
+    sleeping: bool = False,
+    source: str = "colab-bridge",
+) -> None:
+    """Sync active/sleeping session to shared App Support JSON for EasyColab GUI real-time attach."""
+    if os.environ.get("EASYCOLAB_FROM_APP") == "1" or os.environ.get("EASYCOLAB_SUPPRESS_BRIDGE_LOG") == "1":
+        return
+    try:
+        target = os.path.expanduser(
+            os.environ.get("EASYCOLAB_ACTIVE_SESSION_PATH", "").strip() or _ACTIVE_SESSION_PATH
+        )
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        payload = {
+            "url": (url or "").strip().rstrip("/"),
+            "password": password or "",
+            "gpu": gpu or "",
+            "comfy_url": "",
+            "sleeping": bool(sleeping),
+            "source": source,
+            "updated_at": round(time.time(), 3),
+        }
+        tmp = target + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as wf:
+            wf.write(json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
+            wf.flush()
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, target)
+        os.chmod(target, 0o600)
+    except Exception:
+        pass
 
 
 def _mask_bridge_log_text(text: str) -> str:
@@ -220,7 +259,15 @@ def _external_cli_log_tee():
             if s.startswith("WAKE_LOG:"):
                 _append_external_app_log(s[len("WAKE_LOG:"):].strip(), level="info")
             elif s.startswith("WAKE_URL:"):
-                _append_external_app_log(f"成功获取云端隧道地址: {s[len('WAKE_URL:'):].strip()}", level="info")
+                raw_url = s[len("WAKE_URL:"):].strip()
+                _append_external_app_log(f"成功获取云端隧道地址: {raw_url}", level="info")
+                _sync_active_session_file(
+                    url=raw_url,
+                    password=os.environ.get("EASYCOLAB_ADMIN_PASSWORD", ""),
+                    gpu=os.environ.get("EASYCOLAB_ACTIVE_GPU", ""),
+                    sleeping=False,
+                    source="colab-bridge",
+                )
             elif s.startswith("WAKE_ERROR:"):
                 _append_external_app_log(s[len("WAKE_ERROR:"):].strip(), level="error")
             elif s.startswith("{") and s.endswith("}"):
@@ -554,6 +601,7 @@ def cmd_stop_all():
                 endpoints_to_release.append(a.endpoint)
 
         stopped_count = _unassign_endpoints_and_wait_quota_release(endpoints_to_release, wait_s=8.0)
+        _sync_active_session_file("", "", sleeping=True, source="colab-bridge")
 
         info = state.client.get_consumption_user_info()
         print(json.dumps({

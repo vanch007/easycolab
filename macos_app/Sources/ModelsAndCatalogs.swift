@@ -705,6 +705,9 @@ struct ColabStatusResponse: Codable {
     var vram_free_gb: Double?
     var vram_total_gb: Double?
     var vram_used_gb: Double?
+    var gpu_util_pct: Double?
+    var gpu_temp_c: Double?
+    var gpu_power_w: Double?
     var model_loaded: Bool?
     var any_model_loaded: Bool?
     var selected_model_id: String?
@@ -987,6 +990,9 @@ struct LiveTelemetrySnapshot: Codable {
     var vram_free_gb: Double?
     var vram_total_gb: Double?
     var vram_used_gb: Double?
+    var gpu_util_pct: Double?
+    var gpu_temp_c: Double?
+    var gpu_power_w: Double?
     var cu_burn_rate_per_hour: Double?
     var ram_total_gb: Double?
     var ram_used_gb: Double?

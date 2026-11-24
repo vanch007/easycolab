@@ -70,11 +70,19 @@ class ExternalCLILogBusTests(unittest.TestCase):
 
         import ast
         tree = ast.parse(src, filename=COLAB_BRIDGE_PATH)
-        wanted = {"_mask_bridge_log_text", "_append_external_app_log", "_external_cli_log_tee"}
+        wanted = {
+            "_mask_bridge_log_text",
+            "_append_external_app_log",
+            "_sync_active_session_file",
+            "_external_cli_log_tee",
+        }
         selected = [
             n for n in tree.body
             if (isinstance(n, ast.FunctionDef) and n.name in wanted)
-            or (isinstance(n, ast.Assign) and any(getattr(t, "id", None) == "_APP_LOG_PATH" for t in n.targets))
+            or (
+                isinstance(n, ast.Assign)
+                and any(getattr(t, "id", None) in ("_APP_LOG_PATH", "_ACTIVE_SESSION_PATH") for t in n.targets)
+            )
         ]
         mod = ast.Module(body=selected, type_ignores=[])
         ast.fix_missing_locations(mod)
@@ -99,7 +107,10 @@ class ExternalCLILogBusTests(unittest.TestCase):
                 ns["_append_external_app_log"]("should also not appear")
                 self.assertFalse(os.path.exists(log_file))
             # Emits when invoked externally without suppression
-            clean_env = {"EASYCOLAB_APP_LOG_PATH": log_file}
+            clean_env = {
+                "EASYCOLAB_APP_LOG_PATH": log_file,
+                "EASYCOLAB_ACTIVE_SESSION_PATH": os.path.join(tmp, "active_session.json"),
+            }
             with mock.patch.dict(os.environ, clean_env, clear=False):
                 os.environ.pop("EASYCOLAB_FROM_APP", None)
                 os.environ.pop("EASYCOLAB_SUPPRESS_BRIDGE_LOG", None)
@@ -140,6 +151,66 @@ class ExternalCLILogBusTests(unittest.TestCase):
                 text = f.read()
             for tok in tokens:
                 self.assertIn(tok, text, f"missing {tok} in {path}")
+
+    def test_app_py_nvidia_smi_metrics_and_active_session_sync(self):
+        # 1. Verify _sample_nvidia_smi_metrics parses valid CSV & handles missing binary
+        with open(os.path.join(REPO_ROOT, "app.py"), "r", encoding="utf-8") as f:
+            app_src = f.read()
+        import ast
+        tree = ast.parse(app_src, filename="app.py")
+        fn_node = next(
+            n for n in tree.body
+            if isinstance(n, ast.FunctionDef) and n.name == "_sample_nvidia_smi_metrics"
+        )
+        mod = ast.Module(body=[fn_node], type_ignores=[])
+        ast.fix_missing_locations(mod)
+        ns = {
+            "subprocess": subprocess,
+            "Dict": __import__("typing").Dict,
+        }
+        exec(compile(mod, "app.py", "exec"), ns)
+        fn = ns["_sample_nvidia_smi_metrics"]
+        with mock.patch("subprocess.check_output", return_value="87, 64, 241.5\n"):
+            parsed = fn()
+        self.assertEqual(parsed["gpu_util_pct"], 87.0)
+        self.assertEqual(parsed["gpu_temp_c"], 64.0)
+        self.assertEqual(parsed["gpu_power_w"], 241.5)
+        with mock.patch("subprocess.check_output", side_effect=FileNotFoundError("no nvidia-smi")):
+            fallback = fn()
+        self.assertEqual(fallback["gpu_util_pct"], -1.0)
+
+        # 2. Verify _sync_app_active_session writes 0o600 awake & sleeping session state
+        cli_mod = _load_module(SKILL_CLI_REPO_PATH, "colab_h3_cli_session_test")
+        with tempfile.TemporaryDirectory() as tmp:
+            sess_file = os.path.join(tmp, "active_session.json")
+            with mock.patch.dict(os.environ, {"EASYCOLAB_ACTIVE_SESSION_PATH": sess_file}):
+                cli_mod._sync_app_active_session(
+                    "https://demo1234.gradio.live/",
+                    "secret_pw",
+                    gpu="G4",
+                    comfy_url="https://cf1234.trycloudflare.com",
+                    sleeping=False,
+                )
+                data = json.loads(open(sess_file, "r", encoding="utf-8").read())
+                self.assertEqual(data["url"], "https://demo1234.gradio.live")
+                self.assertFalse(data["sleeping"])
+                self.assertEqual(data["gpu"], "G4")
+                cli_mod._sync_app_active_session("", "", sleeping=True)
+                data2 = json.loads(open(sess_file, "r", encoding="utf-8").read())
+                self.assertTrue(data2["sleeping"])
+                self.assertEqual(data2["url"], "")
+
+        # 3. Verify macOS Swift files include live monitoring & auto-attach tokens
+        swift_checks = {
+            os.path.join(REPO_ROOT, "macos_app", "Sources", "ModelsAndCatalogs.swift"): ["gpu_util_pct", "gpu_temp_c", "gpu_power_w"],
+            os.path.join(REPO_ROOT, "macos_app", "Sources", "StudioViewModel.swift"): ["liveMonitoringEnabled", "attachedExternalSessionSource"],
+            os.path.join(REPO_ROOT, "macos_app", "Sources", "StudioViewModel+Services.swift"): ["active_session.json", "checkExternalActiveSessionIfNeeded"],
+            os.path.join(REPO_ROOT, "macos_app", "Sources", "MainStudioView.swift"): ["liveMonitoringEnabled", "ComfyUI"],
+        }
+        for sp, toks in swift_checks.items():
+            txt = open(sp, "r", encoding="utf-8").read()
+            for t in toks:
+                self.assertIn(t, txt, f"missing {t} in {sp}")
 
 
 if __name__ == "__main__":

@@ -28,6 +28,42 @@ APP_LOG_PATH = Path(
     os.environ.get("EASYCOLAB_APP_LOG_PATH", "").strip()
     or (Path.home() / "Library" / "Application Support" / "EasyColab" / "external_cli_logs.jsonl")
 )
+ACTIVE_SESSION_PATH = Path(
+    os.environ.get("EASYCOLAB_ACTIVE_SESSION_PATH", "").strip()
+    or (Path.home() / "Library" / "Application Support" / "EasyColab" / "active_session.json")
+)
+
+
+def _sync_app_active_session(
+    url: str,
+    password: str,
+    gpu: str = "",
+    comfy_url: str = "",
+    sleeping: bool = False,
+    source: str = "colab-h3-cli",
+) -> None:
+    """Publish active/sleeping Colab session state so EasyColab macOS app auto-attaches in real time."""
+    try:
+        target = Path(
+            os.environ.get("EASYCOLAB_ACTIVE_SESSION_PATH", "").strip() or str(ACTIVE_SESSION_PATH)
+        )
+        target.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "url": (url or "").strip().rstrip("/"),
+            "password": password or "",
+            "gpu": gpu or "",
+            "comfy_url": (comfy_url or "").strip().rstrip("/"),
+            "sleeping": bool(sleeping),
+            "source": source,
+            "updated_at": round(time.time(), 3),
+        }
+        tmp = target.with_suffix(".tmp")
+        tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, target)
+        os.chmod(target, 0o600)
+    except Exception:
+        pass
 
 
 def _mask_sensitive_text(text: str) -> str:
@@ -685,6 +721,7 @@ def _auto_sleep_runtime(base_url: str, password: str, sync_comfy: bool = False) 
     sess["sleeping"] = True
     sess["last_sleep_ts"] = int(time.time())
     _save_session(sess)
+    _sync_app_active_session("", "", sleeping=True)
     return report
 
 
@@ -718,6 +755,7 @@ def cmd_wake(args: argparse.Namespace) -> None:
     sess = _load_session()
     sess.update({"url": url, "password": pwd, "gpu": args.gpu, "sleeping": False, "idle_timeout_minutes": idle_mins})
     _save_session(sess)
+    _sync_app_active_session(url, pwd, gpu=args.gpu, sleeping=False)
     _emit_app_log(f"{args.gpu} 实例已就绪 ({url})，闲置自动释放={idle_mins}m。")
     print(json.dumps({
         "ok": True,
@@ -740,6 +778,13 @@ def cmd_connect(args: argparse.Namespace) -> None:
     elif isinstance(st.get("comfyui"), dict) and st["comfyui"].get("public_url"):
         sess["comfy_url"] = str(st["comfyui"]["public_url"]).rstrip("/")
     _save_session(sess)
+    _sync_app_active_session(
+        url,
+        pwd,
+        gpu=str(st.get("gpu_name") or ""),
+        comfy_url=str(sess.get("comfy_url") or ""),
+        sleeping=False,
+    )
     _emit_app_log(f"已绑定云端实例 {url} (GPU: {st.get('gpu_name')})")
     print(json.dumps({"ok": True, "url": url, "comfy_url": sess.get("comfy_url", ""), "gpu_name": st.get("gpu_name")}, indent=2))
 

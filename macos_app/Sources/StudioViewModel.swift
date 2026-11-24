@@ -171,6 +171,22 @@ class StudioViewModel: ObservableObject {
     @Published var ramHistoryPct: [Double] = []
     @Published var diskHistoryPct: [Double] = []
     @Published var combinedTelemetryChartMode: Bool = false
+    @Published var gpuUtilPct: Double = -1.0
+    @Published var gpuTempC: Double = -1.0
+    @Published var gpuPowerW: Double = -1.0
+    @Published var lastMonitorSyncAt: Date? = nil
+    @Published var attachedExternalSessionSource: String? = nil
+    var lastObservedExternalSessionUpdatedAt: Double = 0
+    @Published var liveMonitoringEnabled: Bool = {
+        if UserDefaults.standard.object(forKey: "easycolabLiveMonitoringEnabled") == nil {
+            return true
+        }
+        return UserDefaults.standard.bool(forKey: "easycolabLiveMonitoringEnabled")
+    }() {
+        didSet {
+            UserDefaults.standard.set(liveMonitoringEnabled, forKey: "easycolabLiveMonitoringEnabled")
+        }
+    }
     @Published var selectedModelId: String = "minimax_h3"
     @Published var customModels: [OpenModelSpec] = []
     @Published var showAddCustomModelSheet: Bool = false
@@ -531,6 +547,10 @@ class StudioViewModel: ObservableObject {
         if let vf = snap.vram_free_gb { vramFreeGB = vf }
         if let vt = snap.vram_total_gb { vramTotalGB = vt }
         if let vu = snap.vram_used_gb { vramUsedGB = vu }
+        if let gu = snap.gpu_util_pct { gpuUtilPct = gu }
+        if let gt = snap.gpu_temp_c { gpuTempC = gt }
+        if let gp = snap.gpu_power_w { gpuPowerW = gp }
+        lastMonitorSyncAt = Date()
         if let cr = snap.cu_burn_rate_per_hour { cuBurnRatePerHour = cr }
         if let rt = snap.ram_total_gb, rt > 0 { ramTotalGB = rt }
         if let ru = snap.ram_used_gb { ramUsedGB = ru }
@@ -631,6 +651,10 @@ class StudioViewModel: ObservableObject {
         vramHistoryPct = []
         ramHistoryPct = []
         diskHistoryPct = []
+        gpuUtilPct = -1.0
+        gpuTempC = -1.0
+        gpuPowerW = -1.0
+        attachedExternalSessionSource = nil
         lastTelemetrySampleDate = .distantPast
         cuBurnRatePerHour = 0.0
         loadedContextLengthTokens = 0
@@ -1782,6 +1806,10 @@ class StudioViewModel: ObservableObject {
         vramHistoryPct = []
         ramHistoryPct = []
         diskHistoryPct = []
+        gpuUtilPct = -1.0
+        gpuTempC = -1.0
+        gpuPowerW = -1.0
+        attachedExternalSessionSource = nil
         lastTelemetrySampleDate = .distantPast
         remoteContextSynced = false
         remoteIdleSynced = false

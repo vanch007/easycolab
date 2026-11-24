@@ -551,19 +551,88 @@ extension StudioViewModel {
         if let count = decoded.active_assignments { activeVMCount = count }
     }
 
+    var activeSessionFileURL: URL {
+        LocalRuntimePaths.appSupportDir.appendingPathComponent("active_session.json")
+    }
+
+    func checkExternalActiveSessionIfNeeded() async {
+        let candidates = [
+            activeSessionFileURL,
+            FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent(".config/colab-minimax-h3/session.json")
+        ]
+        var newestObj: [String: Any]? = nil
+        var newestUpdatedAt: Double = 0
+        for fileURL in candidates {
+            guard FileManager.default.fileExists(atPath: fileURL.path),
+                  let data = try? Data(contentsOf: fileURL),
+                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                continue
+            }
+            var ts = (obj["updated_at"] as? Double) ?? 0
+            if ts <= 0,
+               let attrs = try? FileManager.default.attributesOfItem(atPath: fileURL.path),
+               let mdate = attrs[.modificationDate] as? Date {
+                ts = mdate.timeIntervalSince1970
+            }
+            if ts > newestUpdatedAt {
+                newestUpdatedAt = ts
+                newestObj = obj
+            }
+        }
+        guard let obj = newestObj, newestUpdatedAt > lastObservedExternalSessionUpdatedAt else {
+            return
+        }
+        lastObservedExternalSessionUpdatedAt = newestUpdatedAt
+        let isSleeping = (obj["sleeping"] as? Bool) ?? false
+        let rawURL = ((obj["url"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleanURL = rawURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let pw = (obj["password"] as? String) ?? ""
+        let src = (obj["source"] as? String) ?? "external-cli"
+
+        if isSleeping {
+            if isConnected && attachedExternalSessionSource != nil {
+                attachedExternalSessionSource = nil
+                resetStaleRemoteRuntimeState(reason: L(
+                    "检测到外部 Skill / CLI 已释放并休眠 Colab 实例，监控状态已同步归零。",
+                    "External Skill/CLI put Colab to sleep; live monitor synced to offline."
+                ))
+                await refreshOfficialColabAccountUsage()
+            }
+            return
+        }
+
+        if !cleanURL.isEmpty && cleanURL.hasPrefix("https://") {
+            let currentClean = normalizedBaseURL
+            if !isConnected || currentClean != cleanURL {
+                colabServerURL = cleanURL
+                if !pw.isEmpty {
+                    adminPassword = pw
+                }
+                attachedExternalSessionSource = src
+                await checkColabStatus(silent: true)
+            }
+        }
+    }
+
     func startBackgroundTelemetryLoop() {
         heartbeatTask?.cancel()
         heartbeatTask = Task {
+            await checkExternalActiveSessionIfNeeded()
             if !normalizedBaseURL.isEmpty {
                 await checkColabStatus(silent: true)
             }
             var tick = 0
             while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 2_500_000_000)
+                let sleepNs: UInt64 = liveMonitoringEnabled ? 1_500_000_000 : 4_000_000_000
+                try? await Task.sleep(nanoseconds: sleepNs)
                 tick += 1
+                guard liveMonitoringEnabled else { continue }
+
+                await checkExternalActiveSessionIfNeeded()
                 if isConnected {
-                    // 生成任务进行中由 pollColabJob 附带 telemetry 实时更新图表，仅每 15s 低频同步一次全局状态，避免争抢 Gradio 隧道
-                    if !isGenerating || tick % 6 == 0 {
+                    // 生成任务进行中由 pollColabJob 附带 telemetry 实时更新图表，每 15s 低频同步全局状态
+                    if !isGenerating || tick % 10 == 0 {
                         await checkColabStatus(silent: true)
                     }
                     if cliLoggedIn && !isWakingColab {
@@ -578,10 +647,10 @@ extension StudioViewModel {
                     }
                 }
 
-                // 未连接云端实例时每 ~40s 低频刷新一次官方 CU 余额与活跃分配数；已连接时由常驻 keepalive_daemon 实时回传
-                if tick % 16 == 0 && cliLoggedIn && !isWakingColab && !isConnected {
+                // 实时监控官方 Colab CU 余额与活跃 VM 数：离线状态下每 ~12s 检查以第一时间发现外部开启的云端实例
+                if tick % 8 == 0 && cliLoggedIn && !isWakingColab && !isConnected {
                     await refreshOfficialColabAccountUsage()
-                } else if tick % 24 == 0 && cliLoggedIn && !isWakingColab && isConnected && keepaliveDaemonProcess?.isRunning != true {
+                } else if tick % 14 == 0 && cliLoggedIn && !isWakingColab && isConnected && keepaliveDaemonProcess?.isRunning != true {
                     await keepaliveColabRuntime()
                 }
             }
@@ -750,6 +819,10 @@ extension StudioViewModel {
         vramFreeGB = decoded.vram_free_gb ?? 0.0
         vramTotalGB = decoded.vram_total_gb ?? 0.0
         vramUsedGB = decoded.vram_used_gb ?? 0.0
+        gpuUtilPct = decoded.gpu_util_pct ?? gpuUtilPct
+        gpuTempC = decoded.gpu_temp_c ?? gpuTempC
+        gpuPowerW = decoded.gpu_power_w ?? gpuPowerW
+        lastMonitorSyncAt = Date()
         ramTotalGB = decoded.ram_total_gb ?? ramTotalGB
         ramUsedGB = decoded.ram_used_gb ?? ramUsedGB
         ramFreeGB = decoded.ram_free_gb ?? ramFreeGB
