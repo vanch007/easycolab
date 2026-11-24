@@ -172,12 +172,22 @@ def _sync_active_session_file(
             os.environ.get("EASYCOLAB_ACTIVE_SESSION_PATH", "").strip() or _ACTIVE_SESSION_PATH
         )
         os.makedirs(os.path.dirname(target), exist_ok=True)
+        existing_pw = ""
+        existing_comfy = ""
+        if not sleeping and os.path.exists(target):
+            try:
+                with open(target, "r", encoding="utf-8") as rf:
+                    prev = json.load(rf) or {}
+                existing_pw = str(prev.get("password") or "")
+                existing_comfy = str(prev.get("comfy_url") or "")
+            except Exception:
+                pass
         acct_val = (account or os.environ.get("EASYCOLAB_ACCOUNT", "")).strip()
         payload = {
             "url": (url or "").strip().rstrip("/"),
-            "password": password or "",
+            "password": "" if sleeping else (password or existing_pw),
             "gpu": gpu or "",
-            "comfy_url": "",
+            "comfy_url": "" if sleeping else existing_comfy,
             "account": acct_val,
             "sleeping": bool(sleeping),
             "source": source,
@@ -1682,7 +1692,7 @@ with open(log_path, "w") as out_f:
     child_env = {**os.environ, "EASYCOLAB_ADMIN_PASSWORD": admin_password}
     if INITIAL_IDLE_MINUTES is not None:
         child_env["EASYCOLAB_IDLE_TIMEOUT_MINUTES"] = str(INITIAL_IDLE_MINUTES)
-    subprocess.Popen([sys.executable, "-u", "/content/app.py"], cwd="/content", env=child_env, stdout=out_f, stderr=subprocess.STDOUT)
+    subprocess.Popen([sys.executable, "-u", "/content/app.py"], cwd="/content", env=child_env, stdout=out_f, stderr=subprocess.STDOUT, start_new_session=True)
 
 url_re = re.compile(r"^EasyColab URL: (https://[a-zA-Z0-9-]+\.gradio\.live)$", re.MULTILINE)
 found_url = None
@@ -1877,6 +1887,14 @@ else:
             m_rec = re.search(r"^RECOVER_URL:(https://[a-zA-Z0-9-]+\.gradio\.live)\s*$", probe_text, flags=re.MULTILINE)
             if m_rec:
                 rec_url = m_rec.group(1).strip()
+                _sync_active_session_file(
+                    rec_url,
+                    "",
+                    gpu=a.accelerator.value,
+                    sleeping=False,
+                    source="colab-bridge",
+                    account=_get_account_email(),
+                )
                 print(f"RECOVER_URL:{rec_url}", flush=True)
                 print("WAKE_LOG: ✅ 云端服务端与公网隧道均在线，正在重新连接...", flush=True)
                 return
@@ -1932,7 +1950,7 @@ with open(log_path, "w") as out_f:
     child_env = {**os.environ, "EASYCOLAB_ADMIN_PASSWORD": admin_password}
     if INITIAL_IDLE_MINUTES is not None:
         child_env["EASYCOLAB_IDLE_TIMEOUT_MINUTES"] = str(INITIAL_IDLE_MINUTES)
-    subprocess.Popen([sys.executable, "-u", "/content/app.py"], cwd="/content", env=child_env, stdout=out_f, stderr=subprocess.STDOUT)
+    subprocess.Popen([sys.executable, "-u", "/content/app.py"], cwd="/content", env=child_env, stdout=out_f, stderr=subprocess.STDOUT, start_new_session=True)
 
 url_re = re.compile(r"^EasyColab URL: (https://[a-zA-Z0-9-]+\.gradio\.live)$", re.MULTILINE)
 found_url = None
@@ -1953,12 +1971,24 @@ else:
 """
         )
         outputs = _exec_on_session(restart_code, timeout=240)
+        restarted_url = ""
         for out in outputs:
             if "text" in out:
                 for line in out["text"].splitlines():
                     print(line, flush=True)
+                    if line.startswith("WAKE_URL:"):
+                        restarted_url = line[len("WAKE_URL:"):].strip()
             elif out.get("output_type") == "error":
                 print("RECOVER_ERROR: " + out.get("evalue", "Execution error"), flush=True)
+        if restarted_url:
+            _sync_active_session_file(
+                restarted_url,
+                password,
+                gpu=a.accelerator.value,
+                sleeping=False,
+                source="colab-bridge",
+                account=_get_account_email(),
+            )
     except Exception as exc:
         print(f"RECOVER_ERROR: {exc}", flush=True)
 
