@@ -398,25 +398,62 @@ struct MainStudioView: View {
             if vm.cliLoggedIn {
                 Button(L("刷新", "Refresh")) { Task { await vm.refreshOfficialColabAccountUsage() } }
                     .controlSize(.small)
+            }
 
+            if vm.cliLoggedIn || !vm.savedAccounts.isEmpty {
                 Menu {
+                    if !vm.savedAccounts.isEmpty {
+                        Section(L("已保存账号（点击秒切）", "Saved Accounts (1-Click Switch)")) {
+                            ForEach(vm.savedAccounts) { acc in
+                                let isActive = vm.cliLoggedIn && (acc.is_active == true || acc.email.caseInsensitiveCompare(vm.accountEmail) == .orderedSame)
+                                let balTag = acc.paid_balance != nil ? String(format: " · %.1f CU", acc.paid_balance!) : ""
+                                let vmTag = (acc.active_assignments ?? 0) > 0 ? " · \(acc.active_assignments!) VM" : ""
+                                Button {
+                                    if !isActive {
+                                        Task { await vm.switchSavedGoogleAccount(acc.email) }
+                                    }
+                                } label: {
+                                    Label(
+                                        "\(vm.formattedAccountEmail(acc.email))\(balTag)\(vmTag)",
+                                        systemImage: isActive ? "checkmark.circle.fill" : "person.crop.circle"
+                                    )
+                                }
+                            }
+                        }
+                        Divider()
+                    }
                     Button {
                         Task { await vm.startGoogleOAuthLogin(switchingAccount: true) }
                     } label: {
-                        Label(L("切换 Google 账号...", "Switch Google Account..."), systemImage: "arrow.triangle.2.circlepath")
+                        Label(L("添加新 Google 账号...", "Add Google Account..."), systemImage: "person.badge.plus")
                     }
-                    Divider()
-                    Button(role: .destructive) {
-                        Task { await vm.logoutGoogleAccount() }
-                    } label: {
-                        Label(L("退出当前账号", "Sign Out"), systemImage: "rectangle.portrait.and.arrow.right")
+                    if !vm.savedAccounts.isEmpty {
+                        Menu(L("移除已保存账号", "Remove Saved Account")) {
+                            ForEach(vm.savedAccounts) { acc in
+                                Button(role: .destructive) {
+                                    Task { await vm.removeSavedGoogleAccount(acc.email) }
+                                } label: {
+                                    Text(vm.formattedAccountEmail(acc.email))
+                                }
+                            }
+                        }
+                    }
+                    if vm.cliLoggedIn {
+                        Divider()
+                        Button(role: .destructive) {
+                            Task { await vm.logoutGoogleAccount() }
+                        } label: {
+                            Label(L("退出当前账号（保留记录）", "Sign Out (Keep Saved)"), systemImage: "rectangle.portrait.and.arrow.right")
+                        }
                     }
                 } label: {
-                    Text(L("换号", "Account"))
+                    Text(vm.savedAccounts.count > 1
+                         ? L("账号(\(vm.savedAccounts.count))", "Accounts(\(vm.savedAccounts.count))")
+                         : (vm.cliLoggedIn ? L("账号", "Account") : L("登录已存账号", "Saved Accounts")))
                 }
                 .controlSize(.small)
                 .fixedSize()
-                .help(L("切换其他 Google 账号或退出当前绑定", "Switch to another Google account or sign out"))
+                .help(L("查看已绑定账号、1 秒切换或添加新 Google 账号", "View saved Google accounts, switch in 1 click, or add another account"))
             } else {
                 Button(L("绑定", "Bind")) { Task { await vm.startGoogleOAuthLogin() } }
                     .controlSize(.small)
@@ -469,7 +506,7 @@ struct MainStudioView: View {
                                 .font(.caption)
                         }
                         Text(vm.isWakingColab
-                             ? L("唤醒部署中...", "Deploying...")
+                             ? L("持续申请中...", "Retrying...")
                              : L("唤醒实例并部署", "Wake & Deploy"))
                             .fontWeight(.medium)
                     }
@@ -477,7 +514,26 @@ struct MainStudioView: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .disabled(vm.isWakingColab)
+
+                if vm.isWakingColab {
+                    Button(role: .destructive) {
+                        vm.cancelActiveWake()
+                    } label: {
+                        Text(L("停止", "Stop"))
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .help(L("立即停止当前持续申请部署循环", "Stop waiting and abort GPU allocation"))
+                }
             }
+
+            Toggle(isOn: $vm.persistentWakeEnabled) {
+                Text(L("无卡时持续排队（3 次失败后每 60 秒重试）", "Auto-retry every 60s after 3 failures"))
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            .toggleStyle(.checkbox)
+            .disabled(vm.isWakingColab)
         }
 
         HStack(spacing: 6) {

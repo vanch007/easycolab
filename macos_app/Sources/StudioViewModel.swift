@@ -118,13 +118,13 @@ class StudioViewModel: ObservableObject {
     // Colab CLI 唤醒与真实账本状态
     @Published var cliLoggedIn: Bool = false
     @Published var accountEmail: String = ""
+    @Published var savedAccounts: [SavedGoogleAccount] = []
     @Published var showOAuthCodeInput: Bool = false
     @Published var oauthCodeText: String = ""
     @Published var officialCUBalance: Double? = nil
 
-    var displayAccountLabel: String {
-        guard cliLoggedIn else { return L("未绑定", "Unbound") }
-        let raw = accountEmail.trimmingCharacters(in: .whitespacesAndNewlines)
+    func formattedAccountEmail(_ rawEmail: String) -> String {
+        let raw = rawEmail.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !raw.isEmpty else { return L("已连接", "Connected") }
         if maskServerURL, let atIdx = raw.firstIndex(of: "@") {
             let prefix = String(raw[..<atIdx].prefix(2))
@@ -132,6 +132,15 @@ class StudioViewModel: ObservableObject {
             return "\(prefix)•••\(domain)"
         }
         return raw
+    }
+
+    var displayAccountLabel: String {
+        guard cliLoggedIn else {
+            return savedAccounts.isEmpty
+                ? L("未绑定", "Unbound")
+                : L("未登录（已存 \(savedAccounts.count) 账号）", "Signed out (\(savedAccounts.count) saved)")
+        }
+        return formattedAccountEmail(accountEmail)
     }
     @Published var officialBurnRate: Double? = nil
     @Published var activeVMCount: Int = 0
@@ -143,6 +152,16 @@ class StudioViewModel: ObservableObject {
     }
     @Published var isWakingColab: Bool = false {
         didSet { syncMacOSRuntimeActivityAssertion() }
+    }
+    @Published var persistentWakeEnabled: Bool = {
+        if UserDefaults.standard.object(forKey: "easycolabPersistentWakeEnabled") == nil {
+            return true
+        }
+        return UserDefaults.standard.bool(forKey: "easycolabPersistentWakeEnabled")
+    }() {
+        didSet {
+            UserDefaults.standard.set(persistentWakeEnabled, forKey: "easycolabPersistentWakeEnabled")
+        }
     }
 
     // 远端 GPU 与多模型驻留状态

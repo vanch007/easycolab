@@ -200,6 +200,7 @@ extension StudioViewModel {
             totalBudgetCU = bal
         }
         if let rate = decoded.burn_rate_hourly { officialBurnRate = rate }
+        if let accs = decoded.accounts { savedAccounts = accs }
         if let count = decoded.active_assignments {
             activeVMCount = count
             if count == 0 && !isConnected && (!loadedModelsDetail.isEmpty || vramTotalGB > 0) {
@@ -233,7 +234,12 @@ extension StudioViewModel {
     func logoutGoogleAccount() async {
         stopActiveWakeProcess()
         stopKeepaliveDaemon()
-        _ = await runBridgeCommand(["auth_logout"], installIfMissing: false)
+        let out = await runBridgeCommand(["auth_logout"], installIfMissing: false)
+        if let data = out.data(using: .utf8),
+           let decoded = try? JSONDecoder().decode(BridgeAuthStatusResponse.self, from: data),
+           let accs = decoded.accounts {
+            savedAccounts = accs
+        }
         cliLoggedIn = false
         accountEmail = ""
         showOAuthCodeInput = false
@@ -243,9 +249,69 @@ extension StudioViewModel {
         activeVMCount = 0
         colabServerURL = ""
         resetStaleRemoteRuntimeState(reason: L(
-            "已退出当前 Google 账号绑定；可点击左侧「绑定」登录其他账号。",
-            "Signed out of Google account. Click 'Bind' on the left to sign in with another account."
+            "已退出当前 Google 账号（历史账号仍保留在换号菜单中，点击即可切回）。",
+            "Signed out of current Google account (saved accounts remain available in the Account menu)."
         ))
+    }
+
+    func switchSavedGoogleAccount(_ email: String) async {
+        stopActiveWakeProcess()
+        stopKeepaliveDaemon()
+        let label = formattedAccountEmail(email)
+        statusMessage = L("正在切换至 Google 账号 \(label)...", "Switching to Google account \(label)...")
+        let out = await runBridgeCommand(["auth_switch", email], installIfMissing: false)
+        guard let data = out.data(using: .utf8),
+              let decoded = try? JSONDecoder().decode(BridgeAuthStatusResponse.self, from: data) else {
+            statusMessage = L("切换 Google 账号失败。", "Failed to switch Google account.")
+            return
+        }
+        if let accs = decoded.accounts { savedAccounts = accs }
+        guard decoded.logged_in == true else {
+            statusMessage = L(
+                "切换失败：\(decoded.error ?? "凭证无效，请重新授权")",
+                "Switch failed: \(decoded.error ?? "invalid credentials, please re-authorize")"
+            )
+            return
+        }
+        colabServerURL = ""
+        resetStaleRemoteRuntimeState(reason: "")
+        cliLoggedIn = true
+        accountEmail = decoded.email ?? email
+        officialCUBalance = decoded.paid_balance
+        officialBurnRate = decoded.burn_rate_hourly
+        activeVMCount = decoded.active_assignments ?? 0
+        if let bal = decoded.paid_balance { totalBudgetCU = bal }
+        let balText = decoded.paid_balance != nil ? String(format: "%.2f CU", decoded.paid_balance!) : ""
+        statusMessage = L(
+            "已切换至账号 \(displayAccountLabel)\(balText.isEmpty ? "" : "（余额 \(balText)）")",
+            "Switched to \(displayAccountLabel)\(balText.isEmpty ? "" : " (balance \(balText))")"
+        )
+    }
+
+    func removeSavedGoogleAccount(_ email: String) async {
+        let wasActive = (accountEmail.caseInsensitiveCompare(email) == .orderedSame)
+        let out = await runBridgeCommand(["auth_remove", email], installIfMissing: false)
+        guard let data = out.data(using: .utf8),
+           let decoded = try? JSONDecoder().decode(BridgeAuthStatusResponse.self, from: data) else {
+            return
+        }
+        if let accs = decoded.accounts { savedAccounts = accs }
+        if wasActive {
+            stopActiveWakeProcess()
+            stopKeepaliveDaemon()
+            colabServerURL = ""
+            resetStaleRemoteRuntimeState(reason: "")
+            cliLoggedIn = decoded.logged_in ?? false
+            accountEmail = decoded.email ?? ""
+            officialCUBalance = decoded.paid_balance
+            officialBurnRate = decoded.burn_rate_hourly
+            activeVMCount = decoded.active_assignments ?? 0
+            if let bal = decoded.paid_balance { totalBudgetCU = bal }
+        }
+        statusMessage = L(
+            "已移除账号 \(formattedAccountEmail(email))。",
+            "Removed saved account \(formattedAccountEmail(email))."
+        )
     }
 
     func submitGoogleOAuthCode() async {
@@ -260,6 +326,7 @@ extension StudioViewModel {
             statusMessage = L("授权验证失败，请重试。", "Authorization verification failed. Please try again.")
             return
         }
+        if let accs = decoded.accounts { savedAccounts = accs }
         if decoded.logged_in == true {
             let newEmail = decoded.email ?? ""
             if wasLoggedIn && (prevEmail != newEmail || !colabServerURL.isEmpty) {
@@ -294,6 +361,14 @@ extension StudioViewModel {
             proc.terminate()
         }
         activeWakeProcess = nil
+    }
+
+    func cancelActiveWake() {
+        stopActiveWakeProcess()
+        isWakingColab = false
+        let msg = L("已手动停止持续申请部署。", "Cancelled continuous wake & deploy.")
+        liveConsoleLines.append("[Colab-CLI] \(msg)")
+        statusMessage = msg
     }
 
     func handleWakeOutputLine(_ line: String, gpu: String, password: String) {
@@ -360,7 +435,11 @@ extension StudioViewModel {
             "EASYCOLAB_ADMIN_PASSWORD": password,
             "EASYCOLAB_IDLE_TIMEOUT_MINUTES": "\(idleMin)"
         ]) { _, new in new }
-        proc.arguments = [script, "wake", "--gpu", gpu, "--app-py", appPy]
+        var wakeArgs = [script, "wake", "--gpu", gpu, "--app-py", appPy]
+        if persistentWakeEnabled {
+            wakeArgs += ["--persistent", "--retry-interval", "60"]
+        }
+        proc.arguments = wakeArgs
         let pipe = Pipe()
         proc.standardOutput = pipe
         proc.standardError = pipe
@@ -548,6 +627,7 @@ extension StudioViewModel {
             totalBudgetCU = bal
         }
         if let rate = decoded.burn_rate_hourly { officialBurnRate = rate }
+        if let accs = decoded.accounts { savedAccounts = accs }
         if let count = decoded.active_assignments { activeVMCount = count }
     }
 

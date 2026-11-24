@@ -1150,6 +1150,17 @@ struct ColabJobResponse: Codable {
     var telemetry: LiveTelemetrySnapshot?
 }
 
+struct SavedGoogleAccount: Codable, Identifiable, Hashable {
+    var email: String
+    var is_active: Bool?
+    var paid_balance: Double?
+    var burn_rate_hourly: Double?
+    var active_assignments: Int?
+    var updated_at: Double?
+
+    var id: String { email }
+}
+
 struct BridgeAuthStatusResponse: Codable {
     var ok: Bool?
     var logged_in: Bool?
@@ -1158,6 +1169,7 @@ struct BridgeAuthStatusResponse: Codable {
     var paid_balance: Double?
     var burn_rate_hourly: Double?
     var active_assignments: Int?
+    var accounts: [SavedGoogleAccount]?
     var message: String?
     var warning: String?
     var error: String?
