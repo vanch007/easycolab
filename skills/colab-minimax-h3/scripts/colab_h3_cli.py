@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import hashlib
 import json
 import mimetypes
 import os
@@ -53,6 +54,7 @@ def _sync_app_active_session(
             "password": password or "",
             "gpu": gpu or "",
             "comfy_url": (comfy_url or "").strip().rstrip("/"),
+            "account": os.environ.get("EASYCOLAB_ACCOUNT", "").strip(),
             "sleeping": bool(sleeping),
             "source": source,
             "updated_at": round(time.time(), 3),
@@ -1142,6 +1144,7 @@ def cmd_connect(args: argparse.Namespace) -> None:
 
 def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Colab MiniMax-H3 & EasyColab CLI")
+    parser.add_argument("--account", default="", help="Pin execution & session state to a specific saved Google account email (for multi-GPU concurrency)")
     parser.add_argument("--url", help="Override EasyColab Gradio URL")
     parser.add_argument("--password", help="Override EasyColab admin password")
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -1387,6 +1390,11 @@ def main(argv: Optional[List[str]] = None) -> int:
     p_rc.add_argument("--dry-run", action="store_true")
 
     args = parser.parse_args(argv)
+    scoped_acct = (getattr(args, "account", "") or os.environ.get("EASYCOLAB_ACCOUNT", "")).strip()
+    if scoped_acct:
+        os.environ["EASYCOLAB_ACCOUNT"] = scoped_acct
+        acct_tag = hashlib.sha256(scoped_acct.lower().encode("utf-8")).hexdigest()[:12]
+        globals()["SESSION_PATH"] = Path.home() / ".config" / "colab-minimax-h3" / f"session_{acct_tag}.json"
     if args.cmd not in ("snap-frames",):
         _emit_app_log(f"[Skill/CLI] >>> 开始执行命令: {args.cmd}")
 

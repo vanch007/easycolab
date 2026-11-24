@@ -67,7 +67,7 @@ Use `./scripts/colab_h3_cli.py` for the listed runtime, model, and generation co
 
 | Group | Subcommands | Notes |
 |---|---|---|
-| Auth & VM | `auth-status`, `auth-url`, `auth-code`, `auth-list`, `auth-switch`, `auth-remove`, `wake`, `connect`, `config-idle`, `keepalive`, `disconnect`, `stop-all` | Multi-account vault (`accounts/`); `wake` sets `--idle-minutes 10` (supports `--persistent`) & saves active URL + password (`0600`) |
+| Auth & VM | `auth-status`, `auth-url`, `auth-code`, `auth-list`, `auth-switch`, `auth-remove`, `wake`, `connect`, `config-idle`, `keepalive`, `disconnect`, `stop-all` | Multi-account vault (`accounts/`); pass global `--account <email>` to run parallel GPUs cleanly; `wake` supports `--persistent` & saves `0600` session |
 | Native H3 | `status`, `download-model`, `load-model`, `unload-model`, `generate-video`, `generate-image` | Talks to `/minimax_api/*`; generation commands **auto-sleep on finish/error** unless `--keep-alive` is passed |
 | ComfyUI | `comfy-status`, `comfy-start`, `comfy-stop`, `comfy-free-vram`, `comfy-sync-drive`, `comfy-install-pack`, `comfy-download-weight`, `comfy-download-output` | Uses EasyColab NVMe hybrid symlinks, `custom_nodes_bundle.tar.gz`, and G4 `--highvram --disable-mmap --fast` |
 | Direct H3 Pipelines | `comfy-upscale-recavsr`, `comfy-upscale`, `comfy-run-tara`, `comfy-run-10eros`, `comfy-run-sulphur3` | Uploads inputs, runs API graph, downloads MP4, **auto-syncs & auto-sleeps on finish/error** unless `--keep-alive` is passed; supports `--dry-run` |
