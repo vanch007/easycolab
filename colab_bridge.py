@@ -92,6 +92,7 @@ _sync_macos_system_proxies_to_env()
 os.environ.setdefault("COLAB_CLI_REQUEST_TIMEOUT", "75")
 
 from colab_cli.auth import PUBLIC_SCOPES, TOKEN_CONFIG_PATH, REMOTE_REDIRECT_URI
+import colab_cli.auth as _colab_auth
 from colab_cli.common import state
 from colab_cli.client import (
     Accelerator,
@@ -157,6 +158,7 @@ def _sync_active_session_file(
     gpu: str = "",
     sleeping: bool = False,
     source: str = "colab-bridge",
+    account: str = "",
 ) -> None:
     """Sync active/sleeping session to shared App Support JSON for EasyColab GUI real-time attach."""
     if os.environ.get("EASYCOLAB_FROM_APP") == "1" or os.environ.get("EASYCOLAB_SUPPRESS_BRIDGE_LOG") == "1":
@@ -166,11 +168,13 @@ def _sync_active_session_file(
             os.environ.get("EASYCOLAB_ACTIVE_SESSION_PATH", "").strip() or _ACTIVE_SESSION_PATH
         )
         os.makedirs(os.path.dirname(target), exist_ok=True)
+        acct_val = (account or os.environ.get("EASYCOLAB_ACCOUNT", "")).strip()
         payload = {
             "url": (url or "").strip().rstrip("/"),
             "password": password or "",
             "gpu": gpu or "",
             "comfy_url": "",
+            "account": acct_val,
             "sleeping": bool(sleeping),
             "source": source,
             "updated_at": round(time.time(), 3),
@@ -475,6 +479,34 @@ def _list_saved_accounts(active_email: str = "") -> list[dict]:
         })
     items.sort(key=lambda x: (not x["is_active"], -(x.get("updated_at") or 0.0), x["email"].lower()))
     return items
+
+
+def _activate_scoped_account_context(account_email: str) -> str:
+    """为多账号多开场景隔离指定账号的 Token、Profile 缓存与 sessions.json，避免并发互踩。"""
+    target_norm = (account_email or "").strip().lower()
+    if not target_norm:
+        return ""
+    idx = _load_accounts_index()
+    meta = (idx.get("accounts") or {}).get(target_norm)
+    if isinstance(meta, dict):
+        tok_file = str(meta.get("token_file") or _account_token_filename(target_norm))
+        canonical = str(meta.get("email") or account_email).strip()
+    else:
+        tok_file = _account_token_filename(target_norm)
+        canonical = account_email.strip()
+    tok_path = os.path.join(ACCOUNTS_DIR, tok_file)
+    if not os.path.isfile(tok_path):
+        raise RuntimeError(f"Saved account token not found in vault: {account_email}")
+
+    stem = os.path.splitext(tok_file)[0]
+    globals()["TOKEN_CONFIG_PATH"] = tok_path
+    _colab_auth.TOKEN_CONFIG_PATH = tok_path
+    globals()["ACCOUNT_PROFILE_CACHE_PATH"] = os.path.join(ACCOUNTS_DIR, f"{stem}_profile.json")
+    state.config_path = os.path.join(ACCOUNTS_DIR, f"{stem}_sessions.json")
+    state._store = None
+    state._client = None
+    state._sessions = None
+    return canonical
 
 
 def cmd_auth_url():
@@ -1991,6 +2023,7 @@ def cmd_keepalive_daemon():
 
 def main(argv=None):
     parser = argparse.ArgumentParser()
+    parser.add_argument("--account", type=str, default="", help="Scope bridge execution to a saved Google account email")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     sub.add_parser("auth_status")
@@ -2022,6 +2055,22 @@ def main(argv=None):
     sub.add_parser("stop_all")
 
     args = parser.parse_args(argv)
+    scoped_account = (getattr(args, "account", "") or os.environ.get("EASYCOLAB_ACCOUNT", "")).strip()
+    if scoped_account and args.cmd in ("auth_status", "wake", "keepalive", "keepalive_daemon", "stop_all"):
+        try:
+            _activate_scoped_account_context(scoped_account)
+        except Exception as scope_err:
+            if args.cmd == "wake":
+                print(f"WAKE_ERROR: 多账号隔离加载失败 ({scoped_account}): {scope_err}", flush=True)
+                return
+            print(json.dumps({
+                "ok": False,
+                "logged_in": False,
+                "email": scoped_account,
+                "accounts": _list_saved_accounts(""),
+                "error": str(scope_err),
+            }))
+            return
     if args.cmd == "auth_status":
         cmd_auth_status()
     elif args.cmd == "auth_url":
