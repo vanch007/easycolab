@@ -19,6 +19,7 @@ import json
 import time
 import uuid
 import signal
+import hashlib
 import argparse
 import tempfile
 import threading
@@ -135,6 +136,11 @@ def _has_valid_token() -> bool:
 
 PKCE_VERIFIER_PATH = os.path.expanduser("~/.config/colab-cli/pkce_verifier.txt")
 ACCOUNT_PROFILE_CACHE_PATH = os.path.expanduser("~/.config/colab-cli/account_profile.json")
+ACCOUNTS_DIR = os.path.expanduser(
+    os.environ.get("EASYCOLAB_ACCOUNTS_DIR", "").strip()
+    or "~/.config/colab-cli/accounts"
+)
+ACCOUNTS_INDEX_PATH = os.path.join(ACCOUNTS_DIR, "index.json")
 _APP_LOG_PATH = os.path.expanduser(
     os.environ.get("EASYCOLAB_APP_LOG_PATH", "").strip()
     or "~/Library/Application Support/EasyColab/external_cli_logs.jsonl"
@@ -341,6 +347,136 @@ def _get_account_email() -> str:
     return ""
 
 
+def _account_token_filename(email: str) -> str:
+    norm = (email or "").strip().lower()
+    return hashlib.sha256(norm.encode("utf-8")).hexdigest()[:16] + ".json"
+
+
+def _load_accounts_index() -> dict:
+    if not os.path.isfile(ACCOUNTS_INDEX_PATH):
+        return {"active_email": "", "accounts": {}}
+    try:
+        with open(ACCOUNTS_INDEX_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            return {"active_email": "", "accounts": {}}
+        if not isinstance(data.get("accounts"), dict):
+            data["accounts"] = {}
+        return data
+    except Exception:
+        return {"active_email": "", "accounts": {}}
+
+
+def _save_accounts_index(idx: dict) -> None:
+    os.makedirs(ACCOUNTS_DIR, mode=0o700, exist_ok=True)
+    try:
+        os.chmod(ACCOUNTS_DIR, 0o700)
+    except Exception:
+        pass
+    tmp_path = ACCOUNTS_INDEX_PATH + f".tmp_{os.getpid()}"
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        json.dump(idx, f, ensure_ascii=False, indent=2)
+    os.chmod(tmp_path, 0o600)
+    os.replace(tmp_path, ACCOUNTS_INDEX_PATH)
+
+
+def _write_secure_file(path: str, content: str) -> None:
+    parent = os.path.dirname(path)
+    if parent:
+        os.makedirs(parent, mode=0o700, exist_ok=True)
+    tmp_path = path + f".tmp_{os.getpid()}"
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        f.write(content)
+    os.chmod(tmp_path, 0o600)
+    os.replace(tmp_path, path)
+
+
+def _save_token_to_vault(
+    email: str,
+    token_json: str,
+    paid_balance: float | None = None,
+    burn_rate_hourly: float | None = None,
+    active_assignments: int | None = None,
+    set_active: bool = True,
+) -> None:
+    norm = (email or "").strip().lower()
+    if not norm or not token_json:
+        return
+    os.makedirs(ACCOUNTS_DIR, mode=0o700, exist_ok=True)
+    tok_file = _account_token_filename(norm)
+    tok_path = os.path.join(ACCOUNTS_DIR, tok_file)
+    _write_secure_file(tok_path, token_json)
+
+    idx = _load_accounts_index()
+    existing = idx["accounts"].get(norm) if isinstance(idx["accounts"].get(norm), dict) else {}
+    entry = {
+        "email": (email or "").strip(),
+        "token_file": tok_file,
+        "paid_balance": existing.get("paid_balance") if paid_balance is None else paid_balance,
+        "burn_rate_hourly": existing.get("burn_rate_hourly") if burn_rate_hourly is None else burn_rate_hourly,
+        "active_assignments": existing.get("active_assignments") if active_assignments is None else active_assignments,
+        "updated_at": round(time.time(), 3),
+    }
+    idx["accounts"][norm] = entry
+    if set_active:
+        idx["active_email"] = (email or "").strip()
+    _save_accounts_index(idx)
+
+
+def _backup_current_token_to_vault(
+    email: str = "",
+    paid_balance: float | None = None,
+    burn_rate_hourly: float | None = None,
+    active_assignments: int | None = None,
+    set_active: bool = True,
+) -> str:
+    if not os.path.isfile(TOKEN_CONFIG_PATH):
+        return ""
+    try:
+        with open(TOKEN_CONFIG_PATH, "r", encoding="utf-8") as f:
+            token_json = f.read().strip()
+        if not token_json:
+            return ""
+        resolved = (email or _get_account_email() or "").strip()
+        if not resolved:
+            return ""
+        _save_token_to_vault(
+            resolved,
+            token_json,
+            paid_balance=paid_balance,
+            burn_rate_hourly=burn_rate_hourly,
+            active_assignments=active_assignments,
+            set_active=set_active,
+        )
+        return resolved
+    except Exception:
+        return ""
+
+
+def _list_saved_accounts(active_email: str = "") -> list[dict]:
+    idx = _load_accounts_index()
+    active_norm = (active_email or "").strip().lower()
+    items = []
+    for norm, meta in (idx.get("accounts") or {}).items():
+        if not isinstance(meta, dict):
+            continue
+        tok_file = str(meta.get("token_file") or _account_token_filename(norm))
+        tok_path = os.path.join(ACCOUNTS_DIR, tok_file)
+        if not os.path.isfile(tok_path):
+            continue
+        em = str(meta.get("email") or norm).strip()
+        items.append({
+            "email": em,
+            "is_active": bool(active_norm and em.lower() == active_norm),
+            "paid_balance": meta.get("paid_balance"),
+            "burn_rate_hourly": meta.get("burn_rate_hourly"),
+            "active_assignments": meta.get("active_assignments"),
+            "updated_at": meta.get("updated_at") or 0.0,
+        })
+    items.sort(key=lambda x: (not x["is_active"], -(x.get("updated_at") or 0.0), x["email"].lower()))
+    return items
+
+
 def cmd_auth_url():
     client_config = _load_client_config()
     flow = InstalledAppFlow.from_client_config(client_config, PUBLIC_SCOPES)
@@ -364,6 +500,8 @@ def cmd_auth_code(code: str):
                 flow.code_verifier = f.read().strip()
         flow.fetch_token(code=code.strip())
         creds = flow.credentials
+        # 先把之前正在使用的账号备份进多账号保险箱，切换新账号后仍可随时切回
+        _backup_current_token_to_vault(set_active=False)
         _clear_local_session_store()
         for p in (ACCOUNT_PROFILE_CACHE_PATH, PKCE_VERIFIER_PATH):
             if os.path.exists(p):
@@ -371,15 +509,23 @@ def cmd_auth_code(code: str):
                     os.remove(p)
                 except Exception:
                     pass
-        os.makedirs(os.path.dirname(TOKEN_CONFIG_PATH), exist_ok=True)
-        with open(TOKEN_CONFIG_PATH, "w", encoding="utf-8") as f:
-            f.write(creds.to_json())
+        _write_secure_file(TOKEN_CONFIG_PATH, creds.to_json())
         return cmd_auth_status()
     except Exception as e:
-        print(json.dumps({"ok": False, "logged_in": False, "error": str(e)}))
+        print(json.dumps({
+            "ok": False,
+            "logged_in": _has_valid_token(),
+            "accounts": _list_saved_accounts(""),
+            "error": str(e),
+        }))
 
 
 def cmd_auth_logout():
+    _backup_current_token_to_vault(set_active=False)
+    idx = _load_accounts_index()
+    idx["active_email"] = ""
+    if idx.get("accounts"):
+        _save_accounts_index(idx)
     _clear_local_session_store()
     for p in (TOKEN_CONFIG_PATH, PKCE_VERIFIER_PATH, ACCOUNT_PROFILE_CACHE_PATH):
         if os.path.exists(p):
@@ -387,7 +533,101 @@ def cmd_auth_logout():
                 os.remove(p)
             except Exception:
                 pass
-    print(json.dumps({"ok": True, "logged_in": False, "email": ""}))
+    print(json.dumps({
+        "ok": True,
+        "logged_in": False,
+        "email": "",
+        "accounts": _list_saved_accounts(""),
+    }))
+
+
+def cmd_auth_list():
+    active_email = ""
+    if _has_valid_token():
+        active_email = _backup_current_token_to_vault(set_active=True) or _get_account_email()
+    print(json.dumps({
+        "ok": True,
+        "active_email": active_email,
+        "accounts": _list_saved_accounts(active_email),
+    }))
+
+
+def cmd_auth_switch(target_email: str):
+    target_norm = (target_email or "").strip().lower()
+    if not target_norm:
+        print(json.dumps({"ok": False, "logged_in": _has_valid_token(), "error": "Missing account email"}))
+        return
+    _backup_current_token_to_vault(set_active=False)
+    idx = _load_accounts_index()
+    meta = (idx.get("accounts") or {}).get(target_norm)
+    if not isinstance(meta, dict):
+        print(json.dumps({
+            "ok": False,
+            "logged_in": _has_valid_token(),
+            "accounts": _list_saved_accounts(""),
+            "error": f"Account not found: {target_email}",
+        }))
+        return
+    tok_path = os.path.join(ACCOUNTS_DIR, str(meta.get("token_file") or _account_token_filename(target_norm)))
+    if not os.path.isfile(tok_path):
+        print(json.dumps({
+            "ok": False,
+            "logged_in": _has_valid_token(),
+            "accounts": _list_saved_accounts(""),
+            "error": f"Saved token file missing for {target_email}",
+        }))
+        return
+    with open(tok_path, "r", encoding="utf-8") as f:
+        tok_json = f.read()
+    _clear_local_session_store()
+    if os.path.exists(ACCOUNT_PROFILE_CACHE_PATH):
+        try:
+            os.remove(ACCOUNT_PROFILE_CACHE_PATH)
+        except Exception:
+            pass
+    _write_secure_file(TOKEN_CONFIG_PATH, tok_json)
+    matched_email = str(meta.get("email") or target_email).strip()
+    idx["active_email"] = matched_email
+    meta["updated_at"] = round(time.time(), 3)
+    _save_accounts_index(idx)
+    return cmd_auth_status()
+
+
+def cmd_auth_remove(target_email: str):
+    target_norm = (target_email or "").strip().lower()
+    cur_email = _get_account_email() if _has_valid_token() else ""
+    idx = _load_accounts_index()
+    accounts_map = idx.get("accounts") or {}
+    removed_meta = accounts_map.pop(target_norm, None)
+    if removed_meta and isinstance(removed_meta, dict):
+        tok_path = os.path.join(ACCOUNTS_DIR, str(removed_meta.get("token_file") or _account_token_filename(target_norm)))
+        if os.path.isfile(tok_path):
+            try:
+                os.remove(tok_path)
+            except Exception:
+                pass
+    was_active = bool(cur_email and cur_email.lower() == target_norm)
+    if was_active:
+        idx["active_email"] = ""
+    _save_accounts_index(idx)
+
+    if was_active:
+        _clear_local_session_store()
+        for p in (TOKEN_CONFIG_PATH, ACCOUNT_PROFILE_CACHE_PATH):
+            if os.path.exists(p):
+                try:
+                    os.remove(p)
+                except Exception:
+                    pass
+        remaining = _list_saved_accounts("")
+        if remaining:
+            return cmd_auth_switch(remaining[0]["email"])
+        print(json.dumps({"ok": True, "logged_in": False, "email": "", "accounts": []}))
+        return
+
+    if _has_valid_token():
+        return cmd_auth_status()
+    print(json.dumps({"ok": True, "logged_in": False, "email": "", "accounts": _list_saved_accounts("")}))
 
 
 @contextlib.contextmanager
@@ -421,7 +661,7 @@ def _safe_sync_sessions():
 
 def cmd_auth_status():
     if not _has_valid_token():
-        print(json.dumps({"ok": True, "logged_in": False}))
+        print(json.dumps({"ok": True, "logged_in": False, "accounts": _list_saved_accounts("")}))
         return
 
     try:
@@ -439,20 +679,36 @@ def cmd_auth_status():
             })
 
         email = _get_account_email()
+        bal = round(float(info.paid_compute_units_balance), 2)
+        rate = round(float(info.consumption_rate_hourly), 2)
+        vms = int(info.assignments_count)
+        if email:
+            _backup_current_token_to_vault(
+                email=email,
+                paid_balance=bal,
+                burn_rate_hourly=rate,
+                active_assignments=vms,
+                set_active=True,
+            )
         print(json.dumps({
             "ok": True,
             "logged_in": True,
             "email": email,
-            "paid_balance": round(float(info.paid_compute_units_balance), 2),
-            "burn_rate_hourly": round(float(info.consumption_rate_hourly), 2),
-            "active_assignments": int(info.assignments_count),
+            "paid_balance": bal,
+            "burn_rate_hourly": rate,
+            "active_assignments": vms,
             "sessions": sess_list,
+            "accounts": _list_saved_accounts(email),
         }))
     except Exception as e:
+        email = _get_account_email()
+        if email:
+            _backup_current_token_to_vault(email=email, set_active=True)
         print(json.dumps({
             "ok": False,
             "logged_in": True,
-            "email": _get_account_email(),
+            "email": email,
+            "accounts": _list_saved_accounts(email),
             "error": str(e),
         }))
 
@@ -734,93 +990,166 @@ def _single_shot_colab_assign():
             os.environ["COLAB_CLI_ASSIGN_RETRIES"] = prev_retries
 
 
-def _allocate_fresh_session(session_name: str, gpu_type: str) -> SessionState:
+def _wait_before_next_allocation_round(
+    accel: Accelerator,
+    gpu_desc: str,
+    session_name: str,
+    round_num: int,
+    max_attempts: int,
+    last_err_tag: str,
+    retry_interval: float,
+) -> SessionState | None:
+    """在连续 3 次申请失败后等待指定间隔（默认 60 秒），期间允许外部 SIGTERM 及时中断并在结束时核对云端分配。"""
+    wait_s = max(0.01, float(retry_interval or 60.0))
+    print(
+        f"WAKE_LOG: ⏳ 第 {round_num} 轮连续 {max_attempts} 次申请 {gpu_desc} 均未分到机器 ({last_err_tag})，"
+        f"将在 {wait_s:.0f} 秒后自动开始第 {round_num + 1} 轮持续申请（点击「停止」可随时取消）...",
+        flush=True,
+    )
+    deadline = time.monotonic() + wait_s
+    next_tick = time.monotonic() + 15.0
+    while True:
+        now = time.monotonic()
+        remaining = deadline - now
+        if remaining <= 0:
+            break
+        if wait_s >= 30.0 and now >= next_tick and remaining >= 5.0:
+            print(
+                f"WAKE_LOG: ⏳ 持续申请等待中：还有 {int(round(remaining))} 秒开始第 {round_num + 1} 轮 {gpu_desc} 申请...",
+                flush=True,
+            )
+            next_tick = now + 15.0
+        time.sleep(min(1.0, remaining))
+    adopted = _try_adopt_matching_cloud_assignment(accel, session_name=session_name)
+    if adopted is not None:
+        print(f"WAKE_LOG: ✅ 等待期间检测到云端已完成 {accel.value} 实例分配，直接接管！", flush=True)
+    return adopted
+
+
+def _allocate_fresh_session(
+    session_name: str,
+    gpu_type: str,
+    persistent: bool = False,
+    retry_interval: float = 60.0,
+) -> SessionState:
     accel = _resolve_gpu_accel(gpu_type)
     gpu_desc = _gpu_display_label(accel)
     shape_candidates = list(_candidate_shapes_for_accel(accel))
     rejected_400_shapes = set()
-    nbh_by_shape = {sh: uuid.uuid4() for sh in shape_candidates}
 
-    print(f"WAKE_LOG: 🚀 正在向 Google Colab 申请分配 {gpu_desc} 实例...", flush=True)
+    mode_hint = f"（已开启持续申请：每轮 3 次失败后隔 {int(retry_interval)}s 自动续申）" if persistent else ""
+    print(f"WAKE_LOG: 🚀 正在向 Google Colab 申请分配 {gpu_desc} 实例{mode_hint}...", flush=True)
 
     max_attempts = 3
     retry_delays = [6.0, 10.0]
-    attempt = 0
-    shape_idx = 0
-    cleaned_412_orphans = False
     last_err_tag = "HTTP 503"
     res = None
     chosen_shape = shape_candidates[0]
+    round_num = 1
 
-    while attempt < max_attempts:
-        valid_shapes = [sh for sh in shape_candidates if sh not in rejected_400_shapes] or [None]
-        chosen_shape = valid_shapes[shape_idx % len(valid_shapes)]
-        nbh = nbh_by_shape.setdefault(chosen_shape, uuid.uuid4())
+    while True:
+        nbh_by_shape = {sh: uuid.uuid4() for sh in shape_candidates}
+        attempt = 0
+        shape_idx = 0
+        cleaned_412_orphans = False
 
-        try:
-            with _quiet_colab_cli(), _single_shot_colab_assign():
-                res = state.client.assign(nbh, variant=Variant.GPU, accelerator=accel, shape=chosen_shape)
-            break
-        except TooManyAssignmentsError as quota_err:
-            adopted = _try_adopt_matching_cloud_assignment(accel, session_name=session_name)
-            if adopted is not None:
-                print(f"WAKE_LOG: ✅ 检测到云端已在后台完成 {accel.value} 实例分配，直接接管！", flush=True)
-                return adopted
-            if not cleaned_412_orphans:
-                cleaned_412_orphans = True
-                try:
-                    lingering = [a.endpoint for a in state.client.list_assignments() if a.endpoint]
-                except Exception:
-                    lingering = []
-                if lingering:
-                    print("WAKE_LOG: 🧹 检测到账号下残留未释放实例占用并发名额，正在自动清理后重试...", flush=True)
-                    _unassign_endpoints_and_wait_quota_release(lingering, wait_s=8.0)
-                    continue
-            raise RuntimeError(
-                f"Google Colab 拒绝分配 {gpu_desc} (HTTP 412)：当前账号并发实例数已达上限，或该时段高配机型触发临时配额限制。"
-                f"请确认未在其他浏览器标签页占用实例，稍后重试或临时切换为 A100 / L4。"
-            ) from quota_err
-        except (ColabRequestError, requests.exceptions.RequestException) as req_err:
-            status = get_status_code(req_err) if isinstance(req_err, ColabRequestError) else None
+        while attempt < max_attempts:
+            valid_shapes = [sh for sh in shape_candidates if sh not in rejected_400_shapes] or [None]
+            chosen_shape = valid_shapes[shape_idx % len(valid_shapes)]
+            nbh = nbh_by_shape.setdefault(chosen_shape, uuid.uuid4())
 
-            # 1) 无论报 504/503/ReadTimeout，第一时间检查云端是否其实已经分配成功
-            adopted = _try_adopt_matching_cloud_assignment(accel, session_name=session_name)
-            if adopted is not None:
-                print(f"WAKE_LOG: ✅ 检测到云端已在后台完成 {accel.value} 实例分配，直接接管！", flush=True)
-                return adopted
-
-            # 2) 若当前机器规格报 400 Bad Request（如部分池不支持 shape=hm），立即切换候选规格且不消耗重试次数
-            if status == 400 and chosen_shape is not None and None not in rejected_400_shapes:
-                rejected_400_shapes.add(chosen_shape)
-                shape_idx = 0
-                continue
-            if status == 400:
-                raise RuntimeError(
-                    f"Google Colab 后端拒绝分配 {gpu_desc} (HTTP 400)：当前账号订阅等级可能暂不支持该机型或可用计算单元不足，"
-                    f"建议切换为 A100 / L4 / T4 实例。"
-                ) from req_err
-
-            retryable = isinstance(req_err, requests.exceptions.RequestException) or status in (429, 500, 502, 503, 504)
-            if not retryable:
-                raise
-
-            last_err_tag = f"HTTP {status}" if status else type(req_err).__name__
-            attempt += 1
-            shape_idx += 1
-            if attempt >= max_attempts:
+            try:
+                with _quiet_colab_cli(), _single_shot_colab_assign():
+                    res = state.client.assign(nbh, variant=Variant.GPU, accelerator=accel, shape=chosen_shape)
                 break
+            except TooManyAssignmentsError as quota_err:
+                adopted = _try_adopt_matching_cloud_assignment(accel, session_name=session_name)
+                if adopted is not None:
+                    print(f"WAKE_LOG: ✅ 检测到云端已在后台完成 {accel.value} 实例分配，直接接管！", flush=True)
+                    return adopted
+                if not cleaned_412_orphans:
+                    cleaned_412_orphans = True
+                    try:
+                        lingering = [a.endpoint for a in state.client.list_assignments() if a.endpoint]
+                    except Exception:
+                        lingering = []
+                    if lingering:
+                        print("WAKE_LOG: 🧹 检测到账号下残留未释放实例占用并发名额，正在自动清理后重试...", flush=True)
+                        _unassign_endpoints_and_wait_quota_release(lingering, wait_s=8.0)
+                        continue
+                last_err_tag = "HTTP 412 配额占满"
+                attempt += 1
+                if attempt < max_attempts:
+                    delay = retry_delays[min(attempt - 1, len(retry_delays) - 1)]
+                    print(
+                        f"WAKE_LOG: ⏳ 第 {round_num} 轮 {gpu_desc} 配额受限 (HTTP 412)，{delay:.0f} 秒后进行第 {attempt + 1}/{max_attempts} 次申请...",
+                        flush=True,
+                    )
+                    time.sleep(delay)
+                    continue
+                if not persistent:
+                    raise RuntimeError(
+                        f"Google Colab 拒绝分配 {gpu_desc} (HTTP 412)：当前账号并发实例数已达上限，或该时段高配机型触发临时配额限制。"
+                        f"请确认未在其他浏览器标签页占用实例，稍后重试或临时切换为 A100 / L4。"
+                    ) from quota_err
+            except (ColabRequestError, requests.exceptions.RequestException) as req_err:
+                status = get_status_code(req_err) if isinstance(req_err, ColabRequestError) else None
 
-            delay = retry_delays[min(attempt - 1, len(retry_delays) - 1)]
-            print(
-                f"WAKE_LOG: ⏳ Google Colab 当前区域 {gpu_desc} 算力池繁忙 ({last_err_tag})，"
-                f"{delay:.0f} 秒后进行第 {attempt + 1}/{max_attempts} 次申请...",
-                flush=True,
-            )
-            time.sleep(delay)
-            adopted_after_wait = _try_adopt_matching_cloud_assignment(accel, session_name=session_name)
-            if adopted_after_wait is not None:
-                print(f"WAKE_LOG: ✅ 检测到云端已完成 {accel.value} 实例分配，直接接管！", flush=True)
-                return adopted_after_wait
+                # 1) 无论报 504/503/ReadTimeout，第一时间检查云端是否其实已经分配成功
+                adopted = _try_adopt_matching_cloud_assignment(accel, session_name=session_name)
+                if adopted is not None:
+                    print(f"WAKE_LOG: ✅ 检测到云端已在后台完成 {accel.value} 实例分配，直接接管！", flush=True)
+                    return adopted
+
+                # 2) 若当前机器规格报 400 Bad Request（如部分池不支持 shape=hm），立即切换候选规格且不消耗重试次数
+                if status == 400 and chosen_shape is not None and None not in rejected_400_shapes:
+                    rejected_400_shapes.add(chosen_shape)
+                    shape_idx = 0
+                    continue
+                if status == 400:
+                    raise RuntimeError(
+                        f"Google Colab 后端拒绝分配 {gpu_desc} (HTTP 400)：当前账号订阅等级可能暂不支持该机型或可用计算单元不足，"
+                        f"建议切换为 A100 / L4 / T4 实例。"
+                    ) from req_err
+
+                retryable = isinstance(req_err, requests.exceptions.RequestException) or status in (429, 500, 502, 503, 504)
+                if not retryable:
+                    raise
+
+                last_err_tag = f"HTTP {status}" if status else type(req_err).__name__
+                attempt += 1
+                shape_idx += 1
+                if attempt >= max_attempts:
+                    break
+
+                delay = retry_delays[min(attempt - 1, len(retry_delays) - 1)]
+                print(
+                    f"WAKE_LOG: ⏳ 第 {round_num} 轮 Google Colab {gpu_desc} 算力池繁忙 ({last_err_tag})，"
+                    f"{delay:.0f} 秒后进行第 {attempt + 1}/{max_attempts} 次申请...",
+                    flush=True,
+                )
+                time.sleep(delay)
+                adopted_after_wait = _try_adopt_matching_cloud_assignment(accel, session_name=session_name)
+                if adopted_after_wait is not None:
+                    print(f"WAKE_LOG: ✅ 检测到云端已完成 {accel.value} 实例分配，直接接管！", flush=True)
+                    return adopted_after_wait
+
+        if res is not None:
+            break
+        if not persistent:
+            break
+        adopted_next = _wait_before_next_allocation_round(
+            accel=accel,
+            gpu_desc=gpu_desc,
+            session_name=session_name,
+            round_num=round_num,
+            max_attempts=max_attempts,
+            last_err_tag=last_err_tag,
+            retry_interval=retry_interval,
+        )
+        if adopted_next is not None:
+            return adopted_next
+        round_num += 1
 
     if res is None:
         raise RuntimeError(
@@ -856,7 +1185,12 @@ def _allocate_fresh_session(session_name: str, gpu_type: str) -> SessionState:
     return s
 
 
-def cmd_wake(gpu_type: str, app_py_path: str):
+def cmd_wake(
+    gpu_type: str,
+    app_py_path: str,
+    persistent: bool = False,
+    retry_interval: float = 60.0,
+):
     """
     无浏览器一键唤醒 Colab GPU 并自动部署 EasyColab 多模型服务端：
     1. 全量云端分配对账：遍历账号下全部云端 assignments（含未在本地登记的孤儿实例），优先复用同型号健康实例，
@@ -956,7 +1290,17 @@ def cmd_wake(gpu_type: str, app_py_path: str):
                 )
                 _unassign_endpoints_and_wait_quota_release(release_eps, wait_s=8.0)
 
-            target_session = _allocate_fresh_session(session_name, gpu_type)
+            use_persistent = bool(persistent) or (
+                os.environ.get("EASYCOLAB_PERSISTENT_WAKE", "").strip().lower() in ("1", "true", "yes")
+            )
+            env_interval = os.environ.get("EASYCOLAB_WAKE_RETRY_INTERVAL", "").strip()
+            eff_interval = float(env_interval) if env_interval else float(retry_interval or 60.0)
+            target_session = _allocate_fresh_session(
+                session_name,
+                gpu_type,
+                persistent=use_persistent,
+                retry_interval=eff_interval,
+            )
             if not _wait_for_runtime_ready(target_session, timeout_s=50):
                 print("WAKE_LOG: ⏳ 容器仍在初始化，继续尝试连接内核...", flush=True)
 
@@ -1652,9 +1996,16 @@ def main(argv=None):
     sub.add_parser("auth_status")
     sub.add_parser("auth_url")
     sub.add_parser("auth_logout")
+    sub.add_parser("auth_list")
 
     p_code = sub.add_parser("auth_code")
     p_code.add_argument("code", type=str)
+
+    p_sw = sub.add_parser("auth_switch")
+    p_sw.add_argument("email", type=str)
+
+    p_rm = sub.add_parser("auth_remove")
+    p_rm.add_argument("email", type=str)
 
     p_wake = sub.add_parser("wake")
     p_wake.add_argument("--gpu", type=str, default="G4")
@@ -1663,6 +2014,8 @@ def main(argv=None):
         type=str,
         default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "app.py"),
     )
+    p_wake.add_argument("--persistent", action="store_true")
+    p_wake.add_argument("--retry-interval", type=float, default=60.0)
 
     sub.add_parser("keepalive")
     sub.add_parser("keepalive_daemon")
@@ -1675,12 +2028,25 @@ def main(argv=None):
         cmd_auth_url()
     elif args.cmd == "auth_logout":
         cmd_auth_logout()
+    elif args.cmd == "auth_list":
+        cmd_auth_list()
+    elif args.cmd == "auth_switch":
+        cmd_auth_switch(args.email)
+    elif args.cmd == "auth_remove":
+        cmd_auth_remove(args.email)
     elif args.cmd == "auth_code":
         cmd_auth_code(args.code)
     elif args.cmd == "wake":
         with _external_cli_log_tee():
-            _append_external_app_log(f"正在通过 CLI 直接唤醒 Colab ({args.gpu} GPU)...")
-            cmd_wake(args.gpu, args.app_py)
+            _append_external_app_log(
+                f"正在通过 CLI 直接唤醒 Colab ({args.gpu} GPU{', 持续每60s重申' if args.persistent else ''})..."
+            )
+            cmd_wake(
+                args.gpu,
+                args.app_py,
+                persistent=bool(getattr(args, "persistent", False)),
+                retry_interval=float(getattr(args, "retry_interval", 60.0) or 60.0),
+            )
     elif args.cmd == "keepalive":
         cmd_keepalive()
     elif args.cmd == "keepalive_daemon":
