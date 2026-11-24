@@ -28,6 +28,22 @@ final class SameOriginAdminRedirect: NSObject, URLSessionTaskDelegate {
 
 @MainActor
 class StudioViewModel: ObservableObject {
+    let boundAccountEmail: String?
+    var isPinnedMultiAccountWindow: Bool {
+        let trimmed = (boundAccountEmail ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        return !trimmed.isEmpty
+    }
+    var activeBridgeAccountEmail: String? {
+        if let pinned = boundAccountEmail?.trimmingCharacters(in: .whitespacesAndNewlines), !pinned.isEmpty {
+            return pinned
+        }
+        let cur = accountEmail.trimmingCharacters(in: .whitespacesAndNewlines)
+        return (cliLoggedIn && !cur.isEmpty) ? cur : nil
+    }
+    private static func perAccountURLDefaultsKey(for email: String) -> String {
+        "easycolab.serverURL.\(email.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())"
+    }
+
     var cachedBridgePythonBin: String? = nil
 
     var bridgeScript: String { LocalRuntimePaths.resolveBundledOrRepoFile("colab_bridge.py") }
@@ -71,7 +87,13 @@ class StudioViewModel: ObservableObject {
                 lastIdleSyncAttemptAt = .distantPast
                 lastContextSyncAttemptAt = .distantPast
             }
-            UserDefaults.standard.set(colabServerURL, forKey: "colabServerURL")
+            if !isPinnedMultiAccountWindow {
+                UserDefaults.standard.set(colabServerURL, forKey: "colabServerURL")
+            }
+            let acct = accountEmail.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !acct.isEmpty {
+                UserDefaults.standard.set(colabServerURL, forKey: Self.perAccountURLDefaultsKey(for: acct))
+            }
         }
     }
 
@@ -126,11 +148,6 @@ class StudioViewModel: ObservableObject {
     func formattedAccountEmail(_ rawEmail: String) -> String {
         let raw = rawEmail.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !raw.isEmpty else { return L("已连接", "Connected") }
-        if maskServerURL, let atIdx = raw.firstIndex(of: "@") {
-            let prefix = String(raw[..<atIdx].prefix(2))
-            let domain = String(raw[atIdx...])
-            return "\(prefix)•••\(domain)"
-        }
         return raw
     }
 
@@ -781,7 +798,16 @@ class StudioViewModel: ObservableObject {
 
     let customModelsDefaultsKey = "easycolab.macos.custom_models.v1"
 
-    init() {
+    init(boundAccountEmail: String? = nil) {
+        let trimmedBound = boundAccountEmail?.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.boundAccountEmail = (trimmedBound?.isEmpty == false) ? trimmedBound : nil
+        if let pinned = self.boundAccountEmail {
+            self.accountEmail = pinned
+            self.cliLoggedIn = true
+            let savedURL = UserDefaults.standard.string(forKey: Self.perAccountURLDefaultsKey(for: pinned)) ?? ""
+            self.colabServerURL = savedURL
+            self.adminPassword = Self.savedAdminPassword(for: savedURL)
+        }
         loadPersistedCustomModels()
         refreshLocalMedia()
         startBackgroundTelemetryLoop()

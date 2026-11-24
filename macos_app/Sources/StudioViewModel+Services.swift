@@ -154,18 +154,23 @@ extension StudioViewModel {
         return trimmed
     }
 
-    func runBridgeCommand(_ args: [String], installIfMissing: Bool = false) async -> String {
+    func runBridgeCommand(_ args: [String], installIfMissing: Bool = false, scopedAccount: String? = nil) async -> String {
         guard let pyBin = await ensureBridgePythonBin(installIfMissing: installIfMissing) else {
             return ""
         }
         let script = self.bridgeScript
+        let cmdName = args.first ?? ""
+        let scopedCommands = ["auth_status", "wake", "keepalive", "keepalive_daemon", "stop_all"]
+        var envOverrides: [String: String] = ["EASYCOLAB_FROM_APP": "1"]
+        let resolvedAcct = (scopedAccount ?? activeBridgeAccountEmail ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if !resolvedAcct.isEmpty && scopedCommands.contains(cmdName) {
+            envOverrides["EASYCOLAB_ACCOUNT"] = resolvedAcct
+        }
         return await withCheckedContinuation { continuation in
             DispatchQueue.global(qos: .userInitiated).async {
                 let proc = Process()
                 proc.executableURL = URL(fileURLWithPath: pyBin)
-                proc.environment = ProcessInfo.processInfo.environment.merging([
-                    "EASYCOLAB_FROM_APP": "1"
-                ]) { _, new in new }
+                proc.environment = ProcessInfo.processInfo.environment.merging(envOverrides) { _, new in new }
                 proc.arguments = [script] + args
                 let outPipe = Pipe()
                 proc.standardOutput = outPipe
@@ -259,7 +264,7 @@ extension StudioViewModel {
         stopKeepaliveDaemon()
         let label = formattedAccountEmail(email)
         statusMessage = L("正在切换至 Google 账号 \(label)...", "Switching to Google account \(label)...")
-        let out = await runBridgeCommand(["auth_switch", email], installIfMissing: false)
+        let out = await runBridgeCommand(["auth_switch", email], installIfMissing: false, scopedAccount: "")
         guard let data = out.data(using: .utf8),
               let decoded = try? JSONDecoder().decode(BridgeAuthStatusResponse.self, from: data) else {
             statusMessage = L("切换 Google 账号失败。", "Failed to switch Google account.")
@@ -273,10 +278,12 @@ extension StudioViewModel {
             )
             return
         }
-        colabServerURL = ""
+        let targetEmail = decoded.email ?? email
+        let savedURL = UserDefaults.standard.string(forKey: "easycolab.serverURL.\(targetEmail.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())") ?? ""
+        colabServerURL = savedURL
         resetStaleRemoteRuntimeState(reason: "")
         cliLoggedIn = true
-        accountEmail = decoded.email ?? email
+        accountEmail = targetEmail
         officialCUBalance = decoded.paid_balance
         officialBurnRate = decoded.burn_rate_hourly
         activeVMCount = decoded.active_assignments ?? 0
@@ -286,11 +293,14 @@ extension StudioViewModel {
             "已切换至账号 \(displayAccountLabel)\(balText.isEmpty ? "" : "（余额 \(balText)）")",
             "Switched to \(displayAccountLabel)\(balText.isEmpty ? "" : " (balance \(balText))")"
         )
+        if !savedURL.isEmpty {
+            await checkColabStatus(silent: true)
+        }
     }
 
     func removeSavedGoogleAccount(_ email: String) async {
         let wasActive = (accountEmail.caseInsensitiveCompare(email) == .orderedSame)
-        let out = await runBridgeCommand(["auth_remove", email], installIfMissing: false)
+        let out = await runBridgeCommand(["auth_remove", email], installIfMissing: false, scopedAccount: "")
         guard let data = out.data(using: .utf8),
            let decoded = try? JSONDecoder().decode(BridgeAuthStatusResponse.self, from: data) else {
             return
@@ -430,11 +440,15 @@ extension StudioViewModel {
         let appPy = self.appPyPath
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: pyBin)
-        proc.environment = ProcessInfo.processInfo.environment.merging([
+        var wakeEnv: [String: String] = [
             "EASYCOLAB_FROM_APP": "1",
             "EASYCOLAB_ADMIN_PASSWORD": password,
             "EASYCOLAB_IDLE_TIMEOUT_MINUTES": "\(idleMin)"
-        ]) { _, new in new }
+        ]
+        if let scopedAcct = activeBridgeAccountEmail {
+            wakeEnv["EASYCOLAB_ACCOUNT"] = scopedAcct
+        }
+        proc.environment = ProcessInfo.processInfo.environment.merging(wakeEnv) { _, new in new }
         var wakeArgs = [script, "wake", "--gpu", gpu, "--app-py", appPy]
         if persistentWakeEnabled {
             wakeArgs += ["--persistent", "--retry-interval", "60"]
@@ -557,9 +571,11 @@ extension StudioViewModel {
 
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: pyBin)
-        proc.environment = ProcessInfo.processInfo.environment.merging([
-            "EASYCOLAB_FROM_APP": "1"
-        ]) { _, new in new }
+        var kaEnv: [String: String] = ["EASYCOLAB_FROM_APP": "1"]
+        if let scopedAcct = activeBridgeAccountEmail {
+            kaEnv["EASYCOLAB_ACCOUNT"] = scopedAcct
+        }
+        proc.environment = ProcessInfo.processInfo.environment.merging(kaEnv) { _, new in new }
         proc.arguments = [self.bridgeScript, "keepalive_daemon"]
         let stdinPipe = Pipe()
         let stdoutPipe = Pipe()
@@ -669,6 +685,12 @@ extension StudioViewModel {
         let cleanURL = rawURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         let pw = (obj["password"] as? String) ?? ""
         let src = (obj["source"] as? String) ?? "external-cli"
+        let sessAcct = ((obj["account"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if let pinnedAcct = boundAccountEmail, !pinnedAcct.isEmpty {
+            if sessAcct.isEmpty || sessAcct.caseInsensitiveCompare(pinnedAcct) != .orderedSame {
+                return
+            }
+        }
 
         if isSleeping {
             if isConnected && attachedExternalSessionSource != nil {

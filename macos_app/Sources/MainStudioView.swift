@@ -7,14 +7,19 @@ import ObjectiveC.runtime
 // MARK: - 主界面视图（左：控制栏 | 中：创作与网关工作台 | 右：独立全高运行日志）
 
 struct MainStudioView: View {
-    @StateObject var vm = StudioViewModel()
+    @StateObject var vm: StudioViewModel
     @ObservedObject var i18n = LanguageManager.shared
     @Environment(\.colorScheme) var colorScheme
+    @Environment(\.openWindow) var openWindow
     @State var showFileList: Bool = false
     @State var showNegativePrompt: Bool = false
     @State var openaiSnippetTab: Int = 0
     @State var anthropicSnippetTab: Int = 0
     @State var showRightLogPanel: Bool = true
+
+    init(boundAccountEmail: String? = nil) {
+        _vm = StateObject(wrappedValue: StudioViewModel(boundAccountEmail: boundAccountEmail))
+    }
 
     var isTaskStreaming: Bool {
         vm.isWakingColab
@@ -108,6 +113,7 @@ struct MainStudioView: View {
                 "All active Colab GPU runtimes under your account will be terminated and CU billing will stop immediately."
             ))
         }
+        .navigationTitle(vm.accountEmail.isEmpty ? "EasyColab" : "EasyColab — \(vm.accountEmail)")
     }
 
     // MARK: - 一体化无缝顶栏（左中右独立底色 + 1pt 贯通分界线 + 原生拖拽）
@@ -383,81 +389,120 @@ struct MainStudioView: View {
 
     @ViewBuilder
     var colabConnectionRows: some View {
-        HStack(spacing: 6) {
-            Text(L("Google 账号", "Google Account"))
-                .font(.callout)
-                .foregroundStyle(.secondary)
-            Spacer(minLength: 4)
-            Text(vm.displayAccountLabel)
-                .font(.system(size: 11.5, weight: .medium))
-                .foregroundStyle(vm.cliLoggedIn ? Color.green : Color.secondary)
-                .lineLimit(1)
-                .truncationMode(.middle)
-                .help(vm.accountEmail.isEmpty ? L("当前 Google 账号状态", "Google account connection status") : vm.displayAccountLabel)
-
-            if vm.cliLoggedIn {
-                Button(L("刷新", "Refresh")) { Task { await vm.refreshOfficialColabAccountUsage() } }
-                    .controlSize(.small)
-            }
-
-            if vm.cliLoggedIn || !vm.savedAccounts.isEmpty {
-                Menu {
-                    if !vm.savedAccounts.isEmpty {
-                        Section(L("已保存账号（点击秒切）", "Saved Accounts (1-Click Switch)")) {
-                            ForEach(vm.savedAccounts) { acc in
-                                let isActive = vm.cliLoggedIn && (acc.is_active == true || acc.email.caseInsensitiveCompare(vm.accountEmail) == .orderedSame)
-                                let balTag = acc.paid_balance != nil ? String(format: " · %.1f CU", acc.paid_balance!) : ""
-                                let vmTag = (acc.active_assignments ?? 0) > 0 ? " · \(acc.active_assignments!) VM" : ""
-                                Button {
-                                    if !isActive {
-                                        Task { await vm.switchSavedGoogleAccount(acc.email) }
-                                    }
-                                } label: {
-                                    Label(
-                                        "\(vm.formattedAccountEmail(acc.email))\(balTag)\(vmTag)",
-                                        systemImage: isActive ? "checkmark.circle.fill" : "person.crop.circle"
-                                    )
-                                }
-                            }
-                        }
-                        Divider()
-                    }
-                    Button {
-                        Task { await vm.startGoogleOAuthLogin(switchingAccount: true) }
-                    } label: {
-                        Label(L("添加新 Google 账号...", "Add Google Account..."), systemImage: "person.badge.plus")
-                    }
-                    if !vm.savedAccounts.isEmpty {
-                        Menu(L("移除已保存账号", "Remove Saved Account")) {
-                            ForEach(vm.savedAccounts) { acc in
-                                Button(role: .destructive) {
-                                    Task { await vm.removeSavedGoogleAccount(acc.email) }
-                                } label: {
-                                    Text(vm.formattedAccountEmail(acc.email))
-                                }
-                            }
-                        }
-                    }
-                    if vm.cliLoggedIn {
-                        Divider()
-                        Button(role: .destructive) {
-                            Task { await vm.logoutGoogleAccount() }
-                        } label: {
-                            Label(L("退出当前账号（保留记录）", "Sign Out (Keep Saved)"), systemImage: "rectangle.portrait.and.arrow.right")
-                        }
-                    }
-                } label: {
-                    Text(vm.savedAccounts.count > 1
-                         ? L("账号(\(vm.savedAccounts.count))", "Accounts(\(vm.savedAccounts.count))")
-                         : (vm.cliLoggedIn ? L("账号", "Account") : L("登录已存账号", "Saved Accounts")))
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                Text(L("Google 账号", "Google Account"))
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                if vm.isPinnedMultiAccountWindow {
+                    Text(L("独立多开", "Multi-Window"))
+                        .font(.system(size: 9.5, weight: .semibold))
+                        .foregroundStyle(Color.accentColor)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 1.5)
+                        .background(Capsule().fill(Color.accentColor.opacity(0.14)))
                 }
-                .controlSize(.small)
-                .fixedSize()
-                .help(L("查看已绑定账号、1 秒切换或添加新 Google 账号", "View saved Google accounts, switch in 1 click, or add another account"))
-            } else {
-                Button(L("绑定", "Bind")) { Task { await vm.startGoogleOAuthLogin() } }
+                Spacer(minLength: 4)
+
+                if vm.cliLoggedIn {
+                    Button(L("刷新", "Refresh")) { Task { await vm.refreshOfficialColabAccountUsage() } }
+                        .controlSize(.small)
+                }
+
+                if vm.cliLoggedIn || !vm.savedAccounts.isEmpty {
+                    Menu {
+                        if !vm.savedAccounts.isEmpty {
+                            if !vm.isPinnedMultiAccountWindow {
+                                Section(L("已保存账号（本窗口切换）", "Saved Accounts (Switch Window)")) {
+                                    ForEach(vm.savedAccounts) { acc in
+                                        let isActive = vm.cliLoggedIn && (acc.is_active == true || acc.email.caseInsensitiveCompare(vm.accountEmail) == .orderedSame)
+                                        let balTag = acc.paid_balance != nil ? String(format: " · %.1f CU", acc.paid_balance!) : ""
+                                        let vmTag = (acc.active_assignments ?? 0) > 0 ? " · \(acc.active_assignments!) VM" : ""
+                                        Button {
+                                            if !isActive {
+                                                Task { await vm.switchSavedGoogleAccount(acc.email) }
+                                            }
+                                        } label: {
+                                            Label(
+                                                "\(vm.formattedAccountEmail(acc.email))\(balTag)\(vmTag)",
+                                                systemImage: isActive ? "checkmark.circle.fill" : "person.crop.circle"
+                                            )
+                                        }
+                                    }
+                                }
+                                Divider()
+                            }
+                            Section(L("多开独立窗口（同时跑多台 GPU）", "Open Independent Window (Multi-GPU)")) {
+                                ForEach(vm.savedAccounts) { acc in
+                                    let balTag = acc.paid_balance != nil ? String(format: " · %.1f CU", acc.paid_balance!) : ""
+                                    Button {
+                                        openWindow(id: "account-workspace", value: acc.email)
+                                    } label: {
+                                        Label(
+                                            L("新窗口运行 \(acc.email)\(balTag)", "New Window: \(acc.email)\(balTag)"),
+                                            systemImage: "macwindow.badge.plus"
+                                        )
+                                    }
+                                }
+                            }
+                            Divider()
+                        }
+                        if !vm.isPinnedMultiAccountWindow {
+                            Button {
+                                Task { await vm.startGoogleOAuthLogin(switchingAccount: true) }
+                            } label: {
+                                Label(L("添加新 Google 账号...", "Add Google Account..."), systemImage: "person.badge.plus")
+                            }
+                            if !vm.savedAccounts.isEmpty {
+                                Menu(L("移除已保存账号", "Remove Saved Account")) {
+                                    ForEach(vm.savedAccounts) { acc in
+                                        Button(role: .destructive) {
+                                            Task { await vm.removeSavedGoogleAccount(acc.email) }
+                                        } label: {
+                                            Text(vm.formattedAccountEmail(acc.email))
+                                        }
+                                    }
+                                }
+                            }
+                            if vm.cliLoggedIn {
+                                Divider()
+                                Button(role: .destructive) {
+                                    Task { await vm.logoutGoogleAccount() }
+                                } label: {
+                                    Label(L("退出当前账号（保留记录）", "Sign Out (Keep Saved)"), systemImage: "rectangle.portrait.and.arrow.right")
+                                }
+                            }
+                        }
+                    } label: {
+                        Text(vm.savedAccounts.count > 1
+                             ? L("账号(\(vm.savedAccounts.count))", "Accounts(\(vm.savedAccounts.count))")
+                             : (vm.cliLoggedIn ? L("账号", "Account") : L("登录已存账号", "Saved Accounts")))
+                    }
                     .controlSize(.small)
+                    .fixedSize()
+                    .help(L("查看完整邮箱、切换账号或新窗口多开同时运行多台 GPU", "View full emails, switch accounts, or open extra windows for multi-GPU tasks"))
+                } else {
+                    Button(L("绑定", "Bind")) { Task { await vm.startGoogleOAuthLogin() } }
+                        .controlSize(.small)
+                }
             }
+
+            HStack(spacing: 6) {
+                Circle()
+                    .fill(vm.cliLoggedIn ? Color.green : Color.secondary.opacity(0.45))
+                    .frame(width: 7, height: 7)
+                Text(vm.displayAccountLabel)
+                    .font(.system(size: 11.5, weight: .medium, design: .monospaced))
+                    .foregroundStyle(vm.cliLoggedIn ? Color.primary : Color.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .textSelection(.enabled)
+                    .help(vm.displayAccountLabel)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(RoundedRectangle(cornerRadius: 6).fill(Color.primary.opacity(0.04)))
         }
 
         if vm.showOAuthCodeInput {

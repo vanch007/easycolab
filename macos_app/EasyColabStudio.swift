@@ -79,6 +79,13 @@ struct EasyColabApp: App {
                 .keyboardShortcut("/", modifiers: [.command, .shift])
             }
         }
+
+        WindowGroup(L("EasyColab · 多账号实例", "EasyColab · Account Window"), id: "account-workspace", for: String.self) { $boundEmail in
+            MainStudioView(boundAccountEmail: boundEmail)
+                .frame(minWidth: 1300, minHeight: 860)
+        }
+        .defaultSize(width: 1480, height: 900)
+        .windowStyle(.hiddenTitleBar)
     }
 }
 
