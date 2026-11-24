@@ -12,6 +12,8 @@ import glob
 import queue
 import atexit
 import socket
+import struct
+import hashlib
 import base64
 import contextlib
 import secrets
@@ -3343,8 +3345,8 @@ def _find_existing_model_file(model_id: str, fname: str, _allow_peer_share: bool
 
 def _find_comfy_pack_model_file(sub: str, fname: str) -> Optional[str]:
     """查找 ComfyUI 预置模型在 NVMe SSD 或 Drive 持久化目录中的位置"""
-    _, persist_root, _, _, _ = _resolve_comfyui_persistence_paths()
-    nvme_models_root = _get_comfy_nvme_models_root()
+    _, persist_root, mode, _, _ = _resolve_comfyui_persistence_paths()
+    nvme_models_root = _get_comfy_nvme_models_root(mode)
     candidates = []
     if nvme_models_root:
         candidates.append(os.path.join(nvme_models_root, sub, fname))
@@ -8747,7 +8749,7 @@ def _safe_symlink_dir(target_dir: str, link_path: str):
     os.symlink(target_dir, link_path)
 
 
-def _get_comfy_nvme_models_root(mode: str) -> Optional[str]:
+def _get_comfy_nvme_models_root(mode: str = "") -> Optional[str]:
     """在 Google Drive FUSE 软链模式下启用本地高速 NVMe 混合模型缓存目录，避免 4KB 随机读盘卡死"""
     if mode == "drive_symlink" and os.path.exists("/content"):
         return "/content/fast_comfy_models"
@@ -9221,6 +9223,564 @@ def _scan_comfyui_counts_and_outputs() -> Tuple[Tuple[int, int, int], List[Dict[
     return (cn_count, m_count, wf_count), recent_outputs
 
 
+COMFYUI_LIVE_TASK_LOCK = threading.Lock()
+COMFYUI_LIVE_TASK: Dict[str, Any] = {
+    "active": False,
+    "prompt_id": "",
+    "progress": 0.0,
+    "step_value": 0,
+    "step_max": 0,
+    "node_id": "",
+    "node_type": "",
+    "node_done": 0,
+    "node_total": 0,
+    "stage_label": "",
+    "started_at": 0.0,
+    "step_started_at": 0.0,
+    "elapsed_s": 0.0,
+    "eta_s": None,
+    "summary_line": "",
+    "prompt_text": "",
+    "filename_prefix": "",
+    "inferred_model_id": "",
+    "inferred_model_name": "",
+    "inferred_task_mode": "",
+    "_done_nodes": set(),
+    "_last_log_pct": -1,
+    "_last_log_node": "",
+}
+_COMFY_WS_MONITOR_STARTED = False
+
+
+def _extract_comfy_prompt_metadata(prompt_graph: Dict[str, Any]) -> Dict[str, str]:
+    """Extract prompt, filename prefix, and inferred EasyColab model/mode from a ComfyUI graph."""
+    if not isinstance(prompt_graph, dict):
+        return {}
+    all_classes: List[str] = []
+    all_weights: List[str] = []
+    prompts: List[str] = []
+    prefixes: List[str] = []
+
+    for node in prompt_graph.values():
+        if not isinstance(node, dict):
+            continue
+        ct = str(node.get("class_type") or "").strip()
+        low_ct = ct.lower()
+        all_classes.append(low_ct)
+        inputs = node.get("inputs") if isinstance(node.get("inputs"), dict) else {}
+
+        for wk in ("unet_name", "transformer", "model", "lora_name", "ckpt_name"):
+            wv = inputs.get(wk)
+            if isinstance(wv, str) and wv.strip():
+                all_weights.append(wv.strip().lower())
+
+        for pk in ("prompt", "text", "positive_prompt"):
+            pv = inputs.get(pk)
+            if isinstance(pv, str):
+                clean_p = pv.strip()
+                if clean_p and clean_p not in prompts:
+                    if not (low_ct == "cliptextencode" and any(neg in clean_p.lower() for neg in ("lowres", "watermark", "worst quality"))):
+                        prompts.append(clean_p)
+
+        if any(k in low_ct for k in ("savevideo", "videocombine", "saveimage")):
+            fp = inputs.get("filename_prefix")
+            if isinstance(fp, str) and fp.strip():
+                prefixes.append(fp.strip())
+
+    joined_cls = " ".join(all_classes)
+    joined_wts = " ".join(all_weights)
+    model_id = "minimax_h3"
+    model_name = "MiniMax-H3 (33B)"
+    task_mode = "t2va"
+
+    if "recavsr" in joined_cls or "recavsr" in joined_wts or "flashdecoder" in joined_wts:
+        model_id, model_name, task_mode = "recavsr_upscaler", "ReCaVSR · 极速流式超分", "video_upscale"
+    elif "seedvr2" in joined_cls or "seedvr2" in joined_wts:
+        model_id, model_name, task_mode = "seedvr2_upscaler", "SeedVR2 7B · 视频超分", "video_upscale"
+    elif "bfsminimax" in joined_cls or "ref2va" in joined_wts or "tara" in joined_wts:
+        model_id, model_name, task_mode = "minimax_h3_ref2va_tara", "Ref2VA · TARA 动作复刻", "motion_transfer"
+    elif "corrector" in joined_cls or "s3.safetensors" in joined_wts or "sulphur" in joined_wts:
+        model_id, model_name = "minimax_h3_sulphur3", "Sulphur-3 (H3 无限制)"
+        task_mode = "fl2va" if "minimaxh3imagetovideo" in joined_cls else "t2va"
+    elif "10eros" in joined_wts or "minimaxh3referencetovideo" in joined_cls:
+        model_id, model_name = "minimax_h3_10eros_max", "10Eros-Max (H3 无限制)"
+        task_mode = "multiref" if "minimaxh3referencetovideo" in joined_cls else "fl2va"
+    elif "minimaxh3imagetovideo" in joined_cls:
+        task_mode = "fl2va"
+
+    prompt_text = max(prompts, key=len) if prompts else ""
+    if not prompt_text and model_id in ("recavsr_upscaler", "seedvr2_upscaler"):
+        prompt_text = f"{model_name} ({prefixes[-1]})" if prefixes else model_name
+    return {
+        "prompt_text": prompt_text,
+        "filename_prefix": prefixes[-1] if prefixes else "",
+        "inferred_model_id": model_id,
+        "inferred_model_name": model_name,
+        "inferred_task_mode": task_mode,
+    }
+
+
+def _describe_comfy_node_stage(class_type: str) -> str:
+    ct = (class_type or "").strip()
+    low = ct.lower()
+    if not ct:
+        return "处理中"
+    if any(k in low for k in ("loader", "checkpoint", "loadimage", "loadvideo", "loadaudio", "loadh3")):
+        return "加载模型与输入"
+    if "cliptext" in low or "encode" in low:
+        return "编码文本与条件特征"
+    if "recavsr" in low:
+        return "ReCaVSR 流式超分"
+    if "seedvr2" in low:
+        return "SeedVR2 扩散超分"
+    if any(k in low for k in ("sampler", "ksampler", "bfsminimax")):
+        return "扩散去噪采样"
+    if "vaedecodeaudio" in low:
+        return "立体声音频 VAE 解码"
+    if "vaedecode" in low:
+        return "3D 视频 / 图像 VAE 解码"
+    if any(k in low for k in ("createvideo", "savevideo", "videocombine", "saveimage")):
+        return "合成与封装成片"
+    return ct
+
+
+def _format_ascii_progress_bar(fraction: float, width: int = 10) -> str:
+    frac = max(0.0, min(1.0, float(fraction or 0.0)))
+    filled = max(0, min(width, int(round(width * frac))))
+    return ("█" * filled) + ("-" * (width - filled))
+
+
+def get_comfyui_live_task_snapshot() -> Dict[str, Any]:
+    with COMFYUI_LIVE_TASK_LOCK:
+        return {
+            "active": bool(COMFYUI_LIVE_TASK.get("active")),
+            "prompt_id": str(COMFYUI_LIVE_TASK.get("prompt_id") or ""),
+            "progress": round(float(COMFYUI_LIVE_TASK.get("progress") or 0.0), 3),
+            "step_value": int(COMFYUI_LIVE_TASK.get("step_value") or 0),
+            "step_max": int(COMFYUI_LIVE_TASK.get("step_max") or 0),
+            "node_id": str(COMFYUI_LIVE_TASK.get("node_id") or ""),
+            "node_type": str(COMFYUI_LIVE_TASK.get("node_type") or ""),
+            "node_done": int(COMFYUI_LIVE_TASK.get("node_done") or 0),
+            "node_total": int(COMFYUI_LIVE_TASK.get("node_total") or 0),
+            "stage_label": str(COMFYUI_LIVE_TASK.get("stage_label") or ""),
+            "elapsed_s": round(float(COMFYUI_LIVE_TASK.get("elapsed_s") or 0.0), 1),
+            "eta_s": COMFYUI_LIVE_TASK.get("eta_s"),
+            "summary_line": str(COMFYUI_LIVE_TASK.get("summary_line") or ""),
+            "prompt_text": str(COMFYUI_LIVE_TASK.get("prompt_text") or ""),
+            "filename_prefix": str(COMFYUI_LIVE_TASK.get("filename_prefix") or ""),
+            "inferred_model_id": str(COMFYUI_LIVE_TASK.get("inferred_model_id") or ""),
+            "inferred_model_name": str(COMFYUI_LIVE_TASK.get("inferred_model_name") or ""),
+            "inferred_task_mode": str(COMFYUI_LIVE_TASK.get("inferred_task_mode") or ""),
+        }
+
+
+def _update_comfy_live_task_from_ws_event(
+    event: Dict[str, Any],
+    prompt_nodes_map: Dict[str, Dict[str, str]],
+    now_ts: Optional[float] = None,
+    prompt_meta_map: Optional[Dict[str, Dict[str, str]]] = None,
+) -> Optional[str]:
+    if not isinstance(event, dict):
+        return None
+    msg_type = str(event.get("type") or "").strip()
+    data = event.get("data") if isinstance(event.get("data"), dict) else {}
+    ts = float(now_ts if now_ts is not None else time.time())
+
+    def _emit_bar_and_optional_log(line: str, append_log: bool = False):
+        with CONSOLE_LOCK:
+            ACTIVE_TQDM_BARS["comfy_live"] = line
+            if append_log:
+                CONSOLE_LINES.append(f"[{datetime.now().strftime('%H:%M:%S')}] {line}")
+
+    def _clear_bar(final_log: Optional[str] = None):
+        with CONSOLE_LOCK:
+            ACTIVE_TQDM_BARS.pop("comfy_live", None)
+            if final_log:
+                CONSOLE_LINES.append(f"[{datetime.now().strftime('%H:%M:%S')}] {final_log}")
+
+    with COMFYUI_LIVE_TASK_LOCK:
+        if msg_type == "execution_start":
+            pid = str(data.get("prompt_id") or "").strip()
+            nodes = prompt_nodes_map.get(pid) or {}
+            meta = (prompt_meta_map or {}).get(pid) or {}
+            COMFYUI_LIVE_TASK.update({
+                "active": True,
+                "prompt_id": pid,
+                "progress": 0.03,
+                "step_value": 0,
+                "step_max": 0,
+                "node_id": "",
+                "node_type": "",
+                "node_done": 0,
+                "node_total": len(nodes),
+                "stage_label": "初始化节点图",
+                "started_at": ts,
+                "step_started_at": ts,
+                "elapsed_s": 0.0,
+                "eta_s": None,
+                "prompt_text": str(meta.get("prompt_text") or ""),
+                "filename_prefix": str(meta.get("filename_prefix") or ""),
+                "inferred_model_id": str(meta.get("inferred_model_id") or ""),
+                "inferred_model_name": str(meta.get("inferred_model_name") or ""),
+                "inferred_task_mode": str(meta.get("inferred_task_mode") or ""),
+                "_done_nodes": set(),
+                "_last_log_pct": 3,
+                "_last_log_node": "",
+            })
+            bar = _format_ascii_progress_bar(0.03)
+            node_hint = f" · 共 {len(nodes)} 节点" if nodes else ""
+            summary = f"ComfyUI 进度:   3%|{bar}| 初始化节点图{node_hint}"
+            COMFYUI_LIVE_TASK["summary_line"] = summary
+            _emit_bar_and_optional_log(summary, append_log=True)
+            return summary
+
+        if msg_type == "execution_cached":
+            pid = str(data.get("prompt_id") or COMFYUI_LIVE_TASK.get("prompt_id") or "").strip()
+            nodes = prompt_nodes_map.get(pid) or {}
+            cached = [str(n) for n in (data.get("nodes") or []) if n is not None]
+            done_set = COMFYUI_LIVE_TASK.setdefault("_done_nodes", set())
+            done_set.update(cached)
+            COMFYUI_LIVE_TASK["node_done"] = len(done_set)
+            if nodes:
+                COMFYUI_LIVE_TASK["node_total"] = max(int(COMFYUI_LIVE_TASK.get("node_total") or 0), len(nodes))
+            return None
+
+        if msg_type == "executing":
+            pid = str(data.get("prompt_id") or "").strip()
+            node = data.get("node")
+            if node is None:
+                if COMFYUI_LIVE_TASK.get("active") and (not pid or pid == COMFYUI_LIVE_TASK.get("prompt_id")):
+                    el = max(0.0, ts - float(COMFYUI_LIVE_TASK.get("started_at") or ts))
+                    COMFYUI_LIVE_TASK["active"] = False
+                    COMFYUI_LIVE_TASK["progress"] = 1.0
+                    COMFYUI_LIVE_TASK["elapsed_s"] = round(el, 1)
+                    COMFYUI_LIVE_TASK["eta_s"] = 0.0
+                    COMFYUI_LIVE_TASK["summary_line"] = ""
+                    _clear_bar(f"ComfyUI 进度: 100%|██████████| 节点图执行完成 (耗时 {int(round(el))}s)")
+                return None
+
+            if (not COMFYUI_LIVE_TASK.get("active")) or (pid and pid != COMFYUI_LIVE_TASK.get("prompt_id")):
+                nodes_init = prompt_nodes_map.get(pid) or {}
+                meta_init = (prompt_meta_map or {}).get(pid) or {}
+                COMFYUI_LIVE_TASK.update({
+                    "active": True,
+                    "prompt_id": pid,
+                    "started_at": ts,
+                    "_done_nodes": set(),
+                    "_last_log_pct": -1,
+                    "_last_log_node": "",
+                    "node_total": len(nodes_init),
+                    "prompt_text": str(meta_init.get("prompt_text") or ""),
+                    "filename_prefix": str(meta_init.get("filename_prefix") or ""),
+                    "inferred_model_id": str(meta_init.get("inferred_model_id") or ""),
+                    "inferred_model_name": str(meta_init.get("inferred_model_name") or ""),
+                    "inferred_task_mode": str(meta_init.get("inferred_task_mode") or ""),
+                })
+            elif prompt_meta_map and pid and not COMFYUI_LIVE_TASK.get("prompt_text"):
+                meta_fill = prompt_meta_map.get(pid) or {}
+                if meta_fill:
+                    COMFYUI_LIVE_TASK.update({
+                        "prompt_text": str(meta_fill.get("prompt_text") or ""),
+                        "filename_prefix": str(meta_fill.get("filename_prefix") or ""),
+                        "inferred_model_id": str(meta_fill.get("inferred_model_id") or ""),
+                        "inferred_model_name": str(meta_fill.get("inferred_model_name") or ""),
+                        "inferred_task_mode": str(meta_fill.get("inferred_task_mode") or ""),
+                    })
+
+            done_set = COMFYUI_LIVE_TASK.setdefault("_done_nodes", set())
+            prev_nid = str(COMFYUI_LIVE_TASK.get("node_id") or "")
+            nid = str(node)
+            if prev_nid and prev_nid != nid:
+                done_set.add(prev_nid)
+
+            eff_pid = pid or str(COMFYUI_LIVE_TASK.get("prompt_id") or "")
+            nodes = prompt_nodes_map.get(eff_pid) or {}
+            node_type = str(nodes.get(nid) or nid)
+            stage = _describe_comfy_node_stage(node_type)
+            done_cnt = len(done_set)
+            total_cnt = max(int(COMFYUI_LIVE_TASK.get("node_total") or 0), len(nodes), done_cnt + 1)
+            el = max(0.0, ts - float(COMFYUI_LIVE_TASK.get("started_at") or ts))
+            frac = max(0.04, min(0.95, 0.04 + 0.91 * (done_cnt / float(max(1, total_cnt)))))
+            pct = int(round(frac * 100))
+            bar = _format_ascii_progress_bar(frac)
+            node_part = f"节点 {min(total_cnt, done_cnt + 1)}/{total_cnt}"
+            summary = f"ComfyUI 进度: {pct:3d}%|{bar}| {stage} ({node_type} · {node_part} · 耗时 {int(round(el))}s)"
+
+            node_changed = (nid != str(COMFYUI_LIVE_TASK.get("_last_log_node") or ""))
+            COMFYUI_LIVE_TASK.update({
+                "active": True,
+                "node_id": nid,
+                "node_type": node_type,
+                "stage_label": stage,
+                "step_value": 0,
+                "step_max": 0,
+                "step_started_at": ts,
+                "node_done": done_cnt,
+                "node_total": total_cnt,
+                "elapsed_s": round(el, 1),
+                "eta_s": None,
+                "progress": round(frac, 3),
+                "summary_line": summary,
+                "_last_log_node": nid,
+            })
+            _emit_bar_and_optional_log(summary, append_log=node_changed)
+            return summary
+
+        if msg_type == "executed":
+            nid = str(data.get("node") or "")
+            if nid:
+                done_set = COMFYUI_LIVE_TASK.setdefault("_done_nodes", set())
+                done_set.add(nid)
+                COMFYUI_LIVE_TASK["node_done"] = len(done_set)
+            return None
+
+        if msg_type in ("progress", "progress_state"):
+            if msg_type == "progress":
+                val = int(data.get("value") or 0)
+                mx = max(1, int(data.get("max") or 1))
+                nid = str(data.get("node") or COMFYUI_LIVE_TASK.get("node_id") or "")
+                pid = str(data.get("prompt_id") or COMFYUI_LIVE_TASK.get("prompt_id") or "")
+            else:
+                pid = str(data.get("prompt_id") or COMFYUI_LIVE_TASK.get("prompt_id") or "")
+                nodes_state = data.get("nodes") if isinstance(data.get("nodes"), dict) else {}
+                done_set = COMFYUI_LIVE_TASK.setdefault("_done_nodes", set())
+                running_entry = None
+                for k_nid, info_n in nodes_state.items():
+                    if not isinstance(info_n, dict):
+                        continue
+                    if info_n.get("state") == "finished":
+                        done_set.add(str(k_nid))
+                    elif info_n.get("state") == "running":
+                        running_entry = (str(k_nid), info_n)
+                if running_entry is None:
+                    return None
+                nid, info_n = running_entry
+                val = int(info_n.get("value") or 0)
+                mx = max(1, int(info_n.get("max") or 1))
+
+            if not COMFYUI_LIVE_TASK.get("active"):
+                COMFYUI_LIVE_TASK["active"] = True
+                COMFYUI_LIVE_TASK["prompt_id"] = pid
+                COMFYUI_LIVE_TASK["started_at"] = ts
+                COMFYUI_LIVE_TASK["step_started_at"] = ts
+
+            nodes = prompt_nodes_map.get(pid) or {}
+            node_type = str(nodes.get(nid) or COMFYUI_LIVE_TASK.get("node_type") or nid)
+            stage = _describe_comfy_node_stage(node_type)
+            done_cnt = len(COMFYUI_LIVE_TASK.setdefault("_done_nodes", set()))
+            total_cnt = max(int(COMFYUI_LIVE_TASK.get("node_total") or 0), len(nodes), done_cnt + 1)
+
+            step_frac = max(0.0, min(1.0, val / float(mx)))
+            combined = (done_cnt + step_frac) / float(max(1, total_cnt))
+            overall_frac = max(0.05, min(0.98, 0.04 + 0.94 * combined))
+            pct = int(round(overall_frac * 100))
+
+            el_total = max(0.0, ts - float(COMFYUI_LIVE_TASK.get("started_at") or ts))
+            step_t0 = float(COMFYUI_LIVE_TASK.get("step_started_at") or ts)
+            if val <= 0:
+                COMFYUI_LIVE_TASK["step_started_at"] = ts
+                eta_s = None
+            elif mx > val:
+                step_el = max(0.05, ts - step_t0)
+                eta_s = round(step_el * (mx - val) / float(val), 1)
+            else:
+                eta_s = 0.0
+
+            bar = _format_ascii_progress_bar(overall_frac)
+            eta_part = f" · 剩余约 {int(round(eta_s))}s" if (eta_s is not None and eta_s >= 1.0) else ""
+            node_part = f" · 节点 {min(total_cnt, done_cnt + 1)}/{total_cnt}" if total_cnt > 1 else ""
+            summary = (
+                f"ComfyUI 进度: {pct:3d}%|{bar}| {val}/{mx} 步 · {stage} "
+                f"({node_type}{node_part} · 耗时 {int(round(el_total))}s{eta_part})"
+            )
+
+            last_pct = int(COMFYUI_LIVE_TASK.get("_last_log_pct") or -1)
+            should_log = (val == 1 or val >= mx or abs(pct - last_pct) >= 12)
+            COMFYUI_LIVE_TASK.update({
+                "active": True,
+                "prompt_id": pid,
+                "node_id": nid,
+                "node_type": node_type,
+                "stage_label": stage,
+                "step_value": val,
+                "step_max": mx,
+                "node_done": done_cnt,
+                "node_total": total_cnt,
+                "elapsed_s": round(el_total, 1),
+                "eta_s": eta_s,
+                "progress": round(overall_frac, 3),
+                "summary_line": summary,
+            })
+            if should_log:
+                COMFYUI_LIVE_TASK["_last_log_pct"] = pct
+            _emit_bar_and_optional_log(summary, append_log=should_log)
+            return summary
+
+        if msg_type in ("execution_success", "execution_error", "execution_interrupted"):
+            el = max(0.0, ts - float(COMFYUI_LIVE_TASK.get("started_at") or ts))
+            COMFYUI_LIVE_TASK["active"] = False
+            COMFYUI_LIVE_TASK["progress"] = 1.0 if msg_type == "execution_success" else 0.0
+            COMFYUI_LIVE_TASK["elapsed_s"] = round(el, 1)
+            COMFYUI_LIVE_TASK["eta_s"] = 0.0
+            COMFYUI_LIVE_TASK["summary_line"] = ""
+            label_end = "执行完成" if msg_type == "execution_success" else ("已中断" if msg_type == "execution_interrupted" else "执行失败")
+            pct_end = 100 if msg_type == "execution_success" else int(round(float(COMFYUI_LIVE_TASK.get("progress") or 0.0) * 100))
+            bar_end = _format_ascii_progress_bar(1.0 if msg_type == "execution_success" else 0.0)
+            _clear_bar(f"ComfyUI 进度: {pct_end:3d}%|{bar_end}| {label_end} (耗时 {int(round(el))}s)")
+            return None
+
+    return None
+
+
+def _refresh_local_comfy_queue_nodes(
+    port: int,
+    prompt_nodes_map: Dict[str, Dict[str, str]],
+    prompt_meta_map: Optional[Dict[str, Dict[str, str]]] = None,
+) -> None:
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    try:
+        with opener.open(f"http://127.0.0.1:{port}/queue", timeout=2.0) as r:
+            q_data = json.loads(r.read().decode("utf-8", errors="replace"))
+        for bucket in ("queue_running", "queue_pending"):
+            for item in q_data.get(bucket) or []:
+                if not isinstance(item, (list, tuple)) or len(item) < 3:
+                    continue
+                pid = str(item[1] or "").strip()
+                prompt_graph = item[2]
+                if pid and isinstance(prompt_graph, dict):
+                    prompt_nodes_map[pid] = {
+                        str(nid): str(node.get("class_type") or "")
+                        for nid, node in prompt_graph.items()
+                        if isinstance(node, dict)
+                    }
+                    if prompt_meta_map is not None:
+                        prompt_meta_map[pid] = _extract_comfy_prompt_metadata(prompt_graph)
+        if len(prompt_nodes_map) > 32:
+            for k in list(prompt_nodes_map.keys())[:-16]:
+                prompt_nodes_map.pop(k, None)
+                if prompt_meta_map is not None:
+                    prompt_meta_map.pop(k, None)
+    except Exception:
+        pass
+
+
+def _ws_read_exact(sock_obj, buf: bytearray, n: int) -> bytes:
+    while len(buf) < n:
+        chunk = sock_obj.recv(max(4096, n - len(buf)))
+        if not chunk:
+            raise EOFError("WebSocket closed")
+        buf.extend(chunk)
+    out = bytes(buf[:n])
+    del buf[:n]
+    return out
+
+
+def _comfyui_ws_progress_monitor_loop():
+    prompt_nodes_map: Dict[str, Dict[str, str]] = {}
+    prompt_meta_map: Dict[str, Dict[str, str]] = {}
+    while True:
+        if not (COMFYUI_STATE.get("is_running") or COMFYUI_STATE.get("is_starting")):
+            time.sleep(2.5)
+            continue
+        port = int(COMFYUI_STATE.get("local_port") or COMFY_BACKEND)
+        sock_obj = None
+        try:
+            sock_obj = socket.create_connection(("127.0.0.1", port), timeout=5.0)
+            key = base64.b64encode(os.urandom(16)).decode("ascii")
+            req_str = (
+                f"GET /ws?clientId=easycolab_monitor HTTP/1.1\r\n"
+                f"Host: 127.0.0.1:{port}\r\n"
+                f"Upgrade: websocket\r\n"
+                f"Connection: Upgrade\r\n"
+                f"Sec-WebSocket-Key: {key}\r\n"
+                f"Sec-WebSocket-Version: 13\r\n\r\n"
+            )
+            sock_obj.sendall(req_str.encode("ascii"))
+            buf = bytearray()
+            while b"\r\n\r\n" not in buf:
+                chunk = sock_obj.recv(4096)
+                if not chunk:
+                    raise EOFError("WS handshake failed")
+                buf.extend(chunk)
+                if len(buf) > 16384:
+                    raise ValueError("WS handshake too large")
+            hdr_end = buf.index(b"\r\n\r\n") + 4
+            hdr_text = bytes(buf[:hdr_end]).decode("latin-1", errors="replace")
+            del buf[:hdr_end]
+            if " 101 " not in hdr_text.splitlines()[0]:
+                raise RuntimeError(f"WS upgrade rejected: {hdr_text.splitlines()[0]}")
+
+            sock_obj.settimeout(30.0)
+            _refresh_local_comfy_queue_nodes(port, prompt_nodes_map, prompt_meta_map)
+            frag_opcode = 0
+            frag_buf = bytearray()
+
+            while COMFYUI_STATE.get("is_running") or COMFYUI_STATE.get("is_starting"):
+                try:
+                    b1, b2 = _ws_read_exact(sock_obj, buf, 2)
+                except socket.timeout:
+                    continue
+                fin = bool(b1 & 0x80)
+                opcode = b1 & 0x0F
+                masked = bool(b2 & 0x80)
+                length = b2 & 0x7F
+                if length == 126:
+                    length = struct.unpack(">H", _ws_read_exact(sock_obj, buf, 2))[0]
+                elif length == 127:
+                    length = struct.unpack(">Q", _ws_read_exact(sock_obj, buf, 8))[0]
+                mask_key = _ws_read_exact(sock_obj, buf, 4) if masked else b""
+                payload = _ws_read_exact(sock_obj, buf, length) if length else b""
+                if masked and payload:
+                    payload = bytes(b ^ mask_key[i % 4] for i, b in enumerate(payload))
+
+                if opcode == 0x8:
+                    break
+                if opcode == 0x9:
+                    mk = os.urandom(4)
+                    pl = payload[:125]
+                    masked_pl = bytes(b ^ mk[i % 4] for i, b in enumerate(pl))
+                    sock_obj.sendall(bytes([0x8A, 0x80 | len(pl)]) + mk + masked_pl)
+                    continue
+                if opcode == 0xA:
+                    continue
+                if opcode in (0x1, 0x2):
+                    frag_opcode = opcode
+                    frag_buf = bytearray(payload)
+                elif opcode == 0x0:
+                    frag_buf.extend(payload)
+                if not fin:
+                    continue
+
+                if frag_opcode == 0x1:
+                    try:
+                        evt = json.loads(frag_buf.decode("utf-8", errors="replace"))
+                    except Exception:
+                        evt = None
+                    if isinstance(evt, dict):
+                        et = str(evt.get("type") or "")
+                        if et in ("execution_start", "executing"):
+                            pid = str((evt.get("data") or {}).get("prompt_id") or "").strip()
+                            if pid and pid not in prompt_nodes_map:
+                                _refresh_local_comfy_queue_nodes(port, prompt_nodes_map, prompt_meta_map)
+                        _update_comfy_live_task_from_ws_event(evt, prompt_nodes_map, prompt_meta_map=prompt_meta_map)
+        except Exception:
+            time.sleep(2.0)
+        finally:
+            if sock_obj is not None:
+                try:
+                    sock_obj.close()
+                except Exception:
+                    pass
+
+
+def _ensure_comfyui_ws_progress_monitor():
+    global _COMFY_WS_MONITOR_STARTED
+    if _COMFY_WS_MONITOR_STARTED:
+        return
+    _COMFY_WS_MONITOR_STARTED = True
+    threading.Thread(target=_comfyui_ws_progress_monitor_loop, daemon=True).start()
+
+
 def _try_adopt_running_comfyui():
     """若 app.py 热更新重启前实例上已有在线 ComfyUI 与 cloudflared 隧道，自动无缝接管，不断开用户已打开的画布"""
     global _COMFY_ADOPT_CHECKED, _COMFY_BG_SYNC_STARTED
@@ -9305,6 +9865,7 @@ def _try_adopt_running_comfyui():
     if not _COMFY_BG_SYNC_STARTED:
         _COMFY_BG_SYNC_STARTED = True
         threading.Thread(target=_comfyui_periodic_drive_sync_loop, daemon=True).start()
+    _ensure_comfyui_ws_progress_monitor()
     print(f"[ComfyUI] 已自动接管实例上正在运行的 ComfyUI 服务: {pub_url or f'127.0.0.1:{port}'}")
 
 
@@ -9383,6 +9944,7 @@ def get_comfyui_status_dict() -> Dict[str, Any]:
         "last_sync_ts": int(COMFYUI_STATE["last_sync_ts"]),
         "recent_outputs": recent_outputs,
         "preset_packs": preset_packs,
+        "live_task": get_comfyui_live_task_snapshot(),
     }
 
 
@@ -9826,8 +10388,7 @@ def start_comfyui_core(unload_existing: bool = False, force_restart: bool = Fals
             cwd=comfy_root,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1,
+            bufsize=0,
         )
         COMFYUI_STATE["comfy_proc"] = comfy_proc
 
@@ -9835,10 +10396,29 @@ def start_comfyui_core(unload_existing: bool = False, force_restart: bool = Fals
             try:
                 if proc.stdout is None:
                     return
-                for raw_ln in proc.stdout:
-                    ln = raw_ln.rstrip()
-                    if ln:
-                        print(f"[ComfyUI] {ln}")
+                buf = bytearray()
+                while True:
+                    chunk = proc.stdout.read(1)
+                    if not chunk:
+                        if buf:
+                            ln = bytes(buf).decode("utf-8", errors="replace").strip()
+                            if ln:
+                                print(f"[ComfyUI] {ln}", flush=True)
+                        break
+                    b = chunk[0]
+                    if b in (10, 13):
+                        if buf:
+                            ln = bytes(buf).decode("utf-8", errors="replace").strip()
+                            buf.clear()
+                            if ln:
+                                print(f"[ComfyUI] {ln}", flush=True)
+                    else:
+                        buf.extend(chunk)
+                        if len(buf) > 4096:
+                            ln = bytes(buf).decode("utf-8", errors="replace").strip()
+                            buf.clear()
+                            if ln:
+                                print(f"[ComfyUI] {ln}", flush=True)
             except Exception:
                 pass
 
@@ -9914,6 +10494,7 @@ def start_comfyui_core(unload_existing: bool = False, force_restart: bool = Fals
         if not _COMFY_BG_SYNC_STARTED:
             _COMFY_BG_SYNC_STARTED = True
             threading.Thread(target=_comfyui_periodic_drive_sync_loop, daemon=True).start()
+        _ensure_comfyui_ws_progress_monitor()
 
         return True, ok_msg
     except Exception as e:
@@ -11462,19 +12043,28 @@ def _execute_comfy_h3_api_job(
             if saved_file_info or status_obj.get("completed"):
                 break
 
-        # 依据实际运行时间平滑更新进度，避免长时间无变化
-        est_total = (
-            45.0 if pipeline_arch in ("comfy_h3_10eros_max", "comfy_recavsr_upscaler")
-            else (90.0 if pipeline_arch == "comfy_seedvr2_upscaler" else 135.0)
-        )
-        local_frac = min(0.88, 0.14 + 0.74 * ((time.time() - t_wait_start) / est_total))
-        JOBS[job_id]["progress"] = round(base_prog + local_frac * span_prog, 3)
-        phase_hint = (
-            "ReCaVSR 流式超分与 FlashDecoder 实时封装中"
-            if pipeline_arch == "comfy_recavsr_upscaler"
-            else ("一步扩散视频超分修复中" if pipeline_arch == "comfy_seedvr2_upscaler" else "联合音视频扩散采样中")
-        )
-        JOBS[job_id]["message"] = f"{prefix}{model_name} {phase_hint} ({elapsed_run:.0f}s)..."
+        # 优先同步 ComfyUI WebSocket 真实节点与采样步数进度，未就绪前按预计耗时平滑兜底
+        live = get_comfyui_live_task_snapshot()
+        if live.get("active") and (not live.get("prompt_id") or live.get("prompt_id") == prompt_id):
+            live_frac = max(0.12, min(0.95, float(live.get("progress") or 0.14)))
+            JOBS[job_id]["progress"] = round(base_prog + live_frac * span_prog, 3)
+            live_summary = str(live.get("summary_line") or "").strip()
+            JOBS[job_id]["message"] = f"{prefix}{live_summary}" if live_summary else f"{prefix}{model_name} {int(round(live_frac * 100))}% ({elapsed_run:.0f}s)"
+        else:
+            est_total = (
+                45.0 if pipeline_arch in ("comfy_h3_10eros_max", "comfy_recavsr_upscaler")
+                else (90.0 if pipeline_arch == "comfy_seedvr2_upscaler" else 135.0)
+            )
+            local_frac = min(0.88, 0.14 + 0.74 * ((time.time() - t_wait_start) / est_total))
+            JOBS[job_id]["progress"] = round(base_prog + local_frac * span_prog, 3)
+            phase_hint = (
+                "ReCaVSR 流式超分与 FlashDecoder 实时封装中"
+                if pipeline_arch == "comfy_recavsr_upscaler"
+                else ("一步扩散视频超分修复中" if pipeline_arch == "comfy_seedvr2_upscaler" else "联合音视频扩散采样中")
+            )
+            pct_est = int(round(local_frac * 100))
+            bar_est = _format_ascii_progress_bar(local_frac)
+            JOBS[job_id]["message"] = f"{prefix}{model_name} {pct_est}%|{bar_est}| {phase_hint} (耗时 {elapsed_run:.0f}s)..."
         touch_activity()
 
     if not saved_file_info:
