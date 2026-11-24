@@ -160,7 +160,7 @@ extension StudioViewModel {
         }
         let script = self.bridgeScript
         let cmdName = args.first ?? ""
-        let scopedCommands = ["auth_status", "wake", "keepalive", "keepalive_daemon", "stop_all"]
+        let scopedCommands = ["auth_status", "auth_status_all", "wake", "recover_tunnel", "keepalive", "keepalive_daemon", "stop_all"]
         var envOverrides: [String: String] = ["EASYCOLAB_FROM_APP": "1"]
         let resolvedAcct = (scopedAccount ?? activeBridgeAccountEmail ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         if !resolvedAcct.isEmpty && scopedCommands.contains(cmdName) {
@@ -188,13 +188,43 @@ extension StudioViewModel {
         }
     }
 
-    func refreshOfficialColabAccountUsage() async {
-        let out = await runBridgeCommand(["auth_status"], installIfMissing: false)
-        guard let data = out.data(using: .utf8),
-              let decoded = try? JSONDecoder().decode(BridgeAuthStatusResponse.self, from: data) else {
+    func refreshOfficialColabAccountUsage(includeAllAccounts: Bool = true) async {
+        if includeAllAccounts && isRefreshingAllAccounts {
             return
         }
-        cliLoggedIn = decoded.logged_in ?? false
+        if includeAllAccounts {
+            isRefreshingAllAccounts = true
+        }
+        defer {
+            if includeAllAccounts {
+                isRefreshingAllAccounts = false
+            }
+        }
+
+        var decoded: BridgeAuthStatusResponse? = nil
+        if includeAllAccounts {
+            let outAll = await runBridgeCommand(["auth_status_all"], installIfMissing: false)
+            if let data = outAll.data(using: .utf8),
+               let parsed = try? JSONDecoder().decode(BridgeAuthStatusResponse.self, from: data) {
+                decoded = parsed
+            }
+        }
+        if decoded == nil {
+            let out = await runBridgeCommand(["auth_status"], installIfMissing: false)
+            if let data = out.data(using: .utf8),
+               let parsed = try? JSONDecoder().decode(BridgeAuthStatusResponse.self, from: data) {
+                decoded = parsed
+            }
+        }
+        guard let decoded else { return }
+
+        if isPinnedMultiAccountWindow {
+            if let logged = decoded.logged_in {
+                cliLoggedIn = logged
+            }
+        } else {
+            cliLoggedIn = decoded.logged_in ?? false
+        }
         if let em = decoded.email, !em.isEmpty {
             accountEmail = em
         } else if !cliLoggedIn {
@@ -206,6 +236,7 @@ extension StudioViewModel {
         }
         if let rate = decoded.burn_rate_hourly { officialBurnRate = rate }
         if let accs = decoded.accounts { savedAccounts = accs }
+        lastAllAccountsSyncAt = Date()
         if let count = decoded.active_assignments {
             activeVMCount = count
             if count == 0 && !isConnected && (!loadedModelsDetail.isEmpty || vramTotalGB > 0) {
@@ -215,6 +246,36 @@ extension StudioViewModel {
                 ))
             }
         }
+    }
+
+    func stopAccountRemoteVMs(_ email: String) async {
+        let target = email.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !target.isEmpty else { return }
+        if target.caseInsensitiveCompare(accountEmail.trimmingCharacters(in: .whitespacesAndNewlines)) == .orderedSame {
+            await disconnectRemoteColab()
+            return
+        }
+        statusMessage = L(
+            "正在远程释放账号 \(target) 下的 Colab 实例（不切换当前窗口账号）...",
+            "Terminating cloud Colab VMs under \(target) without switching accounts..."
+        )
+        let out = await runBridgeCommand(["stop_all"], installIfMissing: false, scopedAccount: target)
+        if let data = out.data(using: .utf8),
+           let decoded = try? JSONDecoder().decode(BridgeAuthStatusResponse.self, from: data),
+           decoded.ok == true {
+            let msg = decoded.message ?? L(
+                "已释放账号 \(target) 下全部实例。",
+                "Released all Colab instances under \(target)."
+            )
+            statusMessage = msg
+            liveConsoleLines.append("[Colab-CLI] [\(target)] \(msg)")
+        } else {
+            statusMessage = L(
+                "释放账号 \(target) 实例失败，请检查凭证或稍后重试。",
+                "Failed to release instances under \(target)."
+            )
+        }
+        await refreshOfficialColabAccountUsage(includeAllAccounts: true)
     }
 
     func startGoogleOAuthLogin(switchingAccount: Bool = false) async {
@@ -376,6 +437,7 @@ extension StudioViewModel {
     func cancelActiveWake() {
         stopActiveWakeProcess()
         isWakingColab = false
+        activeMultiWakeAccountCount = 0
         let msg = L("已手动停止持续申请部署。", "Cancelled continuous wake & deploy.")
         liveConsoleLines.append("[Colab-CLI] \(msg)")
         statusMessage = msg
@@ -515,6 +577,473 @@ extension StudioViewModel {
             await checkColabStatus()
             await ensureKeepaliveDaemonRunning()
         }
+    }
+
+    func wakeColabMultiRace(
+        accounts: [String],
+        openWinnerWindow: @escaping @MainActor (String) -> Void
+    ) async {
+        var targets: [String] = []
+        var seenNorm: Set<String> = []
+        for raw in accounts {
+            let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            let norm = trimmed.lowercased()
+            if !trimmed.isEmpty, !seenNorm.contains(norm) {
+                seenNorm.insert(norm)
+                targets.append(trimmed)
+            }
+        }
+        guard !targets.isEmpty else {
+            statusMessage = L("请至少选择一个 Google 账号。", "Please select at least one Google account.")
+            return
+        }
+
+        if targets.count == 1 {
+            let single = targets[0]
+            if single.caseInsensitiveCompare(accountEmail) == .orderedSame {
+                await wakeColabHeadless()
+                return
+            }
+            if !isPinnedMultiAccountWindow {
+                await switchSavedGoogleAccount(single)
+                if cliLoggedIn && accountEmail.caseInsensitiveCompare(single) == .orderedSame {
+                    await wakeColabHeadless()
+                }
+                return
+            }
+            MultiAccountWakeCoordinator.shared.enqueue(
+                email: single,
+                gpu: wakeGPUChoice,
+                persistent: persistentWakeEnabled
+            )
+            openWinnerWindow(single)
+            try? await Task.sleep(nanoseconds: 250_000_000)
+            NotificationCenter.default.post(
+                name: .easyColabTriggerAutoWake,
+                object: nil,
+                userInfo: ["email": single]
+            )
+            return
+        }
+
+        stopActiveWakeProcess()
+        stopKeepaliveDaemon()
+        wakeObtainedURLThisRun = false
+        isWakingColab = true
+        activeMultiWakeAccountCount = targets.count
+        statusMessage = L(
+            "正在使用 \(targets.count) 个账号同时竞速申请 \(wakeGPUChoice) GPU（抢到首个即停）...",
+            "Racing \(targets.count) accounts concurrently for \(wakeGPUChoice) GPU (first wins)..."
+        )
+        liveConsoleLines = [L(
+            "[Colab-CLI] 启动多账号并发竞速申请 (\(wakeGPUChoice) GPU · \(targets.count) 个账号)...",
+            "[Colab-CLI] Starting concurrent multi-account GPU race (\(wakeGPUChoice) GPU · \(targets.count) accounts)..."
+        )]
+
+        guard let pyBin = await ensureBridgePythonBin(installIfMissing: true) else {
+            isWakingColab = false
+            activeMultiWakeAccountCount = 0
+            return
+        }
+
+        let script = self.bridgeScript
+        let gpu = self.wakeGPUChoice
+        let password = UUID().uuidString + UUID().uuidString
+        let idleMin = self.idleTimeoutMinutes
+        let appPy = self.appPyPath
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: pyBin)
+        var wakeEnv: [String: String] = [
+            "EASYCOLAB_FROM_APP": "1",
+            "EASYCOLAB_ADMIN_PASSWORD": password,
+            "EASYCOLAB_IDLE_TIMEOUT_MINUTES": "\(idleMin)"
+        ]
+        wakeEnv.removeValue(forKey: "EASYCOLAB_ACCOUNT")
+        var mergedEnv = ProcessInfo.processInfo.environment.merging(wakeEnv) { _, new in new }
+        mergedEnv.removeValue(forKey: "EASYCOLAB_ACCOUNT")
+        proc.environment = mergedEnv
+
+        var wakeArgs = [
+            script, "wake_multi",
+            "--gpu", gpu,
+            "--app-py", appPy,
+            "--accounts", targets.joined(separator: ","),
+            "--mode", "first"
+        ]
+        if persistentWakeEnabled {
+            wakeArgs += ["--persistent", "--retry-interval", "60"]
+        }
+        proc.arguments = wakeArgs
+        let pipe = Pipe()
+        proc.standardOutput = pipe
+        proc.standardError = pipe
+        self.activeWakeProcess = proc
+
+        var raceWinnerEmail: String? = nil
+        var raceWinnerURL: String? = nil
+        let lineBuffer = KeepalivePipeLineBuffer()
+
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+                pipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
+                    let data = handle.availableData
+                    guard !data.isEmpty else { return }
+                    let lines = lineBuffer.appendAndExtractLines(data)
+                    guard !lines.isEmpty else { return }
+                    Task { @MainActor [weak self] in
+                        guard let self else { return }
+                        for line in lines {
+                            if line.hasPrefix("WAKE_WINNER:") {
+                                let w = String(line.dropFirst("WAKE_WINNER:".count)).trimmingCharacters(in: .whitespacesAndNewlines)
+                                if !w.isEmpty {
+                                    raceWinnerEmail = w
+                                }
+                            } else if line.hasPrefix("WAKE_URL:") {
+                                let url = String(line.dropFirst("WAKE_URL:".count)).trimmingCharacters(in: .whitespacesAndNewlines)
+                                if !url.isEmpty {
+                                    raceWinnerURL = url
+                                    self.wakeObtainedURLThisRun = true
+                                    self.liveConsoleLines.append(L(
+                                        "成功获取云端隧道地址: \(self.maskedURLDisplay(url))",
+                                        "Obtained public tunnel URL: \(self.maskedURLDisplay(url))"
+                                    ))
+                                    self.statusMessage = L(
+                                        "竞速成功！云端 \(gpu) 实例已就绪，正在切换连接...",
+                                        "Race won! Cloud \(gpu) instance ready, connecting..."
+                                    )
+                                }
+                            } else {
+                                self.handleWakeOutputLine(line, gpu: gpu, password: password)
+                            }
+                        }
+                    }
+                }
+
+                do {
+                    try proc.run()
+                    proc.waitUntilExit()
+                } catch {
+                    Task { @MainActor [weak self] in
+                        guard let self else { return }
+                        self.statusMessage = L(
+                            "启动多账号竞速失败: \(error.localizedDescription)",
+                            "Failed to launch multi-account race: \(error.localizedDescription)"
+                        )
+                    }
+                }
+                pipe.fileHandleForReading.readabilityHandler = nil
+                let tailData = pipe.fileHandleForReading.readDataToEndOfFile()
+                var finalLines = lineBuffer.appendAndExtractLines(tailData)
+                if let rem = lineBuffer.flushRemainingLine() {
+                    finalLines.append(rem)
+                }
+                let capturedFinal = finalLines
+                Task { @MainActor [weak self] in
+                    if let self {
+                        for line in capturedFinal {
+                            if line.hasPrefix("WAKE_WINNER:") {
+                                let w = String(line.dropFirst("WAKE_WINNER:".count)).trimmingCharacters(in: .whitespacesAndNewlines)
+                                if !w.isEmpty {
+                                    raceWinnerEmail = w
+                                }
+                            } else if line.hasPrefix("WAKE_URL:") {
+                                let url = String(line.dropFirst("WAKE_URL:".count)).trimmingCharacters(in: .whitespacesAndNewlines)
+                                if !url.isEmpty {
+                                    raceWinnerURL = url
+                                    self.wakeObtainedURLThisRun = true
+                                }
+                            } else {
+                                self.handleWakeOutputLine(line, gpu: gpu, password: password)
+                            }
+                        }
+                    }
+                    continuation.resume()
+                }
+            }
+        }
+
+        if self.activeWakeProcess === proc {
+            self.activeWakeProcess = nil
+        }
+        isWakingColab = false
+        activeMultiWakeAccountCount = 0
+
+        if let wonURL = raceWinnerURL, !wonURL.isEmpty {
+            let winner = (raceWinnerEmail?.isEmpty == false ? raceWinnerEmail! : accountEmail)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            Self.saveAdminPassword(password, for: wonURL)
+            if !winner.isEmpty {
+                UserDefaults.standard.set(wonURL, forKey: Self.perAccountURLDefaultsKey(for: winner))
+            }
+
+            if !isPinnedMultiAccountWindow {
+                if !winner.isEmpty && winner.caseInsensitiveCompare(accountEmail) != .orderedSame {
+                    let swOut = await runBridgeCommand(["auth_switch", winner], installIfMissing: false, scopedAccount: "")
+                    if let data = swOut.data(using: .utf8),
+                       let decoded = try? JSONDecoder().decode(BridgeAuthStatusResponse.self, from: data) {
+                        if let accs = decoded.accounts { savedAccounts = accs }
+                        if decoded.logged_in == true {
+                            cliLoggedIn = true
+                            accountEmail = decoded.email ?? winner
+                            officialCUBalance = decoded.paid_balance
+                            officialBurnRate = decoded.burn_rate_hourly
+                            activeVMCount = decoded.active_assignments ?? 0
+                            if let bal = decoded.paid_balance { totalBudgetCU = bal }
+                        }
+                    }
+                    resetStaleRemoteRuntimeState(reason: "")
+                }
+                self.colabServerURL = wonURL
+                self.adminPassword = password
+                await checkColabStatus()
+                await ensureKeepaliveDaemonRunning()
+            } else if winner.caseInsensitiveCompare(accountEmail) == .orderedSame {
+                self.colabServerURL = wonURL
+                self.adminPassword = password
+                await checkColabStatus()
+                await ensureKeepaliveDaemonRunning()
+            } else {
+                openWinnerWindow(winner)
+                statusMessage = L(
+                    "竞速成功！胜出账号 \(winner) 已在新独立窗口连接 \(gpu) 实例。",
+                    "Race won! Opening \(winner) in its own window for \(gpu) runtime."
+                )
+            }
+        }
+        await refreshOfficialColabAccountUsage()
+    }
+
+    func launchMultiAccountBatchWake(
+        accounts: [String],
+        openAccountWindow: @escaping @MainActor (String) -> Void
+    ) {
+        var targets: [String] = []
+        var seenNorm: Set<String> = []
+        for raw in accounts {
+            let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            let norm = trimmed.lowercased()
+            if !trimmed.isEmpty, !seenNorm.contains(norm) {
+                seenNorm.insert(norm)
+                targets.append(trimmed)
+            }
+        }
+        guard !targets.isEmpty else { return }
+
+        let currentAcct = (boundAccountEmail ?? accountEmail).trimmingCharacters(in: .whitespacesAndNewlines)
+        var otherTargets: [String] = []
+        var runInCurrentWindow = false
+        for acc in targets {
+            if !runInCurrentWindow && !currentAcct.isEmpty && acc.caseInsensitiveCompare(currentAcct) == .orderedSame && cliLoggedIn && !isWakingColab {
+                runInCurrentWindow = true
+            } else {
+                otherTargets.append(acc)
+            }
+        }
+
+        let gpu = self.wakeGPUChoice
+        let persistent = self.persistentWakeEnabled
+        statusMessage = L(
+            "正在为 \(targets.count) 个账号同步并发唤醒独立 \(gpu) GPU 窗口...",
+            "Launching parallel \(gpu) GPU wake across \(targets.count) account windows..."
+        )
+        liveConsoleLines.append(L(
+            "[Colab-CLI] 批量多开启动：\(targets.joined(separator: ", ")) (\(gpu) GPU)",
+            "[Colab-CLI] Batch multi-GPU wake queued: \(targets.joined(separator: ", ")) (\(gpu) GPU)"
+        ))
+
+        if runInCurrentWindow {
+            Task { await self.wakeColabHeadless() }
+        }
+
+        guard !otherTargets.isEmpty else { return }
+        Task { @MainActor in
+            for acc in otherTargets {
+                MultiAccountWakeCoordinator.shared.enqueue(
+                    email: acc,
+                    gpu: gpu,
+                    persistent: persistent
+                )
+                openAccountWindow(acc)
+                try? await Task.sleep(nanoseconds: 250_000_000)
+                NotificationCenter.default.post(
+                    name: .easyColabTriggerAutoWake,
+                    object: nil,
+                    userInfo: ["email": acc]
+                )
+            }
+        }
+    }
+
+    func consumePendingAutoWakeIfNeeded() async {
+        let targetAcct = (boundAccountEmail ?? accountEmail).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !targetAcct.isEmpty, !isWakingColab else { return }
+        guard let req = MultiAccountWakeCoordinator.shared.consume(email: targetAcct) else { return }
+        wakeGPUChoice = req.gpu
+        persistentWakeEnabled = req.persistent
+        await wakeColabHeadless()
+    }
+
+    func recoverRunningColabConnection(forceRestartServer: Bool = false) async {
+        guard cliLoggedIn, !isRecoveringTunnel, !isWakingColab else { return }
+        isRecoveringTunnel = true
+        defer { isRecoveringTunnel = false }
+
+        statusMessage = L(
+            "正在核实云端实例状态并尝试无损恢复连接...",
+            "Verifying cloud runtime & attempting lossless tunnel recovery..."
+        )
+        liveConsoleLines.append(L(
+            "[Colab-CLI] 开始无损核实云端实例并恢复隧道连接...",
+            "[Colab-CLI] Verifying cloud runtime & recovering tunnel..."
+        ))
+
+        await refreshOfficialColabAccountUsage(includeAllAccounts: true)
+        if activeVMCount == 0 {
+            lastConnectionError = ""
+            let msg = L(
+                "已核实云端无运行中实例（0 VM · 0.00 CU/h），实例已被释放、未计费。",
+                "Confirmed: 0 active VMs (0.00 CU/h). Instance is released and not billing."
+            )
+            statusMessage = msg
+            liveConsoleLines.append("[Colab-CLI] \(msg)")
+            return
+        }
+
+        if !forceRestartServer && !normalizedBaseURL.isEmpty && !adminPassword.isEmpty {
+            await checkColabStatus(silent: false)
+            if isConnected {
+                lastConnectionError = ""
+                await ensureKeepaliveDaemonRunning()
+                return
+            }
+        }
+
+        let needsRestartImmediately = forceRestartServer || lastConnectionError.contains("401")
+        guard let pyBin = await ensureBridgePythonBin(installIfMissing: false) else { return }
+        let script = self.bridgeScript
+        let appPy = self.appPyPath
+        let freshPassword = UUID().uuidString + UUID().uuidString
+        let idleMin = self.idleTimeoutMinutes
+        let scopedAcct = self.activeBridgeAccountEmail
+
+        func runRecoverSubprocess(restart: Bool) async -> (recoveredURL: String?, restartedURL: String?, released: Bool, needRestart: Bool, errorMsg: String?) {
+            let proc = Process()
+            proc.executableURL = URL(fileURLWithPath: pyBin)
+            var envOverrides: [String: String] = [
+                "EASYCOLAB_FROM_APP": "1",
+                "EASYCOLAB_ADMIN_PASSWORD": freshPassword,
+                "EASYCOLAB_IDLE_TIMEOUT_MINUTES": "\(idleMin)"
+            ]
+            if let scopedAcct, !scopedAcct.isEmpty {
+                envOverrides["EASYCOLAB_ACCOUNT"] = scopedAcct
+            }
+            proc.environment = ProcessInfo.processInfo.environment.merging(envOverrides) { _, new in new }
+            var recArgs = [script, "recover_tunnel", "--app-py", appPy]
+            if restart {
+                recArgs.append("--restart-server")
+            }
+            proc.arguments = recArgs
+            let pipe = Pipe()
+            proc.standardOutput = pipe
+            proc.standardError = pipe
+
+            let lineBuffer = KeepalivePipeLineBuffer()
+            var foundRecURL: String? = nil
+            var foundWakeURL: String? = nil
+            var isReleased = false
+            var isNeedRestart = false
+            var foundError: String? = nil
+
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+                    let handleLines: ([String]) -> Void = { lines in
+                        for line in lines {
+                            if line.hasPrefix("RECOVER_URL:") {
+                                foundRecURL = String(line.dropFirst("RECOVER_URL:".count)).trimmingCharacters(in: .whitespacesAndNewlines)
+                            } else if line.hasPrefix("WAKE_URL:") {
+                                foundWakeURL = String(line.dropFirst("WAKE_URL:".count)).trimmingCharacters(in: .whitespacesAndNewlines)
+                            } else if line.hasPrefix("RECOVER_RELEASED:") {
+                                isReleased = true
+                                foundError = String(line.dropFirst("RECOVER_RELEASED:".count)).trimmingCharacters(in: .whitespacesAndNewlines)
+                            } else if line.hasPrefix("RECOVER_NEED_RESTART:") {
+                                isNeedRestart = true
+                            } else if line.hasPrefix("RECOVER_ERROR:") {
+                                foundError = String(line.dropFirst("RECOVER_ERROR:".count)).trimmingCharacters(in: .whitespacesAndNewlines)
+                            } else if line.hasPrefix("WAKE_LOG:") {
+                                let clean = String(line.dropFirst("WAKE_LOG:".count)).trimmingCharacters(in: .whitespacesAndNewlines)
+                                if !clean.isEmpty {
+                                    Task { @MainActor [weak self] in
+                                        self?.liveConsoleLines.append(clean)
+                                        self?.statusMessage = clean
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    pipe.fileHandleForReading.readabilityHandler = { handle in
+                        let data = handle.availableData
+                        guard !data.isEmpty else { return }
+                        let lines = lineBuffer.appendAndExtractLines(data)
+                        if !lines.isEmpty { handleLines(lines) }
+                    }
+                    do {
+                        try proc.run()
+                        proc.waitUntilExit()
+                    } catch {
+                        foundError = error.localizedDescription
+                    }
+                    pipe.fileHandleForReading.readabilityHandler = nil
+                    let tail = pipe.fileHandleForReading.readDataToEndOfFile()
+                    var tailLines = lineBuffer.appendAndExtractLines(tail)
+                    if let rem = lineBuffer.flushRemainingLine() { tailLines.append(rem) }
+                    if !tailLines.isEmpty { handleLines(tailLines) }
+                    continuation.resume()
+                }
+            }
+            return (foundRecURL, foundWakeURL, isReleased, isNeedRestart, foundError)
+        }
+
+        var res = await runRecoverSubprocess(restart: needsRestartImmediately)
+        if res.released {
+            activeVMCount = 0
+            officialBurnRate = 0.0
+            lastConnectionError = ""
+            statusMessage = res.errorMsg ?? L("已确认云端实例释放。", "Cloud runtime confirmed released.")
+            await refreshOfficialColabAccountUsage(includeAllAccounts: true)
+            return
+        }
+
+        if let recURL = res.recoveredURL, !recURL.isEmpty {
+            self.colabServerURL = recURL
+            if !self.adminPassword.isEmpty {
+                await checkColabStatus(silent: false)
+                if isConnected {
+                    await ensureKeepaliveDaemonRunning()
+                    await refreshOfficialColabAccountUsage(includeAllAccounts: true)
+                    return
+                }
+            }
+            // 本地缺失密码、密码不匹配(401)或隧道探测波动时，自动在同一台运行中实例上无损重建 app.py 隧道
+            res = await runRecoverSubprocess(restart: true)
+        } else if res.needRestart && !needsRestartImmediately {
+            res = await runRecoverSubprocess(restart: true)
+        }
+
+        if let newURL = res.restartedURL, !newURL.isEmpty {
+            Self.saveAdminPassword(freshPassword, for: newURL)
+            self.colabServerURL = newURL
+            self.adminPassword = freshPassword
+            await checkColabStatus(silent: false)
+            if isConnected {
+                await ensureKeepaliveDaemonRunning()
+            }
+        } else if let err = res.errorMsg, !err.isEmpty {
+            lastConnectionError = err
+            statusMessage = err
+            liveConsoleLines.append("[Colab-CLI] \(err)")
+        }
+        await refreshOfficialColabAccountUsage(includeAllAccounts: true)
     }
 
     func stopKeepaliveDaemon() {
@@ -749,11 +1278,18 @@ extension StudioViewModel {
                     }
                 }
 
-                // 实时监控官方 Colab CU 余额与活跃 VM 数：离线状态下每 ~12s 检查以第一时间发现外部开启的云端实例
-                if tick % 8 == 0 && cliLoggedIn && !isWakingColab && !isConnected {
-                    await refreshOfficialColabAccountUsage()
-                } else if tick % 14 == 0 && cliLoggedIn && !isWakingColab && isConnected && keepaliveDaemonProcess?.isRunning != true {
-                    await keepaliveColabRuntime()
+                // 实时监控全部已保存 Google 账号：离线每 ~15s、多账号在线每 ~30s 并发刷新（无需切换账号）
+                if !isWakingColab {
+                    if !isConnected && (cliLoggedIn || !savedAccounts.isEmpty) && tick % 10 == 0 {
+                        await refreshOfficialColabAccountUsage(includeAllAccounts: true)
+                    } else if isConnected && cliLoggedIn {
+                        if keepaliveDaemonProcess?.isRunning != true && tick % 14 == 0 {
+                            await keepaliveColabRuntime()
+                        }
+                        if savedAccounts.count >= 2 && tick % 20 == 0 {
+                            await refreshOfficialColabAccountUsage(includeAllAccounts: true)
+                        }
+                    }
                 }
             }
         }

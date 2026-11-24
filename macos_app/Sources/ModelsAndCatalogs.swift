@@ -1156,6 +1156,9 @@ struct SavedGoogleAccount: Codable, Identifiable, Hashable {
     var paid_balance: Double?
     var burn_rate_hourly: Double?
     var active_assignments: Int?
+    var accelerators: [String]?
+    var status_ok: Bool?
+    var error: String?
     var updated_at: Double?
 
     var id: String { email }
@@ -1170,6 +1173,10 @@ struct BridgeAuthStatusResponse: Codable {
     var burn_rate_hourly: Double?
     var active_assignments: Int?
     var accounts: [SavedGoogleAccount]?
+    var total_active_vms: Int?
+    var total_burn_rate_hourly: Double?
+    var total_paid_balance: Double?
+    var checked_at: Double?
     var message: String?
     var warning: String?
     var error: String?

@@ -92,15 +92,28 @@ struct MainStudioView: View {
         .sheet(isPresented: $vm.showAddCustomModelSheet) {
             AddCustomHFModelMacSheet(vm: vm)
         }
+        .sheet(isPresented: $vm.showMultiAccountWakeSheet) {
+            MultiAccountWakeSheet(vm: vm)
+        }
         .onAppear {
             if !UserDefaults.standard.bool(forKey: "hasSeenOnboardingGuide_v1") {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
                     vm.openOnboardingGuide(step: 0)
                 }
             }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+                Task { await vm.consumePendingAutoWakeIfNeeded() }
+            }
         }
         .onReceive(NotificationCenter.default.publisher(for: .openEasyColabGuide)) { _ in
             vm.openOnboardingGuide(step: 0)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .easyColabTriggerAutoWake)) { note in
+            let reqEmail = (note.userInfo?["email"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            let curEmail = (vm.boundAccountEmail ?? vm.accountEmail).trimmingCharacters(in: .whitespacesAndNewlines)
+            if !reqEmail.isEmpty && reqEmail.caseInsensitiveCompare(curEmail) == .orderedSame {
+                Task { await vm.consumePendingAutoWakeIfNeeded() }
+            }
         }
         .alert(L("释放所有 Colab 实例？", "Release All Colab Instances?"), isPresented: $vm.showDisconnectConfirm) {
             Button(L("取消", "Cancel"), role: .cancel) {}
@@ -111,6 +124,29 @@ struct MainStudioView: View {
             Text(L(
                 "账号下所有运行中的 Colab GPU 实例将被销毁，计费立即归零。",
                 "All active Colab GPU runtimes under your account will be terminated and CU billing will stop immediately."
+            ))
+        }
+        .alert(
+            L("释放指定账号下的云端实例？", "Release Cloud VMs for Account?"),
+            isPresented: Binding(
+                get: { vm.pendingStopAccountEmail != nil },
+                set: { if !$0 { vm.pendingStopAccountEmail = nil } }
+            )
+        ) {
+            Button(L("取消", "Cancel"), role: .cancel) {
+                vm.pendingStopAccountEmail = nil
+            }
+            Button(L("释放实例", "Stop VMs"), role: .destructive) {
+                if let target = vm.pendingStopAccountEmail {
+                    vm.pendingStopAccountEmail = nil
+                    Task { await vm.stopAccountRemoteVMs(target) }
+                }
+            }
+        } message: {
+            let target = vm.pendingStopAccountEmail ?? ""
+            Text(L(
+                "将终止账号 \(target) 下所有运行中的 Colab GPU 实例并使计费归零。",
+                "All active Colab GPU runtimes under \(target) will be terminated so CU billing stops immediately."
             ))
         }
         .navigationTitle(vm.accountEmail.isEmpty ? "EasyColab" : "EasyColab — \(vm.accountEmail)")
@@ -349,7 +385,11 @@ struct MainStudioView: View {
                 SidebarCard(
                     title: L("Colab 算力实例", "Colab Compute Instance"),
                     icon: "cpu",
-                    badge: vm.isConnected ? L("在线", "Online") : L("离线", "Offline")
+                    badge: vm.isConnected
+                        ? L("在线", "Online")
+                        : (vm.activeVMCount > 0
+                           ? L("运行中 · 未连", "Running · Unlinked")
+                           : (vm.cliLoggedIn ? L("已释放", "Released") : L("离线", "Offline")))
                 ) {
                     colabConnectionRows
                 }
@@ -417,7 +457,8 @@ struct MainStudioView: View {
                                     ForEach(vm.savedAccounts) { acc in
                                         let isActive = vm.cliLoggedIn && (acc.is_active == true || acc.email.caseInsensitiveCompare(vm.accountEmail) == .orderedSame)
                                         let balTag = acc.paid_balance != nil ? String(format: " · %.1f CU", acc.paid_balance!) : ""
-                                        let vmTag = (acc.active_assignments ?? 0) > 0 ? " · \(acc.active_assignments!) VM" : ""
+                                        let gpuPrefix = (acc.accelerators ?? []).isEmpty ? "" : "\((acc.accelerators ?? []).joined(separator: "/")) "
+                                        let vmTag = (acc.active_assignments ?? 0) > 0 ? " · \(gpuPrefix)\(acc.active_assignments!) VM" : ""
                                         Button {
                                             if !isActive {
                                                 Task { await vm.switchSavedGoogleAccount(acc.email) }
@@ -443,6 +484,14 @@ struct MainStudioView: View {
                                             systemImage: "macwindow.badge.plus"
                                         )
                                     }
+                                }
+                            }
+                            if vm.savedAccounts.count >= 2 {
+                                Divider()
+                                Button {
+                                    vm.showMultiAccountWakeSheet = true
+                                } label: {
+                                    Label(L("多账号同时申请 GPU...", "Multi-Account Wake..."), systemImage: "bolt.horizontal.circle")
                                 }
                             }
                             Divider()
@@ -551,7 +600,9 @@ struct MainStudioView: View {
                                 .font(.caption)
                         }
                         Text(vm.isWakingColab
-                             ? L("持续申请中...", "Retrying...")
+                             ? (vm.activeMultiWakeAccountCount > 1
+                                ? L("竞速申请中 (\(vm.activeMultiWakeAccountCount))...", "Racing (\(vm.activeMultiWakeAccountCount))...")
+                                : L("持续申请中...", "Retrying..."))
                              : L("唤醒实例并部署", "Wake & Deploy"))
                             .fontWeight(.medium)
                     }
@@ -572,6 +623,29 @@ struct MainStudioView: View {
                 }
             }
 
+            if vm.savedAccounts.count >= 2 && !vm.isWakingColab {
+                Button {
+                    vm.showMultiAccountWakeSheet = true
+                } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: "bolt.horizontal.circle")
+                            .font(.caption)
+                        Text(L(
+                            "多账号同时申请 (\(vm.savedAccounts.count) 个账号)",
+                            "Multi-Account Wake (\(vm.savedAccounts.count) Accounts)"
+                        ))
+                        .font(.caption.weight(.medium))
+                    }
+                    .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .help(L(
+                    "弹窗勾选参与账号，支持「竞速抢卡（抢到首个即停）」和「批量多开（各开一台）」",
+                    "Pick accounts to race for 1 GPU (first wins) or launch parallel GPUs per account"
+                ))
+            }
+
             Toggle(isOn: $vm.persistentWakeEnabled) {
                 Text(L("无卡时持续排队（3 次失败后每 60 秒重试）", "Auto-retry every 60s after 3 failures"))
                     .font(.caption2)
@@ -579,6 +653,10 @@ struct MainStudioView: View {
             }
             .toggleStyle(.checkbox)
             .disabled(vm.isWakingColab)
+        }
+
+        if vm.savedAccounts.count >= 2 {
+            MultiAccountLiveMonitorView(vm: vm)
         }
 
         HStack(spacing: 6) {
@@ -665,28 +743,84 @@ struct MainStudioView: View {
             }
 
             if !vm.isConnected && vm.activeVMCount > 0 {
-                HStack(spacing: 6) {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .font(.system(size: 10.5))
-                        .foregroundStyle(.orange)
-                    Text(L(
-                        "检测到 \(vm.activeVMCount) 台运行中 (\(fmt(vm.displayBurnRate)) CU/h)",
-                        "\(vm.activeVMCount) active VM(s) (\(fmt(vm.displayBurnRate)) CU/h)"
-                    ))
-                        .font(.system(size: 10.5, weight: .medium))
+                VStack(alignment: .leading, spacing: 5) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .font(.system(size: 10.5))
+                            .foregroundStyle(.orange)
+                        Text(L(
+                            "云端实例仍在运行 · 未释放 (\(vm.activeVMCount) VM · \(fmt(vm.displayBurnRate)) CU/h)",
+                            "Cloud VM Running · Not Released (\(vm.activeVMCount) VM · \(fmt(vm.displayBurnRate)) CU/h)"
+                        ))
+                        .font(.system(size: 10.5, weight: .semibold))
                         .foregroundStyle(.orange)
                         .lineLimit(1)
-                    Spacer(minLength: 4)
-                    Button(L("释放", "Stop")) {
-                        Task { await vm.disconnectRemoteColab() }
+                        Spacer(minLength: 0)
                     }
-                    .buttonStyle(.bordered)
-                    .controlSize(.mini)
-                    .tint(.red)
+
+                    Text(vm.lastConnectionError.isEmpty
+                         ? L("当前未连接到服务隧道，点击「恢复连接」可在不销毁显卡的前提下重连。", "Tunnel unlinked. Click 'Recover' to reconnect without terminating the GPU.")
+                         : vm.lastConnectionError)
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    HStack(spacing: 6) {
+                        Button {
+                            Task { await vm.recoverRunningColabConnection() }
+                        } label: {
+                            HStack(spacing: 4) {
+                                if vm.isRecoveringTunnel {
+                                    ProgressView().controlSize(.mini)
+                                } else {
+                                    Image(systemName: "arrow.triangle.2.circlepath")
+                                        .font(.system(size: 9.5, weight: .semibold))
+                                }
+                                Text(vm.isRecoveringTunnel ? L("恢复中...", "Recovering...") : L("恢复连接", "Recover"))
+                            }
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.mini)
+                        .disabled(vm.isRecoveringTunnel || vm.isWakingColab)
+
+                        Button(L("释放", "Stop")) {
+                            vm.showDisconnectConfirm = true
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.mini)
+                        .tint(.red)
+
+                        Spacer(minLength: 0)
+                    }
                 }
-                .padding(.horizontal, 7)
-                .padding(.vertical, 4)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 6)
                 .background(RoundedRectangle(cornerRadius: 6).fill(Color.orange.opacity(0.12)))
+                .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.orange.opacity(0.28), lineWidth: 1))
+            } else if !vm.isConnected && vm.cliLoggedIn && vm.activeVMCount == 0 {
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "checkmark.shield.fill")
+                            .font(.system(size: 10.5))
+                            .foregroundStyle(.green)
+                        Text(L(
+                            "云端无运行实例（已确认释放 · 0.00 CU/h 未计费）",
+                            "No Active Cloud VM (Confirmed Released · 0.00 CU/h)"
+                        ))
+                        .font(.system(size: 10.5, weight: .medium))
+                        .foregroundStyle(.secondary)
+                        Spacer(minLength: 0)
+                    }
+                    if !vm.lastConnectionError.isEmpty {
+                        Text(vm.lastConnectionError)
+                            .font(.system(size: 9.5))
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 5)
+                .background(RoundedRectangle(cornerRadius: 6).fill(Color.green.opacity(0.08)))
             }
 
             HStack(spacing: 6) {

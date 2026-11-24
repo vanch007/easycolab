@@ -40,8 +40,16 @@ class StudioViewModel: ObservableObject {
         let cur = accountEmail.trimmingCharacters(in: .whitespacesAndNewlines)
         return (cliLoggedIn && !cur.isEmpty) ? cur : nil
     }
-    private static func perAccountURLDefaultsKey(for email: String) -> String {
+    static func perAccountURLDefaultsKey(for email: String) -> String {
         "easycolab.serverURL.\(email.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())"
+    }
+
+    static func saveAdminPassword(_ password: String, for address: String) {
+        let key = normalizeServerURL(address)
+        guard !key.isEmpty else { return }
+        var passwords = UserDefaults.standard.dictionary(forKey: "adminPasswordsByURL") as? [String: String] ?? [:]
+        passwords[key] = password.isEmpty ? nil : password
+        UserDefaults.standard.set(passwords, forKey: "adminPasswordsByURL")
     }
 
     var cachedBridgePythonBin: String? = nil
@@ -144,6 +152,31 @@ class StudioViewModel: ObservableObject {
     @Published var showOAuthCodeInput: Bool = false
     @Published var oauthCodeText: String = ""
     @Published var officialCUBalance: Double? = nil
+    @Published var isRefreshingAllAccounts: Bool = false
+    @Published var lastAllAccountsSyncAt: Date? = nil
+    @Published var pendingStopAccountEmail: String? = nil
+
+    var totalSavedAccountsActiveVMs: Int {
+        guard !savedAccounts.isEmpty else { return activeVMCount }
+        return savedAccounts.reduce(0) { $0 + ($1.active_assignments ?? 0) }
+    }
+
+    var totalSavedAccountsBurnRate: Double {
+        guard !savedAccounts.isEmpty else { return officialBurnRate ?? 0.0 }
+        return savedAccounts.reduce(0.0) { $0 + ($1.burn_rate_hourly ?? 0.0) }
+    }
+
+    var totalSavedAccountsCUBalance: Double {
+        guard !savedAccounts.isEmpty else { return officialCUBalance ?? 0.0 }
+        return savedAccounts.reduce(0.0) { $0 + ($1.paid_balance ?? 0.0) }
+    }
+
+    var otherAccountsWithActiveVMs: [SavedGoogleAccount] {
+        let cur = accountEmail.trimmingCharacters(in: .whitespacesAndNewlines)
+        return savedAccounts.filter {
+            ($0.active_assignments ?? 0) > 0 && $0.email.caseInsensitiveCompare(cur) != .orderedSame
+        }
+    }
 
     func formattedAccountEmail(_ rawEmail: String) -> String {
         let raw = rawEmail.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -170,6 +203,8 @@ class StudioViewModel: ObservableObject {
     @Published var isWakingColab: Bool = false {
         didSet { syncMacOSRuntimeActivityAssertion() }
     }
+    @Published var showMultiAccountWakeSheet: Bool = false
+    @Published var activeMultiWakeAccountCount: Int = 0
     @Published var persistentWakeEnabled: Bool = {
         if UserDefaults.standard.object(forKey: "easycolabPersistentWakeEnabled") == nil {
             return true
@@ -185,6 +220,8 @@ class StudioViewModel: ObservableObject {
     @Published var isConnected: Bool = false {
         didSet { syncMacOSRuntimeActivityAssertion() }
     }
+    @Published var lastConnectionError: String = ""
+    @Published var isRecoveringTunnel: Bool = false
     @Published var gpuName: String = L(StudioViewModel.defaultGpuNameZh, StudioViewModel.defaultGpuNameEn) {
         didSet { let c = stripEmoji(gpuName); if c != gpuName { gpuName = c } }
     }
@@ -1099,6 +1136,7 @@ class StudioViewModel: ObservableObject {
         let touchSuffix = shouldTouchActivity ? "&touch=1" : ""
         guard !base.isEmpty,
               let url = URL(string: "\(base)/minimax_api/status?model_id=\(selectedModelId)\(touchSuffix)") else {
+            lastConnectionError = ""
             if !silent {
                 statusMessage = L(
                     "请先填入服务地址，或点击左侧「唤醒实例并部署」。",
@@ -1124,36 +1162,68 @@ class StudioViewModel: ObservableObject {
             let (data, resp) = try await adminSession.data(for: req)
             let statusCode = (resp as? HTTPURLResponse)?.statusCode ?? 0
 
+            if statusCode == 401 {
+                let authReason = L(
+                    "认证失败 (HTTP 401)：本地管理密码与云端服务不匹配，请点击「恢复连接」同步隧道。",
+                    "Auth failed (HTTP 401): password mismatch — click Recover."
+                )
+                lastConnectionError = authReason
+                consecutiveStatusFailures += 1
+                if !silent || consecutiveStatusFailures >= 3 {
+                    resetStaleRemoteRuntimeState(reason: authReason)
+                    if !silent { statusMessage = authReason }
+                }
+                return
+            }
+
             if statusCode == 404 {
+                let err404 = activeVMCount > 0
+                    ? L(
+                        "公网隧道已失效 (HTTP 404)：云端实例仍在运行，请点击「恢复连接」无损重连。",
+                        "Tunnel expired (HTTP 404): cloud VM is still running — click Recover."
+                    )
+                    : L(
+                        "服务地址失效 (HTTP 404)：Gradio 隧道已停止或实例已释放。",
+                        "Endpoint gone (HTTP 404): Gradio tunnel stopped or runtime released."
+                    )
+                lastConnectionError = err404
                 // 生成视频高负载期间单次 404 可能为 Gradio FRP 隧道瞬断，需连续多次确认才判定进程已停止
                 consecutiveStatusFailures += (isGenerating ? 1 : 2)
                 if !silent || consecutiveStatusFailures >= 6 {
                     consecutiveStatusFailures = 0
                     resetStaleRemoteRuntimeState(
                         reason: L(
-                            "云端 Colab 推理服务已停止（可能因显存溢出或实例释放），已自动重置本地显存状态；请点击左侧「唤醒实例并部署」重新启动。",
-                            "Cloud Colab server has stopped (OOM or runtime released). Local VRAM state reset; click 'Wake & Deploy' on the left to restart."
+                            "云端 Colab 推理服务已停止（可能因显存溢出或实例释放），已自动重置本地显存状态；请点击左侧「唤醒实例并部署」或「恢复连接」。",
+                            "Cloud Colab server stopped or tunnel expired. Local VRAM state reset; click 'Wake & Deploy' or 'Recover'."
                         )
                     )
+                    if !silent { statusMessage = err404 }
                 }
                 return
             }
 
             guard statusCode == 200 else {
+                let httpErr = (statusCode == 502 || statusCode == 503 || statusCode == 504)
+                    ? L(
+                        "隧道网关繁忙 (HTTP \(statusCode))：服务启动中或代理波动，可重试或点「恢复连接」。",
+                        "Tunnel gateway busy (HTTP \(statusCode)): server starting or proxy blip."
+                    )
+                    : L(
+                        "服务端返回异常 HTTP \(statusCode)，可点「恢复连接」探测隧道。",
+                        "Server returned HTTP \(statusCode) — click Recover to probe."
+                    )
+                lastConnectionError = httpErr
                 consecutiveStatusFailures += 1
                 let failureLimit = isGenerating ? 8 : 5
                 if !silent || consecutiveStatusFailures >= failureLimit {
-                    resetStaleRemoteRuntimeState(
-                        reason: L(
-                            "无法连接至 Colab 服务端 (HTTP \(statusCode))，实例可能已关闭或网络中断。",
-                            "Unable to reach Colab server (HTTP \(statusCode)). Runtime may be stopped or network disconnected."
-                        )
-                    )
+                    resetStaleRemoteRuntimeState(reason: httpErr)
+                    if !silent { statusMessage = httpErr }
                 }
                 return
             }
 
             consecutiveStatusFailures = 0
+            lastConnectionError = ""
             let decoded = try JSONDecoder().decode(ColabStatusResponse.self, from: data)
             applyStatusResponse(decoded)
 
@@ -1176,18 +1246,29 @@ class StudioViewModel: ObservableObject {
                 }
             }
         } catch {
+            let errText: String
+            if let urlErr = error as? URLError, urlErr.code == .userAuthenticationRequired {
+                errText = L(
+                    "缺少管理密码或服务地址无效，请点击「恢复连接」重新同步。",
+                    "Missing management password or invalid URL — click Recover."
+                )
+            } else {
+                errText = L(
+                    "连接失败：\(error.localizedDescription)",
+                    "Connection failed: \(error.localizedDescription)"
+                )
+            }
+            lastConnectionError = errText
             consecutiveStatusFailures += 1
             let failureLimit = isGenerating ? 8 : 5
             if !silent {
-                resetStaleRemoteRuntimeState(reason: L(
-                    "连接失败: \(error.localizedDescription)",
-                    "Connection failed: \(error.localizedDescription)"
-                ))
+                resetStaleRemoteRuntimeState(reason: errText)
+                statusMessage = errText
             } else if consecutiveStatusFailures >= failureLimit && isConnected {
                 resetStaleRemoteRuntimeState(
                     reason: L(
-                        "与 Colab 服务端连接中断，已重置本地常驻状态；可点击「连接」重试或「唤醒实例并部署」。",
-                        "Disconnected from Colab server; local VRAM state reset. Click 'Connect' to retry or 'Wake & Deploy'."
+                        "与 Colab 服务端连接中断，已重置本地常驻状态；可点击「连接」重试或「恢复连接」。",
+                        "Disconnected from Colab server; local VRAM state reset. Click 'Connect' or 'Recover'."
                     )
                 )
             }
