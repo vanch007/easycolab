@@ -35,6 +35,24 @@
 - **Shared VAEs**: same Video/Audio VAEs.
 - **TARA Defaults**: `w=0.20s`, `f=0.25s`, `strength=2.0`, `max_penalty=6.0`, `attention_backend="flash partitions (no compile)"`, **8 steps** (`Euler / simple`, `CFG=1.0`), 24fps guide video grid.
 
+### B3. Video Super-Resolution ComfyUI Pack: `seedvr2_upscaler` (~17.0 GB)
+
+- **Main DiT (default)**: `numz/SeedVR2_comfyUI` -> `seedvr2_ema_7b_fp16.safetensors` (`models/SEEDVR2/`, 16.5 GB)
+- **Optional DiT Variants** (via `comfy-download-weight --subfolder SEEDVR2`): `seedvr2_ema_7b_sharp_fp16.safetensors` (16.5 GB, ultra-sharp landscapes/CG), `seedvr2_ema_3b_fp16.safetensors` (6.8 GB, fast)
+- **Shared VAE**: `numz/SeedVR2_comfyUI` -> `ema_vae_fp16.safetensors` (`models/SEEDVR2/`, 0.48 GB)
+- **Custom Nodes (auto-cloned)**: `ComfyUI-SeedVR2_VideoUpscaler` (`https://github.com/numz/ComfyUI-SeedVR2_VideoUpscaler.git`) -> `SeedVR2LoadDiTModel`, `SeedVR2LoadVAEModel`, `SeedVR2VideoUpscaler`
+- **Preset Workflow**: `12_SeedVR2_7B_FP16_视频4K超分修复.json`
+- **PRO 6000 Defaults**: `blocks_to_swap=0`, `offload_device="none"`, `cache_model=False`, `encode_tiled=False`, adaptive VAE decoding (`decode_tiled=False` at `<=1080p`, `decode_tiled=True` with `decode_tile_size=2048` at `>=1440p` to prevent 4K OOM without 1024px slowdown), `batch_size=17` (snaps to `4n+1`), `temporal_overlap=2`, `color_correction="lab"`, preserves source FPS (`VHS_VideoInfo` output 5) and audio (`VHS_LoadVideo` output 2).
+
+### B4. Fast Streaming Video Super-Resolution Pack: `recavsr_upscaler` (~17.3 GB)
+
+- **Main Transformer (BF16 default)**: `kopper/ReCaVSR` -> `transformer.safetensors` (`models/recavsr/`, 10.6 GB)
+- **Fast INT8 ConvRot Variant**: `PedroMarinhoDev/ReCaVSR-ComfyUI` -> `recavsr/transformer_int8_convrot.safetensors` (`models/recavsr/`, 6.3 GB, ~1.8× faster)
+- **FlashDecoder & Prompt Embed**: `kopper/ReCaVSR` -> `flashdecoder.safetensors` (0.23 GB) & `prompt.safetensors` (0.17 GB) in `models/recavsr/`
+- **Custom Nodes (auto-cloned)**: `ComfyUI-ReCaVSR` (`https://github.com/PedroMarinhoDev/ComfyUI-ReCaVSR.git`) -> `ReCaVSRLoader`, `ReCaVSRUpscale`
+- **Preset Workflow**: `13_ReCaVSR_Wan2.2_极速流式4K超分.json` (`LoadVideo -> ReCaVSRLoader -> ReCaVSRUpscale -> SaveVideo`)
+- **Recommended Settings**: `scale=2.0` for 1056×608 / 720p AI clips (~2K), `scale=4.0` for 480p/540p clips (native 4× 4K), `decoder="flashdecoder"`, `kernels="fast"`, `color_fix="none"`, `encoder="auto"` (NVENC hardware encode + audio/FPS passthrough).
+
 ### C. Official ComfyUI Pack: `minimax_h3_i2v_flf2v` (~39.1 GB)
 
 - **Main DiT**: `Comfy-Org/MiniMax-H3` -> `minimax_h3_fl2va_pruned_int8_convrot.safetensors` (19.53 GiB)

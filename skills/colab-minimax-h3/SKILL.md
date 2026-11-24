@@ -16,6 +16,8 @@ Use `./scripts/colab_h3_cli.py` for the listed runtime, model, and generation co
 | Engine / Pack ID | Where It Runs | Uncensored | Modalities & Key Strengths | Speed / Steps | Recommended GPU |
 |---|---|---|---|---|---|
 | `minimax_h3_ref2va_tara` (`Ref2VA + TARA`) | ComfyUI (`11`) / Native App | Standard (Uncensored prompt) | **Motion Transfer**: guide video (`<Video 1>`) + 1–9 refs + `ComfyUI-BFSNodes` (`BFSMiniMaxH3NativeTemporal`) + `minimax_h3_motion_transfer_tara_v1.0_ref2va.safetensors` | **4–8 steps** (`Euler / simple`) | G4 96GB / A100 80GB |
+| `recavsr_upscaler` (`ReCaVSR Wan2.2-5B`) | ComfyUI (`13`) / Native App | N/A (Super-Resolution) | **Fast Streaming 4K Upscaler** (~15× faster than SeedVR2): `bf16`/`int8_convrot` + `FlashDecoder`, `1.5×/2×/4×`, zero OOM on long clips | **1 step / block** (`21+8` streaming) | G4 96GB / 24GB+ (17.3 GB weights) |
+| `seedvr2_upscaler` (`SeedVR2 7B FP16`) | ComfyUI (`12`) / Native App | N/A (Super-Resolution) | **Heavy Restoration Upscaler**: `7B FP16` / `7B-sharp FP16` / `3B FP16`, arbitrary short-edge `1080p/2K/4K`, best for badly degraded footage | **1 step** (full 3D VAE) | G4 96GB PRO 6000 (17 GB weights) |
 | `minimax_h3_10eros_max` (`TenStrip/10Eros-Max`) | ComfyUI (`07` / `08`) | Yes (`Heretic NVFP4` + `10Eros-Max v1.0`) | Up to **9 ref images** (`<Picture 1..9>`), up to **3 ref audios** (`<Audio 1..3>`), first/last frame (`FLF2V`) | **8 steps** (`LCM / simple`) | G4 96GB / A100 80GB (48GB+ VRAM) |
 | `minimax_h3_sulphur3` (`SulphurAI/Sulphur-3`) | ComfyUI (`09` / `10`) | Yes (`Heretic NVFP4` + `s3.safetensors`) | Full S3 backbone + **`s3_corrector.safetensors`** (fp32 2B velocity residual corrector) + auto-installed `ComfyUI-H3-Corrector` | **20 steps** (`Euler / simple`, `CFG=1`) | G4 96GB / A100 80GB |
 | `minimax_h3_i2v_flf2v` (Official Turbo) | ComfyUI (`03` / `04`) | Standard | Official pruned int8 + 8-step Turbo LoRA, single-image & FLF2V with stereo audio | **4–8 steps** (`res_multistep / simple`) | G4 / A100 / L4 (with offload) |
@@ -35,6 +37,8 @@ Use `./scripts/colab_h3_cli.py` for the listed runtime, model, and generation co
    - Or attach to an existing server: `./scripts/colab_h3_cli.py connect --url https://xxxx.gradio.live --password <pwd>`
 3. **Stage 2 — Install Pack or Load Native Model**:
    - ComfyUI packs:
+     - `./scripts/colab_h3_cli.py comfy-install-pack --pack recavsr_upscaler --wait` (ReCaVSR Fast Streaming 4K Video Upscaler)
+     - `./scripts/colab_h3_cli.py comfy-install-pack --pack seedvr2_upscaler --wait` (SeedVR2 7B FP16 Heavy Restoration Upscaler)
      - `./scripts/colab_h3_cli.py comfy-install-pack --pack minimax_h3_ref2va_tara --wait` (Motion Transfer with TARA)
      - `./scripts/colab_h3_cli.py comfy-install-pack --pack minimax_h3_10eros_max --wait`
      - `./scripts/colab_h3_cli.py comfy-install-pack --pack minimax_h3_sulphur3 --wait`
@@ -42,7 +46,11 @@ Use `./scripts/colab_h3_cli.py` for the listed runtime, model, and generation co
      - `./scripts/colab_h3_cli.py download-model --model minimax_h3 --wait`
      - `./scripts/colab_h3_cli.py load-model --model minimax_h3 --wait`
 4. **Stage 3 — Execute Generation & Auto-Sleep (Default)**:
-   - The generation commands (`comfy-run-tara`, `comfy-run-10eros`, `comfy-run-sulphur3`, `generate-video`, `generate-image`) download successful outputs. With default cleanup enabled, they sync ComfyUI to Drive (if applicable), disconnect, and run `stop-all` in `finally`, including on errors.
+   - The generation commands (`comfy-upscale-recavsr`, `comfy-upscale`, `comfy-run-tara`, `comfy-run-10eros`, `comfy-run-sulphur3`, `generate-video`, `generate-image`) download successful outputs. With default cleanup enabled, they sync ComfyUI to Drive (if applicable), disconnect, and run `stop-all` in `finally`, including on errors.
+   - Fast Streaming Video Super-Resolution (`ReCaVSR + FlashDecoder`, 2× for 720p→2K or 4× for 480p→4K):
+     `./scripts/colab_h3_cli.py comfy-upscale-recavsr --video ./outputs/clip.mp4 --scale 2.0 --transformer transformer.safetensors --out ./outputs`
+   - Deep Restoration Video Super-Resolution (`SeedVR2 7B FP16` to 1080p/2K/4K, adaptive VAE decode tile `2048` on 2K/4K):
+     `./scripts/colab_h3_cli.py comfy-upscale --video ./outputs/clip.mp4 --resolution 2160 --decode-tile-size 2048 --model seedvr2_ema_7b_fp16.safetensors --out ./outputs`
    - Motion Transfer (`Ref2VA + TARA`):
      `./scripts/colab_h3_cli.py comfy-run-tara --ref-video dance.mp4 --ref-image target_char.png --prompt "<Subject 1>: person in <Picture 1>. Replace character in <Video 1> with <Subject 1>..." --out ./outputs`
    - Multi-image + voice reference (`10Eros-Max`):
@@ -62,7 +70,7 @@ Use `./scripts/colab_h3_cli.py` for the listed runtime, model, and generation co
 | Auth & VM | `auth-status`, `auth-url`, `auth-code`, `wake`, `connect`, `config-idle`, `keepalive`, `disconnect`, `stop-all` | `wake` sets `--idle-minutes 10` watchdog; saves active URL + Basic Auth password (`0600`) |
 | Native H3 | `status`, `download-model`, `load-model`, `unload-model`, `generate-video`, `generate-image` | Talks to `/minimax_api/*`; generation commands **auto-sleep on finish/error** unless `--keep-alive` is passed |
 | ComfyUI | `comfy-status`, `comfy-start`, `comfy-stop`, `comfy-free-vram`, `comfy-sync-drive`, `comfy-install-pack`, `comfy-download-weight`, `comfy-download-output` | Uses EasyColab NVMe hybrid symlinks, `custom_nodes_bundle.tar.gz`, and G4 `--highvram --disable-mmap --fast` |
-| Direct H3 Pipelines | `comfy-run-tara`, `comfy-run-10eros`, `comfy-run-sulphur3` | Uploads inputs, runs API graph, downloads MP4, **auto-syncs & auto-sleeps on finish/error** unless `--keep-alive` is passed; supports `--dry-run` |
+| Direct H3 Pipelines | `comfy-upscale-recavsr`, `comfy-upscale`, `comfy-run-tara`, `comfy-run-10eros`, `comfy-run-sulphur3` | Uploads inputs, runs API graph, downloads MP4, **auto-syncs & auto-sleeps on finish/error** unless `--keep-alive` is passed; supports `--dry-run` |
 | 0-CCU Local | `snap-frames`, `extract-voice-seed` | Offline `17k+5` calculator & `ffmpeg` 32kHz stereo voice seed extractor |
 
 ## Critical Production Rules & Gotchas
@@ -79,10 +87,14 @@ Use `./scripts/colab_h3_cli.py` for the listed runtime, model, and generation co
 4. **Sulphur-3 + `s3_corrector` Rules**:
    - Use `s3.safetensors` (not `s3_w4a8.safetensors`, which requires PyTorch `cu130` kernels).
    - `LoadH3Corrector` stays in **fp32** (~8GB VRAM); `CFG` is fixed at `1.0` (negative prompt ignored). Set `strength=0` to A/B test raw S3 without corrector.
-5. **Preventing Camera-Turn & Axis-Crossing Artifacts**:
+5. **SeedVR2 7B Video Upscaler Rules (PRO 6000 96GB)**:
+   - Always keep `cache_model=False` when `offload_device="none"` (the node raises an error if `cache_model=True` with `offload_device="none"`).
+   - Keep `decode_tiled=False` at `<=1080p` for maximum speed; for `>=1440p` (`2K`/`4K`), enable `decode_tiled=True` with `--decode-tile-size 2048` (`overlap=128`) so 96GB VRAM avoids Phase 3 OOM without 1024px slowdown.
+   - `batch_size` auto-snaps to `4n+1` (`13`, `17`, `21`).
+6. **Preventing Camera-Turn & Axis-Crossing Artifacts**:
    - In 90° profile dialogue, use a matched 90° profile reference image; avoid plural words (`eyes`, `brows`) and negative phrasing (`without turning toward camera`), which activate those tokens in Qwen3-VL.
    - Lock screen positions explicitly (`<Picture 1> on screen-left facing right`), use **1 camera move per 5s clip**, and end with a silent closed-mouth hold + `No subtitles`.
-6. **Security & Auto-Sleep Cost Hygiene**:
+7. **Security & Auto-Sleep Cost Hygiene**:
    - Never share `*.gradio.live`, `*.trycloudflare.com`, or admin passwords in screenshots or logs.
    - The generation CLI's default `finally` cleanup calls `disconnect` and `stop-all`, including on errors. Direct ComfyUI graph submission does not invoke that CLI wrapper. Check scope and ownership before using the default cleanup.
 

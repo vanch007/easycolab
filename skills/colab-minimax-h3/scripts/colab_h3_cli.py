@@ -219,8 +219,55 @@ def _http_json(
 
 def _http_download(url: str, dst_path: Path, password: str = "", base_url: str = "", timeout: int = 180) -> Path:
     dst_path.parent.mkdir(parents=True, exist_ok=True)
-    req = urllib.request.Request(url, headers=_auth_headers(password, base_url))
     tmp = dst_path.with_suffix(dst_path.suffix + ".part")
+    headers = _auth_headers(password, base_url)
+    total_size = 0
+    supports_range = False
+    try:
+        probe_req = urllib.request.Request(url, headers={**headers, "Range": "bytes=0-0"})
+        with urllib.request.urlopen(probe_req, timeout=min(25, timeout)) as probe_resp:
+            cr = probe_resp.headers.get("Content-Range") or ""
+            m = re.match(r"bytes\s+0-0/(\d+)", cr.strip(), re.IGNORECASE)
+            if probe_resp.status == 206 and m:
+                total_size = int(m.group(1))
+                supports_range = total_size >= 2 * 1024 * 1024
+    except Exception:
+        supports_range = False
+
+    if supports_range and total_size > 0:
+        from concurrent.futures import ThreadPoolExecutor
+
+        chunk_size = max(1024 * 1024, (total_size + 5) // 6)
+        ranges = []
+        pos = 0
+        while pos < total_size:
+            end = min(total_size - 1, pos + chunk_size - 1)
+            ranges.append((pos, end))
+            pos = end + 1
+        try:
+            with open(tmp, "wb") as wf:
+                wf.truncate(total_size)
+
+            def _fetch_part(span: Tuple[int, int]) -> None:
+                start, end = span
+                part_req = urllib.request.Request(url, headers={**headers, "Range": f"bytes={start}-{end}"})
+                with urllib.request.urlopen(part_req, timeout=timeout) as resp:
+                    if resp.status not in (200, 206):
+                        raise RuntimeError(f"Unexpected HTTP {resp.status} for byte range {start}-{end}")
+                    data = resp.read()
+                with open(tmp, "r+b") as wf:
+                    wf.seek(start)
+                    wf.write(data)
+
+            with ThreadPoolExecutor(max_workers=min(6, len(ranges))) as pool:
+                list(pool.map(_fetch_part, ranges))
+            if tmp.stat().st_size == total_size:
+                os.replace(tmp, dst_path)
+                return dst_path
+        except Exception:
+            pass
+
+    req = urllib.request.Request(url, headers=headers)
     with urllib.request.urlopen(req, timeout=timeout) as resp, open(tmp, "wb") as wf:
         shutil.copyfileobj(resp, wf, length=1024 * 1024)
     os.replace(tmp, dst_path)
@@ -649,6 +696,163 @@ def _build_ref2va_tara_api_prompt(
     return graph
 
 
+def _snap_seedvr2_batch_size(batch_size: int) -> int:
+    n = max(1, int(batch_size or 17))
+    k = max(0, round((n - 1) / 4.0))
+    return 4 * k + 1
+
+
+def _build_seedvr2_upscale_api_prompt(
+    video_name: str,
+    model_name: str,
+    resolution: int,
+    max_resolution: int,
+    batch_size: int,
+    temporal_overlap: int,
+    color_correction: str,
+    keep_audio: bool,
+    attention_mode: str,
+    seed: int,
+    prefix: str,
+    decode_tile_size: int = 2048,
+) -> Dict[str, Any]:
+    actual_seed = seed if seed >= 0 else secrets.randbelow(2**31 - 1)
+    snapped_batch = _snap_seedvr2_batch_size(batch_size)
+    res = max(256, (int(resolution or 1080) // 2) * 2)
+    max_res = max(0, (int(max_resolution or 0) // 2) * 2)
+    decode_tiled = res >= 1440
+    tile_sz = max(512, (int(decode_tile_size or 2048) // 64) * 64)
+
+    create_inputs: Dict[str, Any] = {
+        "images": ["4", 0],
+        "fps": ["5", 5],
+    }
+    if keep_audio:
+        create_inputs["audio"] = ["1", 2]
+
+    return {
+        "1": {
+            "class_type": "VHS_LoadVideo",
+            "inputs": {
+                "video": video_name,
+                "force_rate": 0.0,
+                "custom_width": 0,
+                "custom_height": 0,
+                "frame_load_cap": 0,
+                "skip_first_frames": 0,
+                "select_every_nth": 1,
+            },
+        },
+        "2": {
+            "class_type": "SeedVR2LoadDiTModel",
+            "inputs": {
+                "model": model_name,
+                "device": "cuda:0",
+                "blocks_to_swap": 0,
+                "swap_io_components": False,
+                "offload_device": "none",
+                "cache_model": False,
+                "attention_mode": attention_mode,
+            },
+        },
+        "3": {
+            "class_type": "SeedVR2LoadVAEModel",
+            "inputs": {
+                "model": "ema_vae_fp16.safetensors",
+                "device": "cuda:0",
+                "encode_tiled": False,
+                "encode_tile_size": 1024,
+                "encode_tile_overlap": 128,
+                "decode_tiled": decode_tiled,
+                "decode_tile_size": tile_sz,
+                "decode_tile_overlap": 128,
+                "tile_debug": "false",
+                "offload_device": "none",
+                "cache_model": False,
+            },
+        },
+        "4": {
+            "class_type": "SeedVR2VideoUpscaler",
+            "inputs": {
+                "image": ["1", 0],
+                "dit": ["2", 0],
+                "vae": ["3", 0],
+                "seed": int(actual_seed) % (2**32 - 1),
+                "resolution": res,
+                "max_resolution": max_res,
+                "batch_size": snapped_batch,
+                "uniform_batch_size": True,
+                "temporal_overlap": max(0, min(16, int(temporal_overlap))),
+                "prepend_frames": 0,
+                "color_correction": color_correction,
+                "input_noise_scale": 0.0,
+                "latent_noise_scale": 0.0,
+                "offload_device": "none",
+                "enable_debug": False,
+            },
+        },
+        "5": {
+            "class_type": "VHS_VideoInfo",
+            "inputs": {"video_info": ["1", 3]},
+        },
+        "6": {
+            "class_type": "CreateVideo",
+            "inputs": create_inputs,
+        },
+        "7": {
+            "class_type": "SaveVideo",
+            "inputs": {
+                "video": ["6", 0],
+                "filename_prefix": prefix,
+                "format": "auto",
+                "codec": "auto",
+            },
+        },
+    }
+
+
+def _build_recavsr_upscale_api_prompt(
+    video_name: str,
+    transformer: str,
+    scale: float,
+    color_fix: str,
+    kernels: str,
+    encoder: str,
+    seed: int,
+    prefix: str,
+) -> Dict[str, Any]:
+    actual_seed = seed if seed >= 0 else secrets.randbelow(2**31 - 1)
+    scale_val = max(0.5, min(8.0, round(float(scale or 2.0), 2)))
+    return {
+        "1": {"class_type": "LoadVideo", "inputs": {"file": video_name}},
+        "2": {"class_type": "ReCaVSRLoader", "inputs": {"transformer": transformer}},
+        "3": {
+            "class_type": "ReCaVSRUpscale",
+            "inputs": {
+                "model": ["2", 0],
+                "video": ["1", 0],
+                "scale": scale_val,
+                "color_fix": color_fix,
+                "seed": int(actual_seed) % (2**32 - 1),
+                "decoder": "flashdecoder",
+                "kernels": kernels,
+                "kv_offload": False,
+                "encoder": encoder,
+                "fps": 30.0,
+            },
+        },
+        "4": {
+            "class_type": "SaveVideo",
+            "inputs": {
+                "video": ["3", 0],
+                "filename_prefix": prefix,
+                "format": "auto",
+                "codec": "auto",
+            },
+        },
+    }
+
+
 def _submit_and_wait_comfy(comfy_url: str, password: str, graph: Dict[str, Any], out_dir: Path, timeout_s: int = 1800) -> List[str]:
     client_id = uuid.uuid4().hex
     res = _http_json(
@@ -704,7 +908,22 @@ def _submit_and_wait_comfy(comfy_url: str, password: str, graph: Dict[str, Any],
                 qs = urllib.parse.urlencode({"filename": fname, "subfolder": sub, "type": ftype})
                 dl_url = f"{comfy_url}/view?{qs}"
                 local_p = out_dir / fname
-                _http_download(dl_url, local_p, password=password, base_url=comfy_url, timeout=300)
+                downloaded = False
+                if ftype == "output":
+                    sess = _load_session()
+                    gradio_base = str(sess.get("url") or "").strip().rstrip("/")
+                    gradio_pw = str(sess.get("password") or password or "").strip()
+                    if gradio_base:
+                        rel = f"{sub.strip('/')}/{fname}" if sub.strip("/") else fname
+                        encoded_rel = urllib.parse.quote(rel.lstrip("/"), safe="/")
+                        gradio_url = f"{gradio_base}/minimax_api/comfyui/output_media/{encoded_rel}"
+                        try:
+                            _http_download(gradio_url, local_p, password=gradio_pw, base_url=gradio_base, timeout=300)
+                            downloaded = True
+                        except Exception:
+                            downloaded = False
+                if not downloaded:
+                    _http_download(dl_url, local_p, password=password, base_url=comfy_url, timeout=300)
                 saved_files.append(str(local_p))
                 _emit_app_log(f"ComfyUI 成片下载完成: {local_p}")
     return saved_files
@@ -1005,7 +1224,7 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     p_cip = sub.add_parser("comfy-install-pack", help="1-click install ComfyUI preset pack + custom nodes")
     p_cip.add_argument("--pack", required=True, choices=[
-        "minimax_h3_ref2va_tara", "minimax_h3_10eros_max", "minimax_h3_sulphur3",
+        "recavsr_upscaler", "seedvr2_upscaler", "minimax_h3_ref2va_tara", "minimax_h3_10eros_max", "minimax_h3_sulphur3",
         "minimax_h3_i2v_flf2v", "wan22_i2v_flf2v", "ltx23_flf2v", "hunyuan15_i2v_1080p",
     ])
     p_cip.add_argument("--no-auto-start", action="store_true")
@@ -1107,6 +1326,53 @@ def main(argv: Optional[List[str]] = None) -> int:
     p_tara.add_argument("--keep-alive", action="store_true", help="Keep Colab VM awake after this run (default: auto-sleep & release VM to save CU)")
     p_tara.add_argument("--dry-run", action="store_true")
 
+    p_up = sub.add_parser("comfy-upscale", help="Upscale a video using SeedVR2 7B/3B FP16 via ComfyUI API (PRO 6000 untiled)")
+    p_up.add_argument("--video", required=True, help="Source video path (.mp4/.mov/.webm)")
+    p_up.add_argument(
+        "--model",
+        default="seedvr2_ema_7b_fp16.safetensors",
+        choices=[
+            "seedvr2_ema_7b_fp16.safetensors",
+            "seedvr2_ema_7b_sharp_fp16.safetensors",
+            "seedvr2_ema_3b_fp16.safetensors",
+            "seedvr2_ema_7b_fp8_e4m3fn_mixed_block35_fp16.safetensors",
+            "seedvr2_ema_7b_sharp_fp8_e4m3fn_mixed_block35_fp16.safetensors",
+            "seedvr2_ema_3b_fp8_e4m3fn.safetensors",
+        ],
+    )
+    p_up.add_argument("--resolution", type=int, default=1080, help="Target short-edge resolution (e.g. 1080, 1440, 2160)")
+    p_up.add_argument("--max-resolution", type=int, default=0, help="Optional long-edge cap (0 = disabled)")
+    p_up.add_argument("--batch-size", type=int, default=17, help="Frames per batch (auto-snapped to 4n+1 grid)")
+    p_up.add_argument("--temporal-overlap", type=int, default=2, help="Temporal overlap frames between batches (0-16)")
+    p_up.add_argument("--color-correction", default="lab", choices=["lab", "wavelet", "wavelet_adaptive", "hsv", "adain", "none"])
+    p_up.add_argument("--no-audio", action="store_true", help="Drop original audio instead of muxing into upscaled output")
+    p_up.add_argument("--attention-mode", default="sdpa", choices=["sdpa", "flash_attn_2", "flash_attn_3", "sageattn_2", "sageattn_3"])
+    p_up.add_argument("--decode-tile-size", type=int, default=2048, help="VAE decode tile size when resolution >= 1440 (default: 2048 for PRO 6000)")
+    p_up.add_argument("--seed", type=int, default=-1)
+    p_up.add_argument("--prefix", default="video/SeedVR2_CLI")
+    p_up.add_argument("--comfy-url", default="")
+    p_up.add_argument("--out", default="./outputs")
+    p_up.add_argument("--keep-alive", action="store_true", help="Keep Colab VM awake after this run (default: auto-sleep & release VM to save CU)")
+    p_up.add_argument("--dry-run", action="store_true")
+
+    p_rc = sub.add_parser("comfy-upscale-recavsr", help="Fast 1-step streaming video upscale via ReCaVSR + FlashDecoder (~15x faster 4K)")
+    p_rc.add_argument("--video", required=True, help="Source video path (.mp4/.mov/.webm)")
+    p_rc.add_argument(
+        "--transformer",
+        default="transformer.safetensors",
+        choices=["transformer.safetensors", "transformer_int8_convrot.safetensors"],
+    )
+    p_rc.add_argument("--scale", type=float, default=2.0, help="Upscale multiplier (recommended: 2.0 for 720p->2K, 4.0 for 480p->4K)")
+    p_rc.add_argument("--color-fix", default="none", choices=["none", "adain", "wavelet"])
+    p_rc.add_argument("--kernels", default="fast", choices=["fast", "exact"])
+    p_rc.add_argument("--encoder", default="auto", choices=["auto", "hevc nvenc", "h264 nvenc", "h264"])
+    p_rc.add_argument("--seed", type=int, default=-1)
+    p_rc.add_argument("--prefix", default="video/ReCaVSR_CLI")
+    p_rc.add_argument("--comfy-url", default="")
+    p_rc.add_argument("--out", default="./outputs")
+    p_rc.add_argument("--keep-alive", action="store_true", help="Keep Colab VM awake after this run (default: auto-sleep & release VM to save CU)")
+    p_rc.add_argument("--dry-run", action="store_true")
+
     args = parser.parse_args(argv)
     if args.cmd not in ("snap-frames",):
         _emit_app_log(f"[Skill/CLI] >>> 开始执行命令: {args.cmd}")
@@ -1143,7 +1409,7 @@ def _execute_cli_command(args: argparse.Namespace) -> int:
         cmd_connect(args)
         return 0
 
-    if args.cmd in ("comfy-run-10eros", "comfy-run-sulphur3"):
+    if args.cmd in ("comfy-run-10eros", "comfy-run-sulphur3", "comfy-run-tara", "comfy-upscale", "comfy-upscale-recavsr"):
         if args.dry_run:
             base_url, password = "", ""
         else:
@@ -1430,6 +1696,74 @@ def _execute_cli_command(args: argparse.Namespace) -> int:
             if not args.keep_alive:
                 sleep_report = _auto_sleep_runtime(base_url, password or cf_pw, sync_comfy=bool(base_url))
         _emit_app_log(f"Ref2VA TARA 动作复刻完成，输出文件: {', '.join(files)}")
+        print(json.dumps({"ok": True, "files": files, "auto_sleep": sleep_report}, ensure_ascii=False, indent=2))
+        return 0
+
+    if args.cmd == "comfy-upscale":
+        if not Path(args.video).expanduser().is_file():
+            raise FileNotFoundError(f"Source video not found: {args.video}")
+        if args.dry_run:
+            vid_name = Path(args.video).name
+            graph = _build_seedvr2_upscale_api_prompt(
+                vid_name, args.model, args.resolution, args.max_resolution,
+                args.batch_size, args.temporal_overlap, args.color_correction,
+                not args.no_audio, args.attention_mode, args.seed, args.prefix,
+                decode_tile_size=args.decode_tile_size,
+            )
+            print(json.dumps({"auto_sleep_after_run": not args.keep_alive, "prompt": graph}, ensure_ascii=False, indent=2))
+            return 0
+        sleep_report = {"triggered": False, "reason": "keep_alive"}
+        files = []
+        cf_pw = password
+        try:
+            comfy_url, cf_pw = _resolve_comfy_url(args)
+            _emit_app_log(
+                f"提交 SeedVR2 视频超分 ({args.model}, 目标短边={args.resolution}p, batch={_snap_seedvr2_batch_size(args.batch_size)}, 保留音轨={'ON' if not args.no_audio else 'OFF'})..."
+            )
+            vid_name = _comfy_upload_file(comfy_url, cf_pw, args.video)
+            graph = _build_seedvr2_upscale_api_prompt(
+                vid_name, args.model, args.resolution, args.max_resolution,
+                args.batch_size, args.temporal_overlap, args.color_correction,
+                not args.no_audio, args.attention_mode, args.seed, args.prefix,
+                decode_tile_size=args.decode_tile_size,
+            )
+            files = _submit_and_wait_comfy(comfy_url, cf_pw, graph, Path(args.out))
+        finally:
+            if not args.keep_alive:
+                sleep_report = _auto_sleep_runtime(base_url, password or cf_pw, sync_comfy=bool(base_url))
+        _emit_app_log(f"SeedVR2 视频超分完成，输出文件: {', '.join(files)}")
+        print(json.dumps({"ok": True, "files": files, "auto_sleep": sleep_report}, ensure_ascii=False, indent=2))
+        return 0
+
+    if args.cmd == "comfy-upscale-recavsr":
+        if not Path(args.video).expanduser().is_file():
+            raise FileNotFoundError(f"Source video not found: {args.video}")
+        if args.dry_run:
+            vid_name = Path(args.video).name
+            graph = _build_recavsr_upscale_api_prompt(
+                vid_name, args.transformer, args.scale, args.color_fix,
+                args.kernels, args.encoder, args.seed, args.prefix,
+            )
+            print(json.dumps({"auto_sleep_after_run": not args.keep_alive, "prompt": graph}, ensure_ascii=False, indent=2))
+            return 0
+        sleep_report = {"triggered": False, "reason": "keep_alive"}
+        files = []
+        cf_pw = password
+        try:
+            comfy_url, cf_pw = _resolve_comfy_url(args)
+            _emit_app_log(
+                f"提交 ReCaVSR 流式超分 ({args.transformer}, scale={args.scale}x, kernels={args.kernels}, FlashDecoder)..."
+            )
+            vid_name = _comfy_upload_file(comfy_url, cf_pw, args.video)
+            graph = _build_recavsr_upscale_api_prompt(
+                vid_name, args.transformer, args.scale, args.color_fix,
+                args.kernels, args.encoder, args.seed, args.prefix,
+            )
+            files = _submit_and_wait_comfy(comfy_url, cf_pw, graph, Path(args.out))
+        finally:
+            if not args.keep_alive:
+                sleep_report = _auto_sleep_runtime(base_url, password or cf_pw, sync_comfy=bool(base_url))
+        _emit_app_log(f"ReCaVSR 流式超分完成，输出文件: {', '.join(files)}")
         print(json.dumps({"ok": True, "files": files, "auto_sleep": sleep_report}, ensure_ascii=False, indent=2))
         return 0
 
