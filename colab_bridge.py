@@ -1923,16 +1923,7 @@ else:
         contents.upload(os.path.join(os.path.dirname(app_py_path), "runtime_auth.py"), "content/runtime_auth.py")
 
         stage = ".easycolab-management-" + uuid.uuid4().hex
-        with tempfile.TemporaryDirectory() as directory:
-            password_file = os.path.join(directory, "management")
-            with open(password_file, "w", encoding="ascii") as stream:
-                stream.write(password)
-            contents.upload(password_file, "content/" + stage)
-
-        restart_code = (
-            "ADMIN_STAGE = " + repr("/content/" + stage) + "\n"
-            + "INITIAL_IDLE_MINUTES = " + repr(initial_idle_minutes) + "\n"
-            + r"""
+        restart_body = r"""
 import os, sys, time, re, subprocess
 
 with open(ADMIN_STAGE, encoding="ascii") as stream:
@@ -1969,8 +1960,51 @@ else:
     tail = open(log_path, "r", errors="replace").read()[-600:] if os.path.exists(log_path) else "no log"
     print("RECOVER_ERROR: 重建隧道超时，日志尾部: " + tail, flush=True)
 """
-        )
-        outputs = _exec_on_session(restart_code, timeout=240)
+
+        def _run_restart_on_runtime(use_saved: bool):
+            def _on_kid(kid):
+                target_session.kernel_id = kid
+                state.store.add(target_session)
+
+            def _on_sid(sid):
+                target_session.session_id = sid
+                state.store.add(target_session)
+
+            rt = ColabRuntime(
+                target_session.url,
+                target_session.token,
+                session_name=target_session.name,
+                history=state.history,
+                kernel_id=target_session.kernel_id if use_saved else None,
+                session_id=target_session.session_id if use_saved else None,
+                on_kernel_started=_on_kid,
+                on_session_started=_on_sid,
+            )
+            try:
+                attempt_stage = ".easycolab-management-" + uuid.uuid4().hex
+                with tempfile.TemporaryDirectory() as directory:
+                    password_file = os.path.join(directory, "management")
+                    with open(password_file, "w", encoding="ascii") as stream:
+                        stream.write(password)
+                    contents.upload(password_file, "content/" + attempt_stage)
+                code = (
+                    "ADMIN_STAGE = " + repr("/content/" + attempt_stage) + "\n"
+                    + "INITIAL_IDLE_MINUTES = " + repr(initial_idle_minutes) + "\n"
+                    + restart_body
+                )
+                return rt.execute_code(code, allow_stdin=False, timeout=240)
+            finally:
+                try:
+                    rt.stop()
+                except Exception:
+                    pass
+
+        try:
+            outputs = _run_restart_on_runtime(True)
+        except Exception:
+            target_session.kernel_id = None
+            target_session.session_id = None
+            outputs = _run_restart_on_runtime(False)
         restarted_url = ""
         for out in outputs:
             if "text" in out:
