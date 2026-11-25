@@ -93,28 +93,35 @@ def _sync_app_external_task(payload: Dict[str, Any]) -> None:
 
 def _model_display_name(model_id: str) -> str:
     mapping = {
-        "minimax_h3": "MiniMax-H3 (33B)",
         "minimax_h3_10eros_max": "10Eros-Max (H3 无限制)",
         "minimax_h3_sulphur3": "Sulphur-3 (H3 无限制)",
         "minimax_h3_ref2va_tara": "Ref2VA · TARA 动作复刻",
-        "seedvr2_upscaler": "SeedVR2 7B · 视频超分",
         "recavsr_upscaler": "ReCaVSR · 极速流式超分",
-        "minimax_h3_image": "MiniMax-H3-Image (33B · 4K)",
+        "moss_image_edit": "MOSS-Image 无限制修图",
+        "wan22_remix_nsfw": "Wan2.2-Remix · NSFW 极速图生视频",
+        "minimax_h3_drama_director": "MiniMax-H3 短剧导演 · 多镜头连拍",
+        "qwen3_tts_voice_design": "Qwen3-TTS 1.7B · 声音设计与情感克隆",
+        "drama3_tts": "Fish Audio Drama 3 · 35B 戏剧情感配音",
+        "qwen38_27b_uncensored_gguf": "Qwen3.8-27B 无限制版 · GGUF + MTP 极速",
         "comfyui_studio": "ComfyUI 节点工作台",
-        "qwen38_27b": "Qwen3.8-27B",
-        "qwen38_27b_gguf": "Qwen3.8-27B-GGUF",
-        "qwen_image_21": "Qwen-Image-2.1",
-        "z_image_turbo": "Z-Image-Turbo",
     }
     return mapping.get(model_id, model_id)
 
 
 def _pack_to_model_id(pack_id: str) -> Tuple[str, str]:
     low = (pack_id or "").lower()
+    if "drama3" in low:
+        return "drama3_tts", _model_display_name("drama3_tts")
+    if "qwen3_tts" in low or "qwen-tts" in low:
+        return "qwen3_tts_voice_design", _model_display_name("qwen3_tts_voice_design")
+    if "drama" in low or "director" in low:
+        return "minimax_h3_drama_director", _model_display_name("minimax_h3_drama_director")
+    if "wan22" in low or "remix" in low:
+        return "wan22_remix_nsfw", _model_display_name("wan22_remix_nsfw")
+    if "moss" in low:
+        return "moss_image_edit", _model_display_name("moss_image_edit")
     if "recavsr" in low:
         return "recavsr_upscaler", _model_display_name("recavsr_upscaler")
-    if "seedvr2" in low:
-        return "seedvr2_upscaler", _model_display_name("seedvr2_upscaler")
     if "tara" in low or "ref2va" in low:
         return "minimax_h3_ref2va_tara", _model_display_name("minimax_h3_ref2va_tara")
     if "10eros" in low:
@@ -182,6 +189,7 @@ def _begin_external_task(
     model_name: str,
     task_mode: str,
     prompt: str = "",
+    negative_prompt: str = "",
     soundscape: str = "",
     music: str = "",
     params_summary: str = "",
@@ -218,6 +226,7 @@ def _begin_external_task(
         "model_name": model_name,
         "task_mode": task_mode,
         "prompt": (prompt or "").strip(),
+        "negative_prompt": (negative_prompt or "").strip(),
         "soundscape": (soundscape or "").strip(),
         "music": (music or "").strip(),
         "params_summary": (params_summary or "").strip(),
@@ -969,121 +978,6 @@ def _build_ref2va_tara_api_prompt(
     return graph
 
 
-def _snap_seedvr2_batch_size(batch_size: int) -> int:
-    n = max(1, int(batch_size or 17))
-    k = max(0, round((n - 1) / 4.0))
-    return 4 * k + 1
-
-
-def _build_seedvr2_upscale_api_prompt(
-    video_name: str,
-    model_name: str,
-    resolution: int,
-    max_resolution: int,
-    batch_size: int,
-    temporal_overlap: int,
-    color_correction: str,
-    keep_audio: bool,
-    attention_mode: str,
-    seed: int,
-    prefix: str,
-    decode_tile_size: int = 2048,
-) -> Dict[str, Any]:
-    actual_seed = seed if seed >= 0 else secrets.randbelow(2**31 - 1)
-    snapped_batch = _snap_seedvr2_batch_size(batch_size)
-    res = max(256, (int(resolution or 1080) // 2) * 2)
-    max_res = max(0, (int(max_resolution or 0) // 2) * 2)
-    decode_tiled = res >= 1440
-    tile_sz = max(512, (int(decode_tile_size or 2048) // 64) * 64)
-
-    create_inputs: Dict[str, Any] = {
-        "images": ["4", 0],
-        "fps": ["5", 5],
-    }
-    if keep_audio:
-        create_inputs["audio"] = ["1", 2]
-
-    return {
-        "1": {
-            "class_type": "VHS_LoadVideo",
-            "inputs": {
-                "video": video_name,
-                "force_rate": 0.0,
-                "custom_width": 0,
-                "custom_height": 0,
-                "frame_load_cap": 0,
-                "skip_first_frames": 0,
-                "select_every_nth": 1,
-            },
-        },
-        "2": {
-            "class_type": "SeedVR2LoadDiTModel",
-            "inputs": {
-                "model": model_name,
-                "device": "cuda:0",
-                "blocks_to_swap": 0,
-                "swap_io_components": False,
-                "offload_device": "none",
-                "cache_model": False,
-                "attention_mode": attention_mode,
-            },
-        },
-        "3": {
-            "class_type": "SeedVR2LoadVAEModel",
-            "inputs": {
-                "model": "ema_vae_fp16.safetensors",
-                "device": "cuda:0",
-                "encode_tiled": False,
-                "encode_tile_size": 1024,
-                "encode_tile_overlap": 128,
-                "decode_tiled": decode_tiled,
-                "decode_tile_size": tile_sz,
-                "decode_tile_overlap": 128,
-                "tile_debug": "false",
-                "offload_device": "none",
-                "cache_model": False,
-            },
-        },
-        "4": {
-            "class_type": "SeedVR2VideoUpscaler",
-            "inputs": {
-                "image": ["1", 0],
-                "dit": ["2", 0],
-                "vae": ["3", 0],
-                "seed": int(actual_seed) % (2**32 - 1),
-                "resolution": res,
-                "max_resolution": max_res,
-                "batch_size": snapped_batch,
-                "uniform_batch_size": True,
-                "temporal_overlap": max(0, min(16, int(temporal_overlap))),
-                "prepend_frames": 0,
-                "color_correction": color_correction,
-                "input_noise_scale": 0.0,
-                "latent_noise_scale": 0.0,
-                "offload_device": "none",
-                "enable_debug": False,
-            },
-        },
-        "5": {
-            "class_type": "VHS_VideoInfo",
-            "inputs": {"video_info": ["1", 3]},
-        },
-        "6": {
-            "class_type": "CreateVideo",
-            "inputs": create_inputs,
-        },
-        "7": {
-            "class_type": "SaveVideo",
-            "inputs": {
-                "video": ["6", 0],
-                "filename_prefix": prefix,
-                "format": "auto",
-                "codec": "auto",
-            },
-        },
-    }
-
-
 def _build_recavsr_upscale_api_prompt(
     video_name: str,
     transformer: str,
@@ -1126,6 +1020,630 @@ def _build_recavsr_upscale_api_prompt(
     }
 
 
+def _build_moss_image_api_prompt(
+    mode: str,
+    prompt: str,
+    negative_prompt: str,
+    ref_images: List[str],
+    width: int,
+    height: int,
+    steps: int,
+    cfg: float,
+    edit_lora_strength: float,
+    nsfw_lora_enabled: bool,
+    nsfw_lora_strength: float,
+    kv_cache: bool,
+    match_input_size: bool,
+    seed: int,
+    prefix: str,
+) -> Dict[str, Any]:
+    actual_seed = seed if seed >= 0 else secrets.randbelow(2**31 - 1)
+    refs = [str(x).strip() for x in (ref_images or []) if str(x).strip()][:3]
+    is_edit = (mode == "i2i_edit") or bool(refs)
+    w = max(512, min(2048, ((int(width or 1024) + 8) // 16) * 16))
+    h = max(512, min(2048, ((int(height or 1024) + 8) // 16) * 16))
+    st = max(4, min(80, int(steps or 36)))
+    cfg_val = max(1.0, min(10.0, float(cfg or 3.0)))
+    edit_str = max(0.0, min(2.0, float(edit_lora_strength)))
+    nsfw_str = max(0.0, min(2.0, float(nsfw_lora_strength)))
+
+    graph: Dict[str, Any] = {
+        "1": {"class_type": "UNETLoader", "inputs": {"unet_name": "moss_image_sft_bf16.safetensors", "weight_dtype": "default"}},
+        "2": {"class_type": "CLIPLoader", "inputs": {"clip_name": "moss_te_heretic_full_int8_convrot.safetensors", "type": "moss_image", "device": "default"}},
+        "3": {"class_type": "VAELoader", "inputs": {"vae_name": "flux2-vae.safetensors"}},
+    }
+    cur_model_ref = ["1", 0]
+    scaled_refs: List[List[Any]] = []
+    if is_edit:
+        if edit_str > 0:
+            graph["5"] = {
+                "class_type": "LoraLoaderModelOnly",
+                "inputs": {"model": cur_model_ref, "lora_name": "moss_edit_armV5.safetensors", "strength_model": edit_str},
+            }
+            cur_model_ref = ["5", 0]
+        for idx, img_fn in enumerate(refs[:3]):
+            load_id = str(20 + idx)
+            scale_id = str(23 + idx)
+            graph[load_id] = {"class_type": "LoadImage", "inputs": {"image": img_fn}}
+            graph[scale_id] = {"class_type": "FluxKontextImageScale", "inputs": {"image": [load_id, 0]}}
+            scaled_refs.append([scale_id, 0])
+
+    if nsfw_lora_enabled and nsfw_str > 0:
+        graph["6"] = {
+            "class_type": "LoraLoaderModelOnly",
+            "inputs": {
+                "model": cur_model_ref,
+                "lora_name": "MOSS-Image-NSFW-Uncensored-LoRA-ComfyUI.safetensors",
+                "strength_model": nsfw_str,
+            },
+        }
+        cur_model_ref = ["6", 0]
+
+    graph["7"] = {
+        "class_type": "SkipLayerGuidanceDiTSimple",
+        "inputs": {"model": cur_model_ref, "double_layers": "", "single_layers": "22", "start_percent": 0.0, "end_percent": 1.0},
+    }
+
+    if is_edit:
+        edit_fmt = "ai-toolkit" if kv_cache else "ai-toolkit (kv_cache off)"
+        pos_in: Dict[str, Any] = {
+            "clip": ["2", 0],
+            "vae": ["3", 0],
+            "prompt": prompt,
+            "edit_format": edit_fmt,
+            "image_strength": 1.0,
+        }
+        neg_in: Dict[str, Any] = {
+            "clip": ["2", 0],
+            "vae": ["3", 0],
+            "prompt": negative_prompt,
+            "edit_format": edit_fmt,
+            "image_strength": 1.0,
+        }
+        for i, ref_node in enumerate(scaled_refs[:3]):
+            k = f"images.image_{i}"
+            pos_in[k] = ref_node
+            neg_in[k] = ref_node
+        graph["8"] = {"class_type": "TextEncodeMOSSImageEdit", "inputs": pos_in}
+        graph["9"] = {"class_type": "TextEncodeMOSSImageEdit", "inputs": neg_in}
+    else:
+        graph["8"] = {"class_type": "CLIPTextEncode", "inputs": {"clip": ["2", 0], "text": prompt}}
+        graph["9"] = {"class_type": "CLIPTextEncode", "inputs": {"clip": ["2", 0], "text": negative_prompt}}
+
+    if is_edit and match_input_size and scaled_refs:
+        graph["26"] = {"class_type": "GetImageSize", "inputs": {"image": scaled_refs[0]}}
+        graph["12"] = {"class_type": "EmptyLatentImage", "inputs": {"width": ["26", 0], "height": ["26", 1], "batch_size": 1}}
+    else:
+        graph["12"] = {"class_type": "EmptyLatentImage", "inputs": {"width": w, "height": h, "batch_size": 1}}
+
+    graph["10"] = {
+        "class_type": "KSampler",
+        "inputs": {
+            "model": ["7", 0],
+            "positive": ["8", 0],
+            "negative": ["9", 0],
+            "latent_image": ["12", 0],
+            "seed": int(actual_seed) % (2**32 - 1),
+            "steps": st,
+            "cfg": cfg_val,
+            "sampler_name": "euler",
+            "scheduler": "simple",
+            "denoise": 1.0,
+        },
+    }
+    graph["11"] = {"class_type": "VAEDecode", "inputs": {"samples": ["10", 0], "vae": ["3", 0]}}
+    graph["13"] = {"class_type": "SaveImage", "inputs": {"images": ["11", 0], "filename_prefix": prefix}}
+    return graph
+
+
+def _build_qwen_edit_api_prompt(
+    prompt: str,
+    negative_prompt: str,
+    ref_images: List[str],
+    width: int = 1280,
+    height: int = 704,
+    steps: int = 4,
+    cfg: float = 1.0,
+    shift: float = 3.1,
+    lightning_lora_strength: float = 1.0,
+    angle_lora_strength: float = 0.0,
+    seed: int = -1,
+    prefix: str = "image/QwenEdit2511_CLI",
+) -> Dict[str, Any]:
+    actual_seed = seed if seed >= 0 else secrets.randbelow(2**31 - 1)
+    refs = [str(x).strip() for x in (ref_images or []) if str(x).strip()][:3]
+    w = max(512, min(2048, ((int(width or 1280) + 8) // 16) * 16))
+    h = max(512, min(2048, ((int(height or 704) + 8) // 16) * 16))
+    st = max(2, min(60, int(steps or 4)))
+    cfg_val = max(1.0, min(12.0, float(cfg or 1.0)))
+    shift_val = max(0.5, min(15.0, float(shift or 3.1)))
+    light_str = max(0.0, min(2.0, float(lightning_lora_strength)))
+    ang_str = max(0.0, min(2.0, float(angle_lora_strength)))
+
+    graph: Dict[str, Any] = {
+        "1": {"class_type": "UNETLoader", "inputs": {"unet_name": "qwen_image_edit_2511_fp8mixed.safetensors", "weight_dtype": "default"}},
+        "2": {"class_type": "CLIPLoader", "inputs": {"clip_name": "qwen_2.5_vl_7b_fp8_scaled.safetensors", "type": "qwen_image", "device": "default"}},
+        "3": {"class_type": "VAELoader", "inputs": {"vae_name": "qwen_image_vae.safetensors"}},
+    }
+    cur_model_ref: List[Any] = ["1", 0]
+    if light_str > 0:
+        graph["4"] = {
+            "class_type": "LoraLoaderModelOnly",
+            "inputs": {
+                "model": cur_model_ref,
+                "lora_name": "Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors",
+                "strength_model": light_str,
+            },
+        }
+        cur_model_ref = ["4", 0]
+    if ang_str > 0:
+        graph["5"] = {
+            "class_type": "LoraLoaderModelOnly",
+            "inputs": {
+                "model": cur_model_ref,
+                "lora_name": "qwen-image-edit-2511-multiple-angles-lora.safetensors",
+                "strength_model": ang_str,
+            },
+        }
+        cur_model_ref = ["5", 0]
+
+    graph["6"] = {"class_type": "ModelSamplingAuraFlow", "inputs": {"model": cur_model_ref, "shift": shift_val, "sampling": "flow"}}
+    graph["7"] = {"class_type": "CFGNorm", "inputs": {"model": ["6", 0], "strength": 1.0, "pre_cfg": False}}
+
+    pos_in: Dict[str, Any] = {"clip": ["2", 0], "vae": ["3", 0], "prompt": prompt}
+    neg_in: Dict[str, Any] = {"clip": ["2", 0], "vae": ["3", 0], "prompt": negative_prompt}
+    for idx, img_fn in enumerate(refs):
+        lid = str(20 + idx)
+        sid = str(23 + idx)
+        graph[lid] = {"class_type": "LoadImage", "inputs": {"image": img_fn}}
+        graph[sid] = {
+            "class_type": "ImageScaleToTotalPixels",
+            "inputs": {"image": [lid, 0], "upscale_method": "lanczos", "megapixels": 1.0, "resolution_steps": 1},
+        }
+        pos_in[f"image{idx + 1}"] = [sid, 0]
+        neg_in[f"image{idx + 1}"] = [sid, 0]
+
+    graph["8"] = {"class_type": "TextEncodeQwenImageEditPlus", "inputs": pos_in}
+    graph["9"] = {"class_type": "TextEncodeQwenImageEditPlus", "inputs": neg_in}
+    graph["10"] = {"class_type": "FluxKontextMultiReferenceLatentMethod", "inputs": {"conditioning": ["8", 0], "reference_latents_method": "index_timestep_zero"}}
+    graph["11"] = {"class_type": "FluxKontextMultiReferenceLatentMethod", "inputs": {"conditioning": ["9", 0], "reference_latents_method": "index_timestep_zero"}}
+    graph["12"] = {"class_type": "EmptySD3LatentImage", "inputs": {"width": w, "height": h, "batch_size": 1}}
+    graph["13"] = {
+        "class_type": "KSampler",
+        "inputs": {
+            "model": ["7", 0],
+            "positive": ["10", 0],
+            "negative": ["11", 0],
+            "latent_image": ["12", 0],
+            "seed": int(actual_seed) % (2**32 - 1),
+            "steps": st,
+            "cfg": cfg_val,
+            "sampler_name": "euler",
+            "scheduler": "simple",
+            "denoise": 1.0,
+        },
+    }
+    graph["14"] = {"class_type": "VAEDecode", "inputs": {"samples": ["13", 0], "vae": ["3", 0]}}
+    graph["15"] = {"class_type": "SaveImage", "inputs": {"images": ["14", 0], "filename_prefix": prefix}}
+    return graph
+
+
+def _snap_wan_frames(frames: int) -> int:
+    val = max(17, int(frames))
+    return 17 + ((val - 17 + 3) // 4) * 4
+
+
+def _build_wan22_remix_api_prompt(
+    mode: str,
+    prompt: str,
+    negative_prompt: str,
+    first_frame_name: str,
+    last_frame_name: str = "",
+    width: int = 1280,
+    height: int = 720,
+    frames: int = 81,
+    steps: int = 8,
+    split_step: int = 4,
+    shift: float = 8.0,
+    cfg: float = 1.0,
+    seed: int = -1,
+    prefix: str = "video/Wan22_Remix_CLI",
+) -> Dict[str, Any]:
+    use_flf2v = (mode or "").strip().lower() == "fl2va"
+    snapped_frames = _snap_wan_frames(frames)
+    actual_seed = int(seed) if int(seed) >= 0 else (secrets.randbelow(2**31 - 1) + 1)
+    actual_steps = max(4, min(int(steps), 30))
+    actual_split = max(1, min(int(split_step), actual_steps - 1))
+    default_neg = (
+        "色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，"
+        "最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，"
+        "画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，"
+        "杂乱的背景，三条腿，背景人很多，倒着走"
+    )
+    neg_text = (negative_prompt or "").strip() or default_neg
+    graph: Dict[str, Any] = {
+        "1": {"class_type": "UNETLoader", "inputs": {"unet_name": "Wan2.2_Remix_NSFW_i2v_14b_high_lighting_fp8_e4m3fn_v3.0.safetensors", "weight_dtype": "default"}},
+        "2": {"class_type": "UNETLoader", "inputs": {"unet_name": "Wan2.2_Remix_NSFW_i2v_14b_low_lighting_fp8_e4m3fn_v3.0.safetensors", "weight_dtype": "default"}},
+        "3": {"class_type": "ModelSamplingSD3", "inputs": {"model": ["1", 0], "shift": float(shift)}},
+        "4": {"class_type": "ModelSamplingSD3", "inputs": {"model": ["2", 0], "shift": float(shift)}},
+        "5": {"class_type": "CLIPLoader", "inputs": {"clip_name": "nsfw_wan_umt5-xxl_fp8_scaled.safetensors", "type": "wan", "device": "default"}},
+        "6": {"class_type": "VAELoader", "inputs": {"vae_name": "wan_2.1_vae.safetensors"}},
+        "7": {"class_type": "CLIPTextEncode", "inputs": {"clip": ["5", 0], "text": prompt}},
+        "8": {"class_type": "CLIPTextEncode", "inputs": {"clip": ["5", 0], "text": neg_text}},
+        "9": {"class_type": "LoadImage", "inputs": {"image": first_frame_name}},
+    }
+    if use_flf2v:
+        graph["10"] = {"class_type": "LoadImage", "inputs": {"image": last_frame_name or first_frame_name}}
+        graph["11"] = {
+            "class_type": "WanFirstLastFrameToVideo",
+            "inputs": {
+                "positive": ["7", 0],
+                "negative": ["8", 0],
+                "vae": ["6", 0],
+                "width": int(width),
+                "height": int(height),
+                "length": snapped_frames,
+                "batch_size": 1,
+                "start_image": ["9", 0],
+                "end_image": ["10", 0],
+            },
+        }
+    else:
+        graph["11"] = {
+            "class_type": "WanImageToVideo",
+            "inputs": {
+                "positive": ["7", 0],
+                "negative": ["8", 0],
+                "vae": ["6", 0],
+                "width": int(width),
+                "height": int(height),
+                "length": snapped_frames,
+                "batch_size": 1,
+                "start_image": ["9", 0],
+            },
+        }
+    graph["12"] = {
+        "class_type": "KSamplerAdvanced",
+        "inputs": {
+            "model": ["3", 0],
+            "add_noise": "enable",
+            "noise_seed": actual_seed,
+            "steps": actual_steps,
+            "cfg": float(cfg),
+            "sampler_name": "euler",
+            "scheduler": "simple",
+            "positive": ["11", 0],
+            "negative": ["11", 1],
+            "latent_image": ["11", 2],
+            "start_at_step": 0,
+            "end_at_step": actual_split,
+            "return_with_normal_noise": "enable",
+        },
+    }
+    graph["13"] = {
+        "class_type": "KSamplerAdvanced",
+        "inputs": {
+            "model": ["4", 0],
+            "add_noise": "disable",
+            "noise_seed": actual_seed,
+            "steps": actual_steps,
+            "cfg": float(cfg),
+            "sampler_name": "euler",
+            "scheduler": "simple",
+            "positive": ["11", 0],
+            "negative": ["11", 1],
+            "latent_image": ["12", 0],
+            "start_at_step": actual_split,
+            "end_at_step": 10000,
+            "return_with_normal_noise": "disable",
+        },
+    }
+    graph["14"] = {"class_type": "VAEDecode", "inputs": {"samples": ["13", 0], "vae": ["6", 0]}}
+    graph["15"] = {"class_type": "CreateVideo", "inputs": {"images": ["14", 0], "fps": 16.0}}
+    graph["16"] = {"class_type": "SaveVideo", "inputs": {"video": ["15", 0], "filename_prefix": prefix, "format": "mp4", "codec": "auto"}}
+    return graph
+
+
+def _build_h3_drama_director_api_prompt(
+    shots: str,
+    idea: str = "",
+    project_seconds: float = 20.0,
+    chunk_seconds: float = 0.0,
+    continuity: str = "video_audio",
+    pin_frames: str = "22",
+    style: str = "Cinematic",
+    ref_images: Optional[List[str]] = None,
+    char_names: Optional[List[str]] = None,
+    ref_audio_name: str = "",
+    soundscape: str = "Clear footsteps, subtle room ambience",
+    music: str = "",
+    width: int = 1280,
+    height: int = 704,
+    steps: int = 8,
+    seed: int = -1,
+    prefix: str = "video/H3_Drama_CLI",
+) -> Dict[str, Any]:
+    w = max(480, min(1920, ((int(width or 1280) + 16) // 32) * 32))
+    h = max(480, min(1920, ((int(height or 704) + 16) // 32) * 32))
+    proj_sec = max(5.0, min(180.0, float(project_seconds or 20.0)))
+    chunk_sec = max(0.0, min(15.0, float(chunk_seconds or 0.0)))
+    actual_steps = max(4, min(40, int(steps or 8)))
+    actual_seed = int(seed) if int(seed) >= 0 else (secrets.randbelow(2**31 - 1) + 1)
+    eff_cont = continuity if continuity in {"video_audio", "video", "none"} else "video_audio"
+    eff_pin = pin_frames if pin_frames in {"22", "5", "39", "56"} else "22"
+    eff_style = style if style in {"None", "Cinematic", "Anime", "Documentary", "Photorealistic"} else "Cinematic"
+    shots_clean = (shots or "").strip()
+    idea_clean = (idea or "").strip() or (shots_clean.splitlines()[0][:240] if shots_clean else "Short drama sequence")
+
+    refs = [str(x).strip() for x in (ref_images or []) if str(x).strip()][:6]
+    names_raw = [str(x).strip().lstrip("@") for x in (char_names or []) if str(x).strip()]
+    defaults = ["Hero", "Partner", "Role3", "Role4", "Role5", "Role6"]
+
+    graph: Dict[str, Any] = {
+        "1": {"class_type": "UNETLoader", "inputs": {"unet_name": "10Eros_Max_8stepTurbo_v1.0_hybrid-int8_HQ.safetensors", "weight_dtype": "default"}},
+        "2": {"class_type": "CLIPLoader", "inputs": {"clip_name": "qwen3vl_32b_heretic_minimax_h3_nvfp4.safetensors", "type": "minimax", "device": "default"}},
+        "3": {"class_type": "VAELoader", "inputs": {"vae_name": "minimax_h3_video_vae_int8_convrot.safetensors"}},
+        "4": {"class_type": "VAELoader", "inputs": {"vae_name": "minimax_h3_audio_vae_fp32.safetensors"}},
+    }
+    conn_inputs: Dict[str, Any] = {
+        "model_fl2va": ["1", 0],
+        "model_ref2va": ["1", 0],
+        "clip": ["2", 0],
+        "vae": ["3", 0],
+        "audio_vae": ["4", 0],
+    }
+
+    first_ctx_id = "ctx_hero"
+    first_char_name = names_raw[0] if names_raw else defaults[0]
+    for idx, fn in enumerate(refs):
+        cname = names_raw[idx] if idx < len(names_raw) and names_raw[idx] else defaults[idx]
+        slug = re.sub(r"[^a-zA-Z0-9_]", "_", cname.lower()).strip("_") or f"char{idx + 1}"
+        cid = f"ctx_{slug}_{idx}" if idx > 0 else f"ctx_{slug}"
+        if idx == 0:
+            first_ctx_id = cid
+            first_char_name = cname
+        nid = str(20 + idx)
+        is_loc = Path(fn).name.lower().startswith("loc_") or cname.lower() in {
+            "study", "scene", "location", "palace", "room", "corridor", "background", "env", "environment"
+        }
+        graph[nid] = {
+            "class_type": "NGContextImage",
+            "inputs": {
+                "image": fn,
+                "name": cname,
+                "description": (
+                    f"Location and environment backdrop reference for @{cname}"
+                    if is_loc else f"Character or scene visual anchor for @{cname}"
+                ),
+                "content": "location" if is_loc else "character",
+                "usage": "reference",
+                "preserve": "high",
+                "context_id": cid,
+            },
+        }
+        conn_inputs[f"context_image.image_{idx}"] = [nid, 0]
+
+    has_audio = bool(ref_audio_name and ref_audio_name.strip())
+    if has_audio:
+        graph["30"] = {
+            "class_type": "NGContextAudio",
+            "inputs": {
+                "audio": ref_audio_name.strip(),
+                "name": f"{first_char_name} voice",
+                "description": f"Locked character voice for @{first_char_name}",
+                "content": "voice",
+                "usage": "voice",
+                "preserve": "high",
+                "speaker": first_ctx_id if refs else "",
+                "context_id": f"{first_ctx_id}_voice",
+            },
+        }
+        conn_inputs["context_audio.audio_0"] = ["30", 0]
+
+    graph["5"] = {"class_type": "NGContextConnector", "inputs": conn_inputs}
+    graph["6"] = {
+        "class_type": "NGH3Director",
+        "inputs": {
+            "context": ["5", 0],
+            "idea": idea_clean,
+            "shots": shots_clean,
+            "project_seconds": float(proj_sec),
+            "chunk_seconds": float(chunk_sec),
+            "width": w,
+            "height": h,
+            "mode": "ref2va" if (refs or has_audio) else "auto",
+            "continuity": eff_cont,
+            "pin_frames": eff_pin,
+            "soundscape": (soundscape or "").strip() or "Clear footsteps, subtle room ambience",
+            "music": (music or "").strip(),
+            "style": eff_style,
+            "seed": actual_seed,
+            "steps": actual_steps,
+            "sampler_name": "lcm",
+            "scheduler": "simple",
+            "shift_video": 12.0,
+            "shift_audio": 3.0,
+            "turbo": False,
+            "turbo_lora_fl2va": "none",
+            "turbo_lora_ref2va": "none",
+            "resize_method": "crop",
+            "ref_image_size": "match",
+            "resume": True,
+            "resume_delete_done": True,
+            "output": "video",
+            "spectrum": False,
+        },
+    }
+    graph["7"] = {"class_type": "NGProjectRender", "inputs": {"sequence": ["6", 0]}}
+    graph["8"] = {"class_type": "SaveVideo", "inputs": {"video": ["7", 0], "filename_prefix": prefix, "format": "auto", "codec": "auto"}}
+    return graph
+
+
+def _build_qwen3_tts_api_prompt(
+    mode: str,
+    text: str,
+    instruct: str,
+    language: str,
+    ref_audio_name: str,
+    ref_text: str,
+    x_vector_only: bool,
+    temperature: float,
+    top_p: float,
+    top_k: int,
+    seed: int,
+    prefix: str,
+) -> Dict[str, Any]:
+    eff_mode = (mode or "design").strip().lower()
+    actual_seed = int(seed) if int(seed) >= 0 else (secrets.randbelow(2**31 - 1) + 1)
+    lang = (language or "Chinese").strip() or "Chinese"
+    graph: Dict[str, Any] = {}
+    if eff_mode == "clone":
+        if not ref_audio_name:
+            raise ValueError("--ref-audio is required in clone mode.")
+        graph["1"] = {"class_type": "LoadAudio", "inputs": {"audio": ref_audio_name}}
+        graph["2"] = {
+            "class_type": "FB_Qwen3TTSVoiceClone",
+            "inputs": {
+                "target_text": text,
+                "model_choice": "1.7B",
+                "device": "auto",
+                "precision": "bf16",
+                "language": lang,
+                "ref_audio": ["1", 0],
+                "ref_text": (ref_text or "").strip(),
+                "seed": actual_seed,
+                "max_new_tokens": 2048,
+                "top_p": float(top_p),
+                "top_k": int(top_k),
+                "temperature": float(temperature),
+                "repetition_penalty": 1.05,
+                "x_vector_only": bool(x_vector_only),
+                "instruct": (instruct or "").strip(),
+                "attention": "auto",
+                "unload_model_after_generate": False,
+            },
+        }
+    else:
+        graph["2"] = {
+            "class_type": "FB_Qwen3TTSVoiceDesign",
+            "inputs": {
+                "text": text,
+                "instruct": (instruct or "").strip() or "28岁成熟有感染力的电影旁白音色，吐字清晰自然",
+                "model_choice": "1.7B",
+                "device": "auto",
+                "precision": "bf16",
+                "language": lang,
+                "seed": actual_seed,
+                "max_new_tokens": 2048,
+                "top_p": float(top_p),
+                "top_k": int(top_k),
+                "temperature": float(temperature),
+                "repetition_penalty": 1.05,
+                "attention": "auto",
+                "unload_model_after_generate": False,
+            },
+        }
+    graph["3"] = {"class_type": "SaveAudio", "inputs": {"audio": ["2", 0], "filename_prefix": prefix}}
+    return graph
+
+
+def _build_drama3_tts_api_prompt(
+    text: str,
+    ref_audio_names: List[str],
+    ref_texts: List[str],
+    experts: str,
+    speakers: str,
+    voice_guidance: float,
+    temperature: float,
+    top_p: float,
+    top_k: int,
+    shorten_pauses: bool,
+    seed: int,
+    prefix: str,
+) -> Dict[str, Any]:
+    actual_seed = int(seed) if int(seed) >= 0 else (secrets.randbelow(2**31 - 1) + 1)
+    eff_experts = "in VRAM" if (experts or "").strip().lower() == "in vram" else "in RAM"
+    graph: Dict[str, Any] = {
+        "1": {
+            "class_type": "Drama3Loader",
+            "inputs": {
+                "model_name": "drama3_fp8experts_bf16.safetensors",
+                "experts": eff_experts,
+                "expert_cache_gb": 0.0,
+                "second_gpu": "none",
+                "split_layer": 0,
+                "pin_experts": True,
+            },
+        },
+        "2": {
+            "class_type": "Drama3CodecLoader",
+            "inputs": {"codec_name": "drama3_codec.safetensors"},
+        },
+        "6": {
+            "class_type": "Drama3Generate",
+            "inputs": {
+                "model": ["1", 0],
+                "text": text,
+                "seed": actual_seed,
+                "temperature": float(temperature),
+                "top_p": float(top_p),
+                "top_k": int(top_k),
+                "max_frames": 0,
+                "split_long_text": True,
+                "speakers": speakers,
+                "voice_guidance": float(voice_guidance),
+            },
+        },
+        "7": {
+            "class_type": "Drama3Decode",
+            "inputs": {"codec": ["2", 0], "codes": ["6", 0], "shorten_long_pauses": bool(shorten_pauses)},
+        },
+        "8": {
+            "class_type": "SaveAudio",
+            "inputs": {"audio": ["7", 0], "filename_prefix": prefix},
+        },
+    }
+
+    needs_asr = False
+    clean_refs = [x for x in (ref_audio_names or []) if x][:16]
+    for idx, audio_fn in enumerate(clean_refs):
+        load_nid = str(20 + idx * 3)
+        asr_nid = str(21 + idx * 3)
+        enc_nid = str(22 + idx * 3)
+        graph[load_nid] = {
+            "class_type": "Drama3LoadReferenceAudio",
+            "inputs": {"audio": audio_fn, "trim": True, "length": "20 s"},
+        }
+        manual_txt = ref_texts[idx].strip() if idx < len(ref_texts) and ref_texts[idx] else ""
+        if manual_txt:
+            transcript_inp: Any = manual_txt
+        else:
+            needs_asr = True
+            graph[asr_nid] = {
+                "class_type": "Qwen3ASRTranscribe",
+                "inputs": {
+                    "model": ["4", 0],
+                    "audio": [load_nid, 0],
+                    "language": "auto",
+                    "context": "",
+                    "max_new_tokens": 4096,
+                },
+            }
+            transcript_inp = [asr_nid, 0]
+        graph[enc_nid] = {
+            "class_type": "Drama3EncodeVoice",
+            "inputs": {"codec": ["2", 0], "audio": [load_nid, 0], "transcript": transcript_inp},
+        }
+        graph["6"]["inputs"][f"voices.voice{idx}"] = [enc_nid, 0]
+
+    if needs_asr:
+        graph["4"] = {
+            "class_type": "Qwen3ASRLoader",
+            "inputs": {"model_name": "qwen3_asr_1.7b_bf16.safetensors"},
+        }
+    return graph
+
+
 def _format_progress_bar(fraction: float, width: int = 10) -> str:
     frac = max(0.0, min(1.0, float(fraction or 0.0)))
     filled = max(0, min(width, int(round(width * frac))))
@@ -1141,6 +1659,10 @@ def _describe_comfy_node_stage(class_type: str) -> str:
         return "加载模型与输入"
     if "cliptext" in low or "encode" in low:
         return "编码文本与条件特征"
+    if "drama3" in low or "qwen3_asr" in low:
+        return "音频情绪合成与声纹解码"
+    if "fb_qwen3tts" in low:
+        return "Qwen3-TTS 声音合成"
     if "recavsr" in low:
         return "ReCaVSR 流式超分"
     if "seedvr2" in low:
@@ -1475,8 +1997,26 @@ def _submit_and_wait_comfy(comfy_url: str, password: str, graph: Dict[str, Any],
         history_item: Optional[Dict[str, Any]] = None
         last_emitted_ver = -1
         last_emit_ts = t_start
+        consec_poll_err = 0
         while time.time() < deadline:
-            hist = _http_json(f"{comfy_url}/history/{prompt_id}", password=password, base_url=comfy_url, timeout=30)
+            try:
+                hist = _http_json(f"{comfy_url}/history/{prompt_id}", password=password, base_url=comfy_url, timeout=30)
+                consec_poll_err = 0
+            except Exception as poll_err:
+                err_s = str(poll_err)
+                transient = any(
+                    tok in err_s
+                    for tok in ("HTTP 502", "HTTP 503", "HTTP 504", "HTTP 429", "timed out", "Connection", "URLError", "RemoteDisconnected", "EOF")
+                )
+                if transient and consec_poll_err < 25:
+                    consec_poll_err += 1
+                    _emit_app_log(
+                        f"ComfyUI 隧道瞬时波动 ({consec_poll_err}/25)，继续跟踪任务 {prompt_id[:8]}...: {err_s[:160]}",
+                        level="warning",
+                    )
+                    time.sleep(3.0)
+                    continue
+                raise
             if prompt_id in hist:
                 history_item = hist[prompt_id]
                 break
@@ -1525,7 +2065,7 @@ def _submit_and_wait_comfy(comfy_url: str, password: str, graph: Dict[str, Any],
     for _, node_out in outputs.items():
         if not isinstance(node_out, dict):
             continue
-        for key in ("videos", "gifs", "images"):
+        for key in ("audio", "videos", "gifs", "images"):
             items = node_out.get(key) or []
             for it in items:
                 fname = it.get("filename")
@@ -1647,6 +2187,156 @@ def cmd_extract_voice_seed(args: argparse.Namespace) -> None:
     cmd.extend(["-vn", "-af", "aresample=32000,pan=stereo|c0=c0|c1=c0", args.output])
     subprocess.run(cmd, check=True)
     print(json.dumps({"ok": True, "voice_seed": str(Path(args.output).resolve()), "sample_rate": 32000, "channels": 2}))
+
+
+def _probe_media_info(path: Path) -> Dict[str, Any]:
+    if not shutil.which("ffprobe"):
+        raise RuntimeError("ffprobe not found in PATH.")
+    raw = subprocess.check_output(
+        ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-show_entries", "stream=codec_type,codec_name,width,height,sample_rate,channels", "-of", "json", str(path)],
+        text=True,
+    )
+    info = json.loads(raw)
+    dur = float((info.get("format") or {}).get("duration") or 0.0)
+    has_audio = any(s.get("codec_type") == "audio" for s in (info.get("streams") or []))
+    return {"duration_s": dur, "has_audio": has_audio, "raw": info}
+
+
+def cmd_extract_last_frame(args: argparse.Namespace) -> None:
+    if not shutil.which("ffmpeg"):
+        raise RuntimeError("ffmpeg not found in PATH.")
+    vid = Path(args.video).expanduser().resolve()
+    if not vid.is_file():
+        raise FileNotFoundError(f"Video not found: {vid}")
+    out = Path(args.output).expanduser().resolve()
+    out.parent.mkdir(parents=True, exist_ok=True)
+    offset = max(0.04, float(args.offset))
+    try:
+        subprocess.run(
+            ["ffmpeg", "-y", "-sseof", f"-{offset:.3f}", "-i", str(vid), "-frames:v", "1", str(out)],
+            check=True, capture_output=True, text=True,
+        )
+    except subprocess.CalledProcessError:
+        dur = _probe_media_info(vid)["duration_s"]
+        ts = max(0.0, dur - offset)
+        subprocess.run(
+            ["ffmpeg", "-y", "-ss", f"{ts:.3f}", "-i", str(vid), "-frames:v", "1", str(out)],
+            check=True,
+        )
+    if not out.is_file() or out.stat().st_size == 0:
+        raise RuntimeError(f"Failed to extract last frame to {out}")
+    print(json.dumps({"ok": True, "video": str(vid), "last_frame": str(out), "offset_s": offset}, ensure_ascii=False, indent=2))
+
+
+def cmd_stitch_drama_jlcut(args: argparse.Namespace) -> None:
+    if not shutil.which("ffmpeg"):
+        raise RuntimeError("ffmpeg not found in PATH.")
+    inputs = [Path(p).expanduser().resolve() for p in (args.inputs or [])]
+    if len(inputs) < 1:
+        raise ValueError("--inputs requires at least 1 video file")
+    for p in inputs:
+        if not p.is_file():
+            raise FileNotFoundError(f"Input video not found: {p}")
+
+    out = Path(args.output).expanduser().resolve()
+    out.parent.mkdir(parents=True, exist_ok=True)
+    lead = max(0.0, float(args.audio_lead))
+    fade = max(0.02, float(args.audio_fade))
+    target_lufs = float(args.normalize_lufs)
+
+    infos = [_probe_media_info(p) for p in inputs]
+    n = len(inputs)
+    all_have_audio = all(inf["has_audio"] for inf in infos)
+
+    if n == 1 or lead <= 0.0 or not all_have_audio:
+        concat_file = out.parent / f".{out.stem}_concat.txt"
+        concat_file.write_text("\n".join(f"file '{p}'" for p in inputs) + "\n", encoding="utf-8")
+        try:
+            cmd = ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(concat_file)]
+            if all_have_audio and target_lufs < 0:
+                cmd.extend(["-af", f"loudnorm=I={target_lufs:.1f}:TP=-1.5:LRA=11"])
+            cmd.extend(["-c:v", "libx264", "-preset", "medium", "-crf", "18", "-pix_fmt", "yuv420p"])
+            if all_have_audio:
+                cmd.extend(["-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2"])
+            else:
+                cmd.append("-an")
+            cmd.append(str(out))
+            subprocess.run(cmd, check=True)
+        finally:
+            if concat_file.exists():
+                concat_file.unlink()
+    else:
+        leads = [0.0]
+        for i in range(1, n):
+            eff = min(lead, max(0.0, infos[i - 1]["duration_s"] - 0.6), max(0.0, infos[i]["duration_s"] - 0.8))
+            leads.append(round(eff, 4))
+
+        cut_times = [0.0]
+        t_cur = infos[0]["duration_s"]
+        for i in range(1, n):
+            cut_times.append(round(t_cur, 4))
+            t_cur += max(0.2, infos[i]["duration_s"] - leads[i])
+
+        filters: List[str] = []
+        v_labels: List[str] = []
+        a_labels: List[str] = []
+
+        for i in range(n):
+            d_i = infos[i]["duration_s"]
+            if i == 0:
+                filters.append(f"[0:v]setpts=PTS-STARTPTS[v0]")
+            else:
+                filters.append(f"[{i}:v]trim=start={leads[i]:.4f},setpts=PTS-STARTPTS[v{i}]")
+            v_labels.append(f"[v{i}]")
+
+            achain = f"[{i}:a]aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo"
+            if i > 0 and leads[i] > 0:
+                f_in = min(fade, max(0.04, leads[i]))
+                achain += f",afade=t=in:st=0:d={f_in:.4f}"
+            if i + 1 < n and leads[i + 1] > 0:
+                f_out = min(fade, max(0.04, leads[i + 1]))
+                st_out = max(0.0, d_i - f_out)
+                achain += f",afade=t=out:st={st_out:.4f}:d={f_out:.4f}"
+            if i > 0:
+                delay_ms = max(0, int(round((cut_times[i] - leads[i]) * 1000.0)))
+                if delay_ms > 0:
+                    achain += f",adelay={delay_ms}|{delay_ms}"
+            achain += f"[a{i}]"
+            filters.append(achain)
+            a_labels.append(f"[a{i}]")
+
+        filters.append(f"{''.join(v_labels)}concat=n={n}:v=1:a=0[vout]")
+        if target_lufs < 0:
+            filters.append(f"{''.join(a_labels)}amix=inputs={n}:duration=longest:normalize=0,loudnorm=I={target_lufs:.1f}:TP=-1.5:LRA=11[aout]")
+        else:
+            filters.append(f"{''.join(a_labels)}amix=inputs={n}:duration=longest:normalize=0[aout]")
+
+        cmd = ["ffmpeg", "-y"]
+        for p in inputs:
+            cmd.extend(["-i", str(p)])
+        cmd.extend([
+            "-filter_complex", ";".join(filters),
+            "-map", "[vout]", "-map", "[aout]",
+            "-c:v", "libx264", "-preset", "medium", "-crf", "18", "-pix_fmt", "yuv420p",
+            "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2",
+            str(out),
+        ])
+        subprocess.run(cmd, check=True)
+
+    probe_out = _probe_media_info(out)
+    vol = subprocess.run(
+        ["ffmpeg", "-hide_banner", "-i", str(out), "-af", "volumedetect", "-f", "null", "-"],
+        capture_output=True, text=True, check=True,
+    )
+    vol_lines = [l.strip() for l in (vol.stderr or "").splitlines() if "mean_volume" in l or "max_volume" in l]
+    print(json.dumps({
+        "ok": True,
+        "output": str(out),
+        "shots": len(inputs),
+        "audio_lead_s": lead,
+        "duration_s": round(probe_out["duration_s"], 3),
+        "volumedetect": vol_lines,
+    }, ensure_ascii=False, indent=2))
 
 
 def _auto_sleep_runtime(base_url: str, password: str, sync_comfy: bool = False) -> Dict[str, Any]:
@@ -2000,6 +2690,18 @@ def main(argv: Optional[List[str]] = None) -> int:
     p_voice.add_argument("--start", type=float, default=0.0)
     p_voice.add_argument("--duration", type=float, default=5.0)
 
+    p_lastf = sub.add_parser("extract-last-frame", help="Extract crisp last frame of a shot MP4 for seamless shot-to-shot carryover")
+    p_lastf.add_argument("--video", required=True)
+    p_lastf.add_argument("--output", required=True)
+    p_lastf.add_argument("--offset", type=float, default=0.12, help="Seconds before EOF to sample frame (default 0.12)")
+
+    p_stitch = sub.add_parser("stitch-drama-jlcut", help="Lip-sync-safe J-Cut + loudness-normalized multi-shot drama stitcher")
+    p_stitch.add_argument("--inputs", nargs="+", required=True, help="Ordered shot MP4 paths")
+    p_stitch.add_argument("--output", required=True)
+    p_stitch.add_argument("--audio-lead", type=float, default=0.20, help="Seconds each shot's audio leads its visual cut (0 = hard cut)")
+    p_stitch.add_argument("--audio-fade", type=float, default=0.18, help="Smooth fade-in/out duration at cut boundaries")
+    p_stitch.add_argument("--normalize-lufs", type=float, default=-16.0, help="Target EBU R128 integrated LUFS (0 to disable)")
+
     # Colab lifecycle
     sub.add_parser("auth-status", help="Check active Google Colab OAuth & CU balance")
     sub.add_parser("auth-status-all", help="Concurrently query OAuth health, CU balance, active VMs & GPU models across ALL saved accounts")
@@ -2045,7 +2747,7 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     for cname in ("download-model", "load-model"):
         pm = sub.add_parser(cname, help=f"{cname.replace('-', ' ').title()} in EasyColab")
-        pm.add_argument("--model", default="minimax_h3")
+        pm.add_argument("--model", default="minimax_h3_10eros_max")
         pm.add_argument("--hf-token", default="")
         pm.add_argument("--wait", action="store_true")
 
@@ -2092,8 +2794,7 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     p_cip = sub.add_parser("comfy-install-pack", help="1-click install ComfyUI preset pack + custom nodes")
     p_cip.add_argument("--pack", required=True, choices=[
-        "recavsr_upscaler", "seedvr2_upscaler", "minimax_h3_ref2va_tara", "minimax_h3_10eros_max", "minimax_h3_sulphur3",
-        "minimax_h3_i2v_flf2v", "wan22_i2v_flf2v", "ltx23_flf2v", "hunyuan15_i2v_1080p",
+        "drama3_tts", "qwen3_tts_voice_design", "minimax_h3_drama_director", "wan22_remix_nsfw", "moss_image_edit", "qwen_image_edit_2511", "recavsr_upscaler", "minimax_h3_ref2va_tara", "minimax_h3_10eros_max", "minimax_h3_sulphur3",
     ])
     p_cip.add_argument("--no-auto-start", action="store_true")
     p_cip.add_argument("--hf-token", default="")
@@ -2194,35 +2895,6 @@ def main(argv: Optional[List[str]] = None) -> int:
     p_tara.add_argument("--keep-alive", action="store_true", help="Keep Colab VM awake after this run (default: auto-sleep & release VM to save CU)")
     p_tara.add_argument("--dry-run", action="store_true")
 
-    p_up = sub.add_parser("comfy-upscale", help="Upscale a video using SeedVR2 7B/3B FP16 via ComfyUI API (PRO 6000 untiled)")
-    p_up.add_argument("--video", required=True, help="Source video path (.mp4/.mov/.webm)")
-    p_up.add_argument(
-        "--model",
-        default="seedvr2_ema_7b_fp16.safetensors",
-        choices=[
-            "seedvr2_ema_7b_fp16.safetensors",
-            "seedvr2_ema_7b_sharp_fp16.safetensors",
-            "seedvr2_ema_3b_fp16.safetensors",
-            "seedvr2_ema_7b_fp8_e4m3fn_mixed_block35_fp16.safetensors",
-            "seedvr2_ema_7b_sharp_fp8_e4m3fn_mixed_block35_fp16.safetensors",
-            "seedvr2_ema_3b_fp8_e4m3fn.safetensors",
-        ],
-    )
-    p_up.add_argument("--resolution", type=int, default=1080, help="Target short-edge resolution (e.g. 1080, 1440, 2160)")
-    p_up.add_argument("--max-resolution", type=int, default=0, help="Optional long-edge cap (0 = disabled)")
-    p_up.add_argument("--batch-size", type=int, default=17, help="Frames per batch (auto-snapped to 4n+1 grid)")
-    p_up.add_argument("--temporal-overlap", type=int, default=2, help="Temporal overlap frames between batches (0-16)")
-    p_up.add_argument("--color-correction", default="lab", choices=["lab", "wavelet", "wavelet_adaptive", "hsv", "adain", "none"])
-    p_up.add_argument("--no-audio", action="store_true", help="Drop original audio instead of muxing into upscaled output")
-    p_up.add_argument("--attention-mode", default="sdpa", choices=["sdpa", "flash_attn_2", "flash_attn_3", "sageattn_2", "sageattn_3"])
-    p_up.add_argument("--decode-tile-size", type=int, default=2048, help="VAE decode tile size when resolution >= 1440 (default: 2048 for PRO 6000)")
-    p_up.add_argument("--seed", type=int, default=-1)
-    p_up.add_argument("--prefix", default="video/SeedVR2_CLI")
-    p_up.add_argument("--comfy-url", default="")
-    p_up.add_argument("--out", default="./outputs")
-    p_up.add_argument("--keep-alive", action="store_true", help="Keep Colab VM awake after this run (default: auto-sleep & release VM to save CU)")
-    p_up.add_argument("--dry-run", action="store_true")
-
     p_rc = sub.add_parser("comfy-upscale-recavsr", help="Fast 1-step streaming video upscale via ReCaVSR + FlashDecoder (~15x faster 4K)")
     p_rc.add_argument("--video", required=True, help="Source video path (.mp4/.mov/.webm)")
     p_rc.add_argument(
@@ -2240,6 +2912,161 @@ def main(argv: Optional[List[str]] = None) -> int:
     p_rc.add_argument("--out", default="./outputs")
     p_rc.add_argument("--keep-alive", action="store_true", help="Keep Colab VM awake after this run (default: auto-sleep & release VM to save CU)")
     p_rc.add_argument("--dry-run", action="store_true")
+
+    p_moss = sub.add_parser("comfy-run-moss", help="Run MOSS-Image Uncensored + OstrisEdit armV5 (T2I or 1-3 ref edit) via ComfyUI API")
+    p_moss.add_argument("--mode", default="t2i", choices=["t2i", "i2i_edit"])
+    p_moss.add_argument("--prompt", required=True)
+    p_moss.add_argument("--negative-prompt", default="")
+    p_moss.add_argument("--ref-image", action="append", default=[], help="Reference image path (up to 3; triggers i2i_edit)")
+    p_moss.add_argument("--width", type=int, default=1024)
+    p_moss.add_argument("--height", type=int, default=1024)
+    p_moss.add_argument("--steps", type=int, default=36)
+    p_moss.add_argument("--cfg", type=float, default=3.0)
+    p_moss.add_argument("--edit-lora-strength", type=float, default=1.0)
+    p_moss.add_argument("--nsfw-lora-strength", type=float, default=0.65)
+    p_moss.add_argument("--disable-nsfw-lora", action="store_true")
+    p_moss.add_argument("--disable-kv-cache", action="store_true")
+    p_moss.add_argument("--no-match-input-size", action="store_true")
+    p_moss.add_argument("--seed", type=int, default=-1)
+    p_moss.add_argument("--prefix", default="image/MOSS_Image_CLI")
+    p_moss.add_argument("--comfy-url", default="")
+    p_moss.add_argument("--out", default="./outputs")
+    p_moss.add_argument("--keep-alive", action="store_true", help="Keep Colab VM awake after this run (default: auto-sleep & release VM to save CU)")
+    p_moss.add_argument("--dry-run", action="store_true")
+
+    p_qe = sub.add_parser("comfy-run-qwen-edit", help="Run Qwen-Image-Edit-2511 (1-3 ref composition + fal 96-Pose Multi-Angles + Lightning 4-step) via ComfyUI API")
+    p_qe.add_argument("--prompt", required=True)
+    p_qe.add_argument("--negative-prompt", default="")
+    p_qe.add_argument("--ref-image", action="append", default=[], help="Reference image path (1..3 -> image1..image3)")
+    p_qe.add_argument("--width", type=int, default=1280)
+    p_qe.add_argument("--height", type=int, default=704)
+    p_qe.add_argument("--steps", type=int, default=4)
+    p_qe.add_argument("--cfg", type=float, default=1.0)
+    p_qe.add_argument("--shift", type=float, default=3.1)
+    p_qe.add_argument("--lightning-lora-strength", type=float, default=1.0)
+    p_qe.add_argument("--angle-lora-strength", type=float, default=0.0, help="Enable fal 96-Pose Multi-Angles LoRA (e.g. 0.9 with <sks> camera tags)")
+    p_qe.add_argument("--seed", type=int, default=-1)
+    p_qe.add_argument("--prefix", default="image/QwenEdit2511_CLI")
+    p_qe.add_argument("--comfy-url", default="")
+    p_qe.add_argument("--out", default="./outputs")
+    p_qe.add_argument("--keep-alive", action="store_true", help="Keep Colab VM awake after this run (default: auto-sleep & release VM to save CU)")
+    p_qe.add_argument("--dry-run", action="store_true")
+
+    p_sw = sub.add_parser("comfy-sweep-360-plates", help="Generate a 360-deg empty-set camera sweep via 10Eros-Max and slice 0/90/180/270-deg scene plates")
+    p_sw.add_argument("--master-plate", required=True, help="Locked establishing empty-room plate (<Picture 1>)")
+    p_sw.add_argument("--scene-desc", required=True, help="Architectural & lighting anchor description for the four walls")
+    p_sw.add_argument("--frames", type=int, default=124)
+    p_sw.add_argument("--steps", type=int, default=8)
+    p_sw.add_argument("--width", type=int, default=1280)
+    p_sw.add_argument("--height", type=int, default=704)
+    p_sw.add_argument("--ref-image-size", choices=["match", "max"], default="max")
+    p_sw.add_argument("--seed", type=int, default=7360)
+    p_sw.add_argument("--prefix", default="scene_360")
+    p_sw.add_argument("--comfy-url", default="")
+    p_sw.add_argument("--out", default="./outputs/scene_plates")
+    p_sw.add_argument("--keep-alive", action="store_true", help="Keep Colab VM awake after this run (default: auto-sleep & release VM to save CU)")
+    p_sw.add_argument("--dry-run", action="store_true")
+
+    p_wan22 = sub.add_parser("comfy-run-wan22-remix", help="Run Wan2.2-Remix NSFW uncensored I2V / FLF2V 8-step video generation")
+    p_wan22.add_argument("--mode", choices=["i2v", "fl2va"], default="i2v")
+    p_wan22.add_argument("--prompt", required=True)
+    p_wan22.add_argument("--negative-prompt", default="")
+    p_wan22.add_argument("--first-frame", required=True)
+    p_wan22.add_argument("--last-frame", default="")
+    p_wan22.add_argument("--width", type=int, default=1280)
+    p_wan22.add_argument("--height", type=int, default=720)
+    p_wan22.add_argument("--frames", type=int, default=81)
+    p_wan22.add_argument("--steps", type=int, default=8)
+    p_wan22.add_argument("--split-step", type=int, default=4)
+    p_wan22.add_argument("--shift", type=float, default=8.0)
+    p_wan22.add_argument("--cfg", type=float, default=1.0)
+    p_wan22.add_argument("--seed", type=int, default=-1)
+    p_wan22.add_argument("--prefix", default="video/Wan22_Remix_CLI")
+    p_wan22.add_argument("--comfy-url", default="")
+    p_wan22.add_argument("--out", default="./outputs")
+    p_wan22.add_argument("--keep-alive", action="store_true", help="Keep Colab VM awake after this run (default: auto-sleep & release VM to save CU)")
+    p_wan22.add_argument("--dry-run", action="store_true")
+
+    p_drama = sub.add_parser("comfy-run-h3-drama", help="Run MiniMax-H3 Drama Director multi-shot timeline with character & voice cards")
+    p_drama.add_argument("--shots", default="", help="Multiline beat script, e.g. '0-7: @Hero walks...\\n@Hero says: ...'")
+    p_drama.add_argument("--shots-file", default="", help="UTF-8 file containing the multiline drama script")
+    p_drama.add_argument("--idea", default="", help="Overall short drama premise")
+    p_drama.add_argument("--duration", type=float, default=20.0, help="Total project duration in seconds (default 20s)")
+    p_drama.add_argument("--chunk-seconds", type=float, default=0.0, help="0 = automatic H3 render part length")
+    p_drama.add_argument("--continuity", choices=["video_audio", "video", "none"], default="video_audio")
+    p_drama.add_argument("--pin-frames", choices=["22", "5", "39", "56"], default="22")
+    p_drama.add_argument("--style", choices=["None", "Cinematic", "Anime", "Documentary", "Photorealistic"], default="Cinematic")
+    p_drama.add_argument("--ref-image", action="append", default=[], help="Character/scene reference image (max 6)")
+    p_drama.add_argument("--char-name", action="append", default=[], help="Character @name paired with --ref-image order")
+    p_drama.add_argument("--ref-audio", default="", help="Character voice seed audio (.wav/.mp3)")
+    p_drama.add_argument("--soundscape", default="Clear footsteps, subtle room ambience")
+    p_drama.add_argument("--music", default="")
+    p_drama.add_argument("--width", type=int, default=1280)
+    p_drama.add_argument("--height", type=int, default=704)
+    p_drama.add_argument("--steps", type=int, default=8)
+    p_drama.add_argument("--seed", type=int, default=-1)
+    p_drama.add_argument("--prefix", default="video/H3_Drama_CLI")
+    p_drama.add_argument("--comfy-url", default="")
+    p_drama.add_argument("--out", default="./outputs")
+    p_drama.add_argument("--keep-alive", action="store_true", help="Keep Colab VM awake after this run (default: auto-sleep & release VM to save CU)")
+    p_drama.add_argument("--dry-run", action="store_true")
+
+    p_qtts = sub.add_parser("comfy-run-qwen3-tts", help="Run Qwen3-TTS 1.7B VoiceDesign or emotional VoiceClone via ComfyUI API")
+    p_qtts.add_argument("--mode", choices=["design", "clone"], default="design")
+    p_qtts.add_argument("--text", required=True, help="Target speech text to synthesize")
+    p_qtts.add_argument("--instruct", default="", help="Voice design description (design) or emotion directive (clone)")
+    p_qtts.add_argument("--language", default="Chinese")
+    p_qtts.add_argument("--ref-audio", default="", help="Reference voice clip path (required for clone)")
+    p_qtts.add_argument("--ref-text", default="", help="Optional reference audio transcript")
+    p_qtts.add_argument("--x-vector-only", action="store_true")
+    p_qtts.add_argument("--temperature", type=float, default=0.9)
+    p_qtts.add_argument("--top-p", type=float, default=1.0)
+    p_qtts.add_argument("--top-k", type=int, default=50)
+    p_qtts.add_argument("--seed", type=int, default=-1)
+    p_qtts.add_argument("--prefix", default="audio/Qwen3TTS_CLI")
+    p_qtts.add_argument("--comfy-url", default="")
+    p_qtts.add_argument("--out", default="./outputs")
+    p_qtts.add_argument("--keep-alive", action="store_true", help="Keep Colab VM awake after this run (default: auto-sleep & release VM to save CU)")
+    p_qtts.add_argument("--dry-run", action="store_true")
+
+    p_d3 = sub.add_parser("comfy-run-drama3", help="Run Fish Audio Drama 3 (35B MoE + Qwen3-ASR) multi-speaker emotional TTS via ComfyUI API")
+    p_d3.add_argument("--text", required=True, help="Script text with optional [sighs]/[whispers] stage cues and <|speaker:N|> tags")
+    p_d3.add_argument("--ref-audio", action="append", default=[], help="Reference voice clip (repeatable for speaker 0..15)")
+    p_d3.add_argument("--ref-text", action="append", default=[], help="Optional manual transcript paired with --ref-audio (auto Qwen3-ASR when omitted)")
+    p_d3.add_argument("--experts", choices=["in RAM", "in VRAM"], default="in RAM")
+    p_d3.add_argument("--speakers", choices=["one take per line", "one take per line, hearing the line before", "one take per speaker", "together"], default="one take per line")
+    p_d3.add_argument("--voice-guidance", type=float, default=0.0)
+    p_d3.add_argument("--temperature", type=float, default=1.0)
+    p_d3.add_argument("--top-p", type=float, default=0.9)
+    p_d3.add_argument("--top-k", type=int, default=0)
+    p_d3.add_argument("--no-shorten-pauses", action="store_true")
+    p_d3.add_argument("--seed", type=int, default=-1)
+    p_d3.add_argument("--prefix", default="audio/Drama3_CLI")
+    p_d3.add_argument("--comfy-url", default="")
+    p_d3.add_argument("--out", default="./outputs")
+    p_d3.add_argument("--keep-alive", action="store_true", help="Keep Colab VM awake after this run (default: auto-sleep & release VM to save CU)")
+    p_d3.add_argument("--dry-run", action="store_true")
+
+    p_dp = sub.add_parser(
+        "drama-produce",
+        help="Full-automatic Cinema-Grade Short-Drama Generation System (story + optional faces -> cards, 9-grid scenes, dubbing, 14-20 shots, QA, MP4 + Jianying + HTML board)",
+    )
+    p_dp.add_argument("--story", default="", help="Inline story text / script / synopsis")
+    p_dp.add_argument("--story-file", default="", help="Path to story text / markdown file")
+    p_dp.add_argument("--project-name", default="cinema_drama", help="Project slug for output filenames")
+    p_dp.add_argument("--char-face", action="append", default=[], help="Optional character face ref as RoleName=/path/to/face.png (repeatable; auto-generates face if omitted)")
+    p_dp.add_argument("--char-voice", action="append", default=[], help="Optional character voice seed as RoleName=/path/to/voice.wav (repeatable; auto-designs voice if omitted)")
+    p_dp.add_argument("--aspect", choices=["16:9", "9:16"], default="16:9")
+    p_dp.add_argument("--visual-base", choices=["live_action", "3d_cg", "anime_2d"], default="live_action")
+    p_dp.add_argument("--style-phrase", default="", help="Optional English cinematography style override")
+    p_dp.add_argument("--duration", type=float, default=48.0, help="Target episode duration in seconds (default 48)")
+    p_dp.add_argument("--max-retries", type=int, default=2, help="Max automatic QA retries per asset/shot")
+    p_dp.add_argument("--no-subtitles", action="store_true", help="Disable burning SRT subtitles into final MP4")
+    p_dp.add_argument("--no-jianying", action="store_true", help="Skip Jianying Pro draft zip export")
+    p_dp.add_argument("--no-html-board", action="store_true", help="Skip offline HTML storyboard workbench export")
+    p_dp.add_argument("--seed", type=int, default=20261125)
+    p_dp.add_argument("--out", required=True, help="Project workspace output directory")
+    p_dp.add_argument("--keep-alive", action="store_true", help="Keep Colab G4 VM awake after completion (default: auto-sleep & release VM)")
 
     args = parser.parse_args(argv)
     scoped_acct = (getattr(args, "account", "") or os.environ.get("EASYCOLAB_ACCOUNT", "")).strip()
@@ -2264,6 +3091,55 @@ def _execute_cli_command(args: argparse.Namespace) -> int:
     if args.cmd == "extract-voice-seed":
         cmd_extract_voice_seed(args)
         _emit_app_log(f"声纹音频切片完成 -> {args.output}")
+        return 0
+    if args.cmd == "extract-last-frame":
+        cmd_extract_last_frame(args)
+        _emit_app_log(f"镜头尾帧提取完成 -> {args.output}")
+        return 0
+    if args.cmd == "stitch-drama-jlcut":
+        cmd_stitch_drama_jlcut(args)
+        _emit_app_log(f"J-Cut 无缝短剧合成完成 -> {args.output}")
+        return 0
+    if args.cmd == "drama-produce":
+        ec_root = _find_easycolab_root()
+        if str(ec_root) not in sys.path:
+            sys.path.insert(0, str(ec_root))
+        from drama_studio import ProductionConfig, run_drama_production
+
+        story_txt = (args.story or "").strip()
+        if args.story_file:
+            story_txt = Path(args.story_file).expanduser().resolve().read_text(encoding="utf-8").strip()
+        if not story_txt:
+            raise ValueError("Provide either --story or --story-file.")
+
+        def _parse_kv_pairs(items: List[str]) -> Dict[str, str]:
+            out_map: Dict[str, str] = {}
+            for raw in items or []:
+                if "=" not in raw:
+                    raise ValueError(f"Expected RoleName=/path/to/file, got: {raw!r}")
+                k, v = raw.split("=", 1)
+                out_map[k.strip()] = str(Path(v.strip()).expanduser().resolve())
+            return out_map
+
+        cfg = ProductionConfig(
+            project_dir=Path(args.out).expanduser().resolve(),
+            story_text=story_txt,
+            project_name=args.project_name,
+            char_faces=_parse_kv_pairs(args.char_face),
+            char_voices=_parse_kv_pairs(args.char_voice),
+            aspect_ratio=args.aspect,
+            visual_base=args.visual_base,
+            style_phrase_en=args.style_phrase,
+            target_duration_s=float(args.duration),
+            max_qa_retries=max(0, int(args.max_retries)),
+            burn_subtitles=not bool(args.no_subtitles),
+            export_jianying=not bool(args.no_jianying),
+            export_html_board=not bool(args.no_html_board),
+            keep_alive=bool(args.keep_alive),
+            seed_base=int(args.seed),
+        )
+        summary = run_drama_production(cfg)
+        print(json.dumps(summary, ensure_ascii=False, indent=2))
         return 0
     if args.cmd in ("auth-status", "auth-status-all", "auth-url", "auth-list", "keepalive", "stop-all"):
         rc, out = _run_bridge([args.cmd.replace("-", "_")])
@@ -2292,7 +3168,7 @@ def _execute_cli_command(args: argparse.Namespace) -> int:
         cmd_recover(args)
         return 0
 
-    if args.cmd in ("comfy-run-10eros", "comfy-run-sulphur3", "comfy-run-tara", "comfy-upscale", "comfy-upscale-recavsr"):
+    if args.cmd in ("comfy-run-h3-drama", "comfy-run-qwen3-tts", "comfy-run-drama3", "comfy-run-wan22-remix", "comfy-run-moss", "comfy-run-qwen-edit", "comfy-sweep-360-plates", "comfy-run-10eros", "comfy-run-sulphur3", "comfy-run-tara", "comfy-upscale-recavsr"):
         if args.dry_run:
             base_url, password = "", ""
         else:
@@ -2760,65 +3636,6 @@ def _execute_cli_command(args: argparse.Namespace) -> int:
         print(json.dumps({"ok": True, "files": files, "auto_sleep": sleep_report}, ensure_ascii=False, indent=2))
         return 0
 
-    if args.cmd == "comfy-upscale":
-        if not Path(args.video).expanduser().is_file():
-            raise FileNotFoundError(f"Source video not found: {args.video}")
-        if args.dry_run:
-            vid_name = Path(args.video).name
-            graph = _build_seedvr2_upscale_api_prompt(
-                vid_name, args.model, args.resolution, args.max_resolution,
-                args.batch_size, args.temporal_overlap, args.color_correction,
-                not args.no_audio, args.attention_mode, args.seed, args.prefix,
-                decode_tile_size=args.decode_tile_size,
-            )
-            print(json.dumps({"auto_sleep_after_run": not args.keep_alive, "prompt": graph}, ensure_ascii=False, indent=2))
-            return 0
-        sleep_report = {"triggered": False, "reason": "keep_alive"}
-        files = []
-        cf_pw = password
-        _begin_external_task(
-            command="comfy-upscale",
-            model_id="seedvr2_upscaler",
-            model_name="SeedVR2 7B · 视频超分",
-            task_mode="video_upscale",
-            prompt=f"SeedVR2 视频超分修复：{Path(args.video).name} -> 短边 {args.resolution}p ({args.model})",
-            params_summary=f"{args.resolution}p · batch={_snap_seedvr2_batch_size(args.batch_size)} · color={args.color_correction}",
-            params={
-                "seedvr2_model": args.model,
-                "seedvr2_resolution": int(args.resolution),
-                "seedvr2_batch_size": int(_snap_seedvr2_batch_size(args.batch_size)),
-                "seedvr2_temporal_overlap": int(args.temporal_overlap),
-                "seedvr2_color_correction": args.color_correction,
-                "seedvr2_keep_audio": bool(not args.no_audio),
-            },
-            input_files=[args.video],
-            out_dir=args.out,
-            prefix=args.prefix,
-        )
-        try:
-            comfy_url, cf_pw = _resolve_comfy_url(args)
-            _emit_app_log(
-                f"提交 SeedVR2 视频超分 ({args.model}, 目标短边={args.resolution}p, batch={_snap_seedvr2_batch_size(args.batch_size)}, 保留音轨={'ON' if not args.no_audio else 'OFF'})..."
-            )
-            vid_name = _comfy_upload_file(comfy_url, cf_pw, args.video)
-            graph = _build_seedvr2_upscale_api_prompt(
-                vid_name, args.model, args.resolution, args.max_resolution,
-                args.batch_size, args.temporal_overlap, args.color_correction,
-                not args.no_audio, args.attention_mode, args.seed, args.prefix,
-                decode_tile_size=args.decode_tile_size,
-            )
-            files = _submit_and_wait_comfy(comfy_url, cf_pw, graph, Path(args.out))
-            _finish_external_task(output_files=files)
-        except Exception as task_err:
-            _finish_external_task(error=str(task_err))
-            raise
-        finally:
-            if not args.keep_alive:
-                sleep_report = _auto_sleep_runtime(base_url, password or cf_pw, sync_comfy=bool(base_url))
-        _emit_app_log(f"SeedVR2 视频超分完成，输出文件: {', '.join(files)}")
-        print(json.dumps({"ok": True, "files": files, "auto_sleep": sleep_report}, ensure_ascii=False, indent=2))
-        return 0
-
     if args.cmd == "comfy-upscale-recavsr":
         if not Path(args.video).expanduser().is_file():
             raise FileNotFoundError(f"Source video not found: {args.video}")
@@ -2871,6 +3688,544 @@ def _execute_cli_command(args: argparse.Namespace) -> int:
                 sleep_report = _auto_sleep_runtime(base_url, password or cf_pw, sync_comfy=bool(base_url))
         _emit_app_log(f"ReCaVSR 流式超分完成，输出文件: {', '.join(files)}")
         print(json.dumps({"ok": True, "files": files, "auto_sleep": sleep_report}, ensure_ascii=False, indent=2))
+        return 0
+
+    if args.cmd == "comfy-run-moss":
+        if len(args.ref_image) > 3:
+            raise ValueError("MOSS-Image OstrisEdit supports at most 3 reference images (image1..image3)")
+        eff_mode = "i2i_edit" if (args.mode == "i2i_edit" or bool(args.ref_image)) else "t2i"
+        nsfw_enabled = not args.disable_nsfw_lora
+        kv_cache = not args.disable_kv_cache
+        match_input_size = not args.no_match_input_size
+        if eff_mode == "i2i_edit" and not args.ref_image:
+            raise ValueError("i2i_edit mode requires at least 1 --ref-image")
+        for p in args.ref_image:
+            if not Path(p).expanduser().is_file():
+                raise FileNotFoundError(f"Reference image not found: {p}")
+
+        if args.dry_run:
+            img_names = [Path(p).name for p in args.ref_image]
+            graph = _build_moss_image_api_prompt(
+                eff_mode, args.prompt, args.negative_prompt, img_names,
+                args.width, args.height, args.steps, args.cfg,
+                args.edit_lora_strength, nsfw_enabled, args.nsfw_lora_strength,
+                kv_cache, match_input_size, args.seed, args.prefix,
+            )
+            print(json.dumps({"auto_sleep_after_run": not args.keep_alive, "prompt": graph}, ensure_ascii=False, indent=2))
+            return 0
+
+        sleep_report = {"triggered": False, "reason": "keep_alive"}
+        files = []
+        cf_pw = password
+        _begin_external_task(
+            command="comfy-run-moss",
+            model_id="moss_image_edit",
+            model_name="MOSS-Image 无限制修图",
+            task_mode=eff_mode,
+            prompt=args.prompt,
+            negative_prompt=args.negative_prompt,
+            params_summary=(
+                f"{eff_mode} · {args.width}x{args.height} · {args.steps}步 · CFG={args.cfg}"
+                + (f" · 编辑LoRA={args.edit_lora_strength}" if eff_mode == "i2i_edit" else "")
+                + (f" · NSFW={args.nsfw_lora_strength}" if nsfw_enabled else "")
+            ),
+            params={
+                "width": int(args.width),
+                "height": int(args.height),
+                "steps": int(args.steps),
+                "moss_cfg": float(args.cfg),
+                "moss_edit_lora_strength": float(args.edit_lora_strength),
+                "moss_nsfw_lora_enabled": bool(nsfw_enabled),
+                "moss_nsfw_lora_strength": float(args.nsfw_lora_strength),
+            },
+            input_files=list(args.ref_image),
+            out_dir=args.out,
+            prefix=args.prefix,
+        )
+        try:
+            comfy_url, cf_pw = _resolve_comfy_url(args)
+            _emit_app_log(
+                f"提交 MOSS-Image 无限制{'指令修图' if eff_mode == 'i2i_edit' else '文生图'} "
+                f"(steps={args.steps}, cfg={args.cfg}, refs={len(args.ref_image)}, nsfw={nsfw_enabled})..."
+            )
+            img_names = [_comfy_upload_file(comfy_url, cf_pw, p) for p in args.ref_image]
+            graph = _build_moss_image_api_prompt(
+                eff_mode, args.prompt, args.negative_prompt, img_names,
+                args.width, args.height, args.steps, args.cfg,
+                args.edit_lora_strength, nsfw_enabled, args.nsfw_lora_strength,
+                kv_cache, match_input_size, args.seed, args.prefix,
+            )
+            files = _submit_and_wait_comfy(comfy_url, cf_pw, graph, Path(args.out))
+            _finish_external_task(output_files=files)
+        except Exception as task_err:
+            _finish_external_task(error=str(task_err))
+            raise
+        finally:
+            if not args.keep_alive:
+                sleep_report = _auto_sleep_runtime(base_url, password or cf_pw, sync_comfy=bool(base_url))
+        _emit_app_log(f"MOSS-Image 生成完成，输出文件: {', '.join(files)}")
+        print(json.dumps({"ok": True, "files": files, "auto_sleep": sleep_report}, ensure_ascii=False, indent=2))
+        return 0
+
+    if args.cmd == "comfy-run-wan22-remix":
+        eff_mode = (args.mode or "i2v").strip().lower()
+        if not Path(args.first_frame).expanduser().is_file():
+            raise FileNotFoundError(f"First frame not found: {args.first_frame}")
+        if eff_mode == "fl2va" and args.last_frame and not Path(args.last_frame).expanduser().is_file():
+            raise FileNotFoundError(f"Last frame not found: {args.last_frame}")
+
+        if args.dry_run:
+            first_name = Path(args.first_frame).name
+            last_name = Path(args.last_frame).name if args.last_frame else ""
+            graph = _build_wan22_remix_api_prompt(
+                eff_mode, args.prompt, args.negative_prompt, first_name, last_name,
+                args.width, args.height, args.frames, args.steps,
+                args.split_step, args.shift, args.cfg, args.seed, args.prefix,
+            )
+            print(json.dumps({"auto_sleep_after_run": not args.keep_alive, "prompt": graph}, ensure_ascii=False, indent=2))
+            return 0
+
+        sleep_report = {"triggered": False, "reason": "keep_alive"}
+        files = []
+        cf_pw = password
+        input_files = [args.first_frame] + ([args.last_frame] if eff_mode == "fl2va" and args.last_frame else [])
+        _begin_external_task(
+            command="comfy-run-wan22-remix",
+            model_id="wan22_remix_nsfw",
+            model_name="Wan2.2-Remix · NSFW 极速图生视频",
+            task_mode=eff_mode,
+            prompt=args.prompt,
+            negative_prompt=args.negative_prompt,
+            params_summary=(
+                f"{eff_mode} · {args.width}x{args.height} · {_snap_wan_frames(args.frames)}帧 · "
+                f"{args.steps}步(split={args.split_step}) · shift={args.shift} · CFG={args.cfg}"
+            ),
+            params={
+                "width": int(args.width),
+                "height": int(args.height),
+                "num_frames": int(_snap_wan_frames(args.frames)),
+                "steps": int(args.steps),
+                "wan22_split_step": int(args.split_step),
+                "wan22_shift": float(args.shift),
+                "wan22_cfg": float(args.cfg),
+            },
+            input_files=input_files,
+            out_dir=args.out,
+            prefix=args.prefix,
+        )
+        try:
+            comfy_url, cf_pw = _resolve_comfy_url(args)
+            _emit_app_log(
+                f"提交 Wan2.2-Remix NSFW {'首尾帧过渡' if eff_mode == 'fl2va' else '单图生视频'} "
+                f"(frames={_snap_wan_frames(args.frames)}, steps={args.steps}, split={args.split_step}, shift={args.shift}, cfg={args.cfg})..."
+            )
+            first_name = _comfy_upload_file(comfy_url, cf_pw, args.first_frame)
+            last_name = _comfy_upload_file(comfy_url, cf_pw, args.last_frame) if (eff_mode == "fl2va" and args.last_frame) else ""
+            graph = _build_wan22_remix_api_prompt(
+                eff_mode, args.prompt, args.negative_prompt, first_name, last_name,
+                args.width, args.height, args.frames, args.steps,
+                args.split_step, args.shift, args.cfg, args.seed, args.prefix,
+            )
+            files = _submit_and_wait_comfy(comfy_url, cf_pw, graph, Path(args.out))
+            _finish_external_task(output_files=files)
+        except Exception as task_err:
+            _finish_external_task(error=str(task_err))
+            raise
+        finally:
+            if not args.keep_alive:
+                sleep_report = _auto_sleep_runtime(base_url, password or cf_pw, sync_comfy=bool(base_url))
+        _emit_app_log(f"Wan2.2-Remix 生成完成，输出文件: {', '.join(files)}")
+        print(json.dumps({"ok": True, "files": files, "auto_sleep": sleep_report}, ensure_ascii=False, indent=2))
+        return 0
+
+    if args.cmd == "comfy-run-h3-drama":
+        shots_text = (args.shots or "").strip()
+        if args.shots_file:
+            sf_path = Path(args.shots_file).expanduser()
+            if not sf_path.is_file():
+                raise FileNotFoundError(f"Shots script file not found: {args.shots_file}")
+            shots_text = sf_path.read_text(encoding="utf-8").strip()
+        if not shots_text:
+            raise ValueError("Provide --shots or --shots-file with at least one beat/shot description.")
+
+        ref_imgs = list(args.ref_image or [])[:6]
+        for p in ref_imgs:
+            if not Path(p).expanduser().is_file():
+                raise FileNotFoundError(f"Reference image not found: {p}")
+        if args.ref_audio and not Path(args.ref_audio).expanduser().is_file():
+            raise FileNotFoundError(f"Reference audio not found: {args.ref_audio}")
+
+        if args.dry_run:
+            img_names = [Path(p).name for p in ref_imgs]
+            audio_name = Path(args.ref_audio).name if args.ref_audio else ""
+            graph = _build_h3_drama_director_api_prompt(
+                shots=shots_text,
+                idea=args.idea,
+                project_seconds=args.duration,
+                chunk_seconds=args.chunk_seconds,
+                continuity=args.continuity,
+                pin_frames=args.pin_frames,
+                style=args.style,
+                ref_images=img_names,
+                char_names=list(args.char_name or []),
+                ref_audio_name=audio_name,
+                soundscape=args.soundscape,
+                music=args.music,
+                width=args.width,
+                height=args.height,
+                steps=args.steps,
+                seed=args.seed,
+                prefix=args.prefix,
+            )
+            print(json.dumps({"auto_sleep_after_run": not args.keep_alive, "prompt": graph}, ensure_ascii=False, indent=2))
+            return 0
+
+        sleep_report = {"triggered": False, "reason": "keep_alive"}
+        files = []
+        cf_pw = password
+        input_files = list(ref_imgs) + ([args.ref_audio] if args.ref_audio else [])
+        _begin_external_task(
+            command="comfy-run-h3-drama",
+            model_id="minimax_h3_drama_director",
+            model_name="MiniMax-H3 短剧导演 · 多镜头连拍",
+            task_mode="drama_multishot",
+            prompt=shots_text,
+            soundscape=args.soundscape,
+            music=args.music,
+            params_summary=(
+                f"{args.duration}s · {args.width}x{args.height} · {args.continuity} · "
+                f"pin={args.pin_frames}f · {args.style} · {args.steps}步"
+            ),
+            params={
+                "width": int(args.width),
+                "height": int(args.height),
+                "steps": int(args.steps),
+                "drama_project_seconds": float(args.duration),
+                "drama_continuity": args.continuity,
+                "drama_pin_frames": args.pin_frames,
+                "drama_style": args.style,
+            },
+            input_files=input_files,
+            out_dir=args.out,
+            prefix=args.prefix,
+        )
+        try:
+            comfy_url, cf_pw = _resolve_comfy_url(args)
+            _emit_app_log(
+                f"提交 MiniMax-H3 短剧导演多镜头生成 "
+                f"(duration={args.duration}s, continuity={args.continuity}, refs={len(ref_imgs)}, audio={bool(args.ref_audio)})..."
+            )
+            img_names = [_comfy_upload_file(comfy_url, cf_pw, p) for p in ref_imgs]
+            audio_name = _comfy_upload_file(comfy_url, cf_pw, args.ref_audio) if args.ref_audio else ""
+            graph = _build_h3_drama_director_api_prompt(
+                shots=shots_text,
+                idea=args.idea,
+                project_seconds=args.duration,
+                chunk_seconds=args.chunk_seconds,
+                continuity=args.continuity,
+                pin_frames=args.pin_frames,
+                style=args.style,
+                ref_images=img_names,
+                char_names=list(args.char_name or []),
+                ref_audio_name=audio_name,
+                soundscape=args.soundscape,
+                music=args.music,
+                width=args.width,
+                height=args.height,
+                steps=args.steps,
+                seed=args.seed,
+                prefix=args.prefix,
+            )
+            files = _submit_and_wait_comfy(comfy_url, cf_pw, graph, Path(args.out))
+            _finish_external_task(output_files=files)
+        except Exception as task_err:
+            _finish_external_task(error=str(task_err))
+            raise
+        finally:
+            if not args.keep_alive:
+                sleep_report = _auto_sleep_runtime(base_url, password or cf_pw, sync_comfy=bool(base_url))
+        _emit_app_log(f"MiniMax-H3 短剧导演成片完成，输出文件: {', '.join(files)}")
+        print(json.dumps({"ok": True, "files": files, "auto_sleep": sleep_report}, ensure_ascii=False, indent=2))
+        return 0
+
+    if args.cmd == "comfy-run-qwen3-tts":
+        eff_mode = (args.mode or "design").strip().lower()
+        if eff_mode == "clone" and (not args.ref_audio or not Path(args.ref_audio).expanduser().is_file()):
+            raise FileNotFoundError(f"Reference audio not found for clone mode: {args.ref_audio}")
+
+        if args.dry_run:
+            aud_name = Path(args.ref_audio).name if args.ref_audio else ""
+            graph = _build_qwen3_tts_api_prompt(
+                eff_mode, args.text, args.instruct, args.language, aud_name,
+                args.ref_text, bool(args.x_vector_only), args.temperature, args.top_p,
+                args.top_k, args.seed, args.prefix,
+            )
+            print(json.dumps({"auto_sleep_after_run": not args.keep_alive, "prompt": graph}, ensure_ascii=False, indent=2))
+            return 0
+
+        sleep_report = {"triggered": False, "reason": "keep_alive"}
+        files = []
+        cf_pw = password
+        _begin_external_task(
+            command="comfy-run-qwen3-tts",
+            model_id="qwen3_tts_voice_design",
+            model_name="Qwen3-TTS 1.7B · 声音设计与情感克隆",
+            task_mode="voice_clone" if eff_mode == "clone" else "voice_design",
+            prompt=args.text,
+            soundscape=args.instruct,
+            params_summary=f"{eff_mode} · {args.language} · temp={args.temperature}",
+            params={
+                "tts_language": args.language,
+                "tts_instruct": args.instruct,
+                "tts_x_vector_only": bool(args.x_vector_only),
+            },
+            input_files=[args.ref_audio] if args.ref_audio else [],
+            out_dir=args.out,
+            prefix=args.prefix,
+        )
+        try:
+            comfy_url, cf_pw = _resolve_comfy_url(args)
+            _emit_app_log(f"提交 Qwen3-TTS ({eff_mode}, {args.language}) 声音合成...")
+            aud_name = _comfy_upload_file(comfy_url, cf_pw, args.ref_audio) if (eff_mode == "clone" and args.ref_audio) else ""
+            graph = _build_qwen3_tts_api_prompt(
+                eff_mode, args.text, args.instruct, args.language, aud_name,
+                args.ref_text, bool(args.x_vector_only), args.temperature, args.top_p,
+                args.top_k, args.seed, args.prefix,
+            )
+            files = _submit_and_wait_comfy(comfy_url, cf_pw, graph, Path(args.out))
+            _finish_external_task(output_files=files)
+        except Exception as task_err:
+            _finish_external_task(error=str(task_err))
+            raise
+        finally:
+            if not args.keep_alive:
+                sleep_report = _auto_sleep_runtime(base_url, password or cf_pw, sync_comfy=bool(base_url))
+        _emit_app_log(f"Qwen3-TTS 配音完成，输出文件: {', '.join(files)}")
+        print(json.dumps({"ok": True, "files": files, "auto_sleep": sleep_report}, ensure_ascii=False, indent=2))
+        return 0
+
+    if args.cmd == "comfy-run-drama3":
+        ref_auds = list(args.ref_audio or [])[:16]
+        for p in ref_auds:
+            if not Path(p).expanduser().is_file():
+                raise FileNotFoundError(f"Reference audio not found: {p}")
+
+        if args.dry_run:
+            aud_names = [Path(p).name for p in ref_auds]
+            graph = _build_drama3_tts_api_prompt(
+                args.text, aud_names, list(args.ref_text or []), args.experts,
+                args.speakers, args.voice_guidance, args.temperature, args.top_p,
+                args.top_k, not args.no_shorten_pauses, args.seed, args.prefix,
+            )
+            print(json.dumps({"auto_sleep_after_run": not args.keep_alive, "prompt": graph}, ensure_ascii=False, indent=2))
+            return 0
+
+        sleep_report = {"triggered": False, "reason": "keep_alive"}
+        files = []
+        cf_pw = password
+        _begin_external_task(
+            command="comfy-run-drama3",
+            model_id="drama3_tts",
+            model_name="Fish Audio Drama 3 · 35B 戏剧情感配音",
+            task_mode="drama_tts_clone" if ref_auds else "drama_tts_free",
+            prompt=args.text,
+            params_summary=f"{args.experts} · {args.speakers} · voices={len(ref_auds)} · guidance={args.voice_guidance}",
+            params={
+                "drama3_experts": args.experts,
+                "drama3_speakers_mode": args.speakers,
+                "drama3_voice_guidance": float(args.voice_guidance),
+                "temperature": float(args.temperature),
+                "top_k": int(args.top_k),
+            },
+            input_files=ref_auds,
+            out_dir=args.out,
+            prefix=args.prefix,
+        )
+        try:
+            comfy_url, cf_pw = _resolve_comfy_url(args)
+            _emit_app_log(
+                f"提交 Fish Audio Drama 3 情感配音 (experts={args.experts}, speakers={args.speakers}, refs={len(ref_auds)})..."
+            )
+            aud_names = [_comfy_upload_file(comfy_url, cf_pw, p) for p in ref_auds]
+            graph = _build_drama3_tts_api_prompt(
+                args.text, aud_names, list(args.ref_text or []), args.experts,
+                args.speakers, args.voice_guidance, args.temperature, args.top_p,
+                args.top_k, not args.no_shorten_pauses, args.seed, args.prefix,
+            )
+            files = _submit_and_wait_comfy(comfy_url, cf_pw, graph, Path(args.out))
+            _finish_external_task(output_files=files)
+        except Exception as task_err:
+            _finish_external_task(error=str(task_err))
+            raise
+        finally:
+            if not args.keep_alive:
+                sleep_report = _auto_sleep_runtime(base_url, password or cf_pw, sync_comfy=bool(base_url))
+        _emit_app_log(f"Fish Audio Drama 3 戏剧配音完成，输出文件: {', '.join(files)}")
+        print(json.dumps({"ok": True, "files": files, "auto_sleep": sleep_report}, ensure_ascii=False, indent=2))
+        return 0
+
+    if args.cmd == "comfy-run-qwen-edit":
+        if len(args.ref_image) > 3:
+            raise ValueError("Qwen-Image-Edit-2511 supports at most 3 reference images (image1..image3)")
+        if not args.ref_image:
+            raise ValueError("comfy-run-qwen-edit requires at least 1 --ref-image")
+        for p in args.ref_image:
+            if not Path(p).expanduser().is_file():
+                raise FileNotFoundError(f"Reference image not found: {p}")
+
+        if args.dry_run:
+            img_names = [Path(p).name for p in args.ref_image]
+            graph = _build_qwen_edit_api_prompt(
+                args.prompt, args.negative_prompt, img_names,
+                args.width, args.height, args.steps, args.cfg, args.shift,
+                args.lightning_lora_strength, args.angle_lora_strength,
+                args.seed, args.prefix,
+            )
+            print(json.dumps({"auto_sleep_after_run": not args.keep_alive, "prompt": graph}, ensure_ascii=False, indent=2))
+            return 0
+
+        sleep_report = {"triggered": False, "reason": "keep_alive"}
+        files = []
+        cf_pw = password
+        _begin_external_task(
+            command="comfy-run-qwen-edit",
+            model_id="qwen_image_edit_2511",
+            model_name="Qwen-Image-Edit-2511 · 多图融合与96视角",
+            task_mode="i2i_edit",
+            prompt=args.prompt,
+            negative_prompt=args.negative_prompt,
+            params_summary=(
+                f"{args.width}x{args.height} · {args.steps}步 · CFG={args.cfg}"
+                + f" · Lightning={args.lightning_lora_strength}"
+                + (f" · MultiAngle={args.angle_lora_strength}" if args.angle_lora_strength > 0 else "")
+            ),
+            params={
+                "width": int(args.width),
+                "height": int(args.height),
+                "steps": int(args.steps),
+                "cfg": float(args.cfg),
+                "lightning_lora_strength": float(args.lightning_lora_strength),
+                "angle_lora_strength": float(args.angle_lora_strength),
+            },
+            input_files=list(args.ref_image),
+            out_dir=args.out,
+            prefix=args.prefix,
+        )
+        try:
+            comfy_url, cf_pw = _resolve_comfy_url(args)
+            _emit_app_log(
+                f"提交 Qwen-Image-Edit-2511 多图/视角编辑 (steps={args.steps}, refs={len(args.ref_image)}, angle={args.angle_lora_strength})..."
+            )
+            img_names = [_comfy_upload_file(comfy_url, cf_pw, p) for p in args.ref_image]
+            graph = _build_qwen_edit_api_prompt(
+                args.prompt, args.negative_prompt, img_names,
+                args.width, args.height, args.steps, args.cfg, args.shift,
+                args.lightning_lora_strength, args.angle_lora_strength,
+                args.seed, args.prefix,
+            )
+            files = _submit_and_wait_comfy(comfy_url, cf_pw, graph, Path(args.out))
+            _finish_external_task(output_files=files)
+        except Exception as task_err:
+            _finish_external_task(error=str(task_err))
+            raise
+        finally:
+            if not args.keep_alive:
+                sleep_report = _auto_sleep_runtime(base_url, password or cf_pw, sync_comfy=bool(base_url))
+        _emit_app_log(f"Qwen-Image-Edit-2511 完成，输出文件: {', '.join(files)}")
+        print(json.dumps({"ok": True, "files": files, "auto_sleep": sleep_report}, ensure_ascii=False, indent=2))
+        return 0
+
+    if args.cmd == "comfy-sweep-360-plates":
+        master = Path(args.master_plate).expanduser().resolve()
+        if not master.is_file():
+            raise FileNotFoundError(f"Master set plate not found: {master}")
+        snapped_frames, _ = snap_frames_to_h3_grid(args.frames)
+        dur_s = round(snapped_frames / 24.0, 2)
+        sweep_prompt = (
+            "[Reference Notes]\n"
+            "- <Picture 1>: Locked empty architectural establishing set plate anchoring exact architecture, lighting direction, furniture, and props.\n\n"
+            "[integrated_multimodal_description]\n"
+            f"At 0.00 seconds, <Picture 1> is fully integrated as the opening frame. From 0.00s to {dur_s:.2f}s, "
+            "an empty room architectural survey camera positioned near the center of the set executes one smooth, continuous, slow 360-degree clockwise horizontal panoramic pan "
+            f"revealing all four walls coherently while keeping exact style, period woodwork, lighting direction, and props locked to <Picture 1>: {args.scene_desc.strip()}. "
+            "No people appear anywhere in frame; keep every wall, window, doorway, and piece of furniture physically consistent throughout the full 360-degree pan.\n\n"
+            "[overall_soundscape]\n"
+            "Quiet empty interior room ambience.\n\n"
+            "[non_diegetic_music]\n"
+            "Minimal sustained ambient tone."
+        )
+        if args.dry_run:
+            graph = _build_10eros_api_prompt(
+                "multiref", sweep_prompt, [master.name], [], "", "",
+                args.width, args.height, snapped_frames, args.steps,
+                "lcm", "simple", 12.0, 3.0, args.ref_image_size, args.seed, f"{args.prefix}_sweep",
+                "10Eros_Max_8stepTurbo_v1.0_hybrid-int8_HQ.safetensors",
+                "qwen3vl_32b_heretic_minimax_h3_nvfp4.safetensors",
+            )
+            print(json.dumps({"auto_sleep_after_run": not args.keep_alive, "snapped_frames": snapped_frames, "prompt": graph}, ensure_ascii=False, indent=2))
+            return 0
+
+        out_dir = Path(args.out).expanduser().resolve()
+        out_dir.mkdir(parents=True, exist_ok=True)
+        sleep_report = {"triggered": False, "reason": "keep_alive"}
+        cf_pw = password
+        sweep_mp4 = out_dir / f"{args.prefix}_sweep.mp4"
+        plates: Dict[str, str] = {}
+        _begin_external_task(
+            command="comfy-sweep-360-plates",
+            model_id="minimax_h3_10eros_max",
+            model_name="360° 场景四向机位底图库 (10Eros-Max)",
+            task_mode="multiref",
+            prompt=sweep_prompt,
+            params_summary=f"{args.width}x{args.height} · {snapped_frames}f · ref={args.ref_image_size}",
+            params={"width": int(args.width), "height": int(args.height), "frames": int(snapped_frames), "steps": int(args.steps)},
+            input_files=[str(master)],
+            out_dir=str(out_dir),
+            prefix=args.prefix,
+        )
+        try:
+            comfy_url, cf_pw = _resolve_comfy_url(args)
+            _emit_app_log(f"正在云端执行 360° 场景空镜环拍 ({snapped_frames}f) 并提取四向机位底图...")
+            up_master = _comfy_upload_file(comfy_url, cf_pw, str(master))
+            graph = _build_10eros_api_prompt(
+                "multiref", sweep_prompt, [up_master], [], "", "",
+                args.width, args.height, snapped_frames, args.steps,
+                "lcm", "simple", 12.0, 3.0, args.ref_image_size, args.seed, f"{args.prefix}_sweep",
+                "10Eros_Max_8stepTurbo_v1.0_hybrid-int8_HQ.safetensors",
+                "qwen3vl_32b_heretic_minimax_h3_nvfp4.safetensors",
+            )
+            files = _submit_and_wait_comfy(comfy_url, cf_pw, graph, out_dir)
+            if not files:
+                raise RuntimeError("No sweep video returned from ComfyUI")
+            raw_mp4 = Path(files[-1])
+            if raw_mp4 != sweep_mp4:
+                raw_mp4.replace(sweep_mp4)
+            actual_dur = _probe_media_info(sweep_mp4)["duration_s"]
+            angle_specs = [
+                ("000_front", 0.25),
+                ("090_right", max(0.6, round(actual_dur * 0.28, 2))),
+                ("180_reverse", max(1.2, round(actual_dur * 0.54, 2))),
+                ("270_left", max(1.8, round(actual_dur * 0.80, 2))),
+            ]
+            for tag, ts in angle_specs:
+                dst_png = out_dir / f"{args.prefix}_{tag}.png"
+                subprocess.run(
+                    ["ffmpeg", "-y", "-ss", f"{ts:.2f}", "-i", str(sweep_mp4), "-frames:v", "1", str(dst_png)],
+                    check=True, capture_output=True, text=True,
+                )
+                plates[tag] = str(dst_png)
+            manifest = {"master_plate": str(master), "sweep_mp4": str(sweep_mp4), "duration_s": round(actual_dur, 2), "plates": plates}
+            manifest_path = out_dir / f"{args.prefix}_plates.json"
+            manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+            _finish_external_task(output_files=[str(sweep_mp4), *plates.values()])
+        except Exception as task_err:
+            _finish_external_task(error=str(task_err))
+            raise
+        finally:
+            if not args.keep_alive:
+                sleep_report = _auto_sleep_runtime(base_url, password or cf_pw, sync_comfy=bool(base_url))
+        _emit_app_log(f"360° 四向机位底图提取完成 -> {out_dir}")
+        print(json.dumps({"ok": True, "sweep_mp4": str(sweep_mp4), "plates": plates, "auto_sleep": sleep_report}, ensure_ascii=False, indent=2))
         return 0
 
     return 1

@@ -35,15 +35,6 @@
 - **Shared VAEs**: same Video/Audio VAEs.
 - **TARA Defaults**: `w=0.20s`, `f=0.25s`, `strength=2.0`, `max_penalty=6.0`, `attention_backend="flash partitions (no compile)"`, **8 steps** (`Euler / simple`, `CFG=1.0`), 24fps guide video grid.
 
-### B3. Video Super-Resolution ComfyUI Pack: `seedvr2_upscaler` (~17.0 GB)
-
-- **Main DiT (default)**: `numz/SeedVR2_comfyUI` -> `seedvr2_ema_7b_fp16.safetensors` (`models/SEEDVR2/`, 16.5 GB)
-- **Optional DiT Variants** (via `comfy-download-weight --subfolder SEEDVR2`): `seedvr2_ema_7b_sharp_fp16.safetensors` (16.5 GB, ultra-sharp landscapes/CG), `seedvr2_ema_3b_fp16.safetensors` (6.8 GB, fast)
-- **Shared VAE**: `numz/SeedVR2_comfyUI` -> `ema_vae_fp16.safetensors` (`models/SEEDVR2/`, 0.48 GB)
-- **Custom Nodes (auto-cloned)**: `ComfyUI-SeedVR2_VideoUpscaler` (`https://github.com/numz/ComfyUI-SeedVR2_VideoUpscaler.git`) -> `SeedVR2LoadDiTModel`, `SeedVR2LoadVAEModel`, `SeedVR2VideoUpscaler`
-- **Preset Workflow**: `12_SeedVR2_7B_FP16_视频4K超分修复.json`
-- **PRO 6000 Defaults**: `blocks_to_swap=0`, `offload_device="none"`, `cache_model=False`, `encode_tiled=False`, adaptive VAE decoding (`decode_tiled=False` at `<=1080p`, `decode_tiled=True` with `decode_tile_size=2048` at `>=1440p` to prevent 4K OOM without 1024px slowdown), `batch_size=17` (snaps to `4n+1`), `temporal_overlap=2`, `color_correction="lab"`, preserves source FPS (`VHS_VideoInfo` output 5) and audio (`VHS_LoadVideo` output 2).
-
 ### B4. Fast Streaming Video Super-Resolution Pack: `recavsr_upscaler` (~17.3 GB)
 
 - **Main Transformer (BF16 default)**: `kopper/ReCaVSR` -> `transformer.safetensors` (`models/recavsr/`, 10.6 GB)
@@ -53,27 +44,62 @@
 - **Preset Workflow**: `13_ReCaVSR_Wan2.2_极速流式4K超分.json` (`LoadVideo -> ReCaVSRLoader -> ReCaVSRUpscale -> SaveVideo`)
 - **Recommended Settings**: `scale=2.0` for 1056×608 / 720p AI clips (~2K), `scale=4.0` for 480p/540p clips (native 4× 4K), `decoder="flashdecoder"`, `kernels="fast"`, `color_fix="none"`, `encoder="auto"` (NVENC hardware encode + audio/FPS passthrough).
 
-### C. Official ComfyUI Pack: `minimax_h3_i2v_flf2v` (~39.1 GB)
+### B5. Uncensored Image Gen & Edit Pack: `moss_image_edit` (~19.4 GB)
 
-- **Main DiT**: `Comfy-Org/MiniMax-H3` -> `minimax_h3_fl2va_pruned_int8_convrot.safetensors` (19.53 GiB)
-- **Encoder**: `Comfy-Org/MiniMax-H3` -> `qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors` (14.61 GiB)
-- **Turbo LoRA**: `lightx2v/Minimax-h3-Turbo` -> `minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors` (1.82 GiB)
-- **Shared VAEs**: same Video/Audio VAEs.
+- **Main Diffusion**: `Comfy-Org/MOSS-Image` -> `moss_image_sft_bf16.safetensors` (`models/diffusion_models/`, 9.47 GB)
+- **Uncensored Encoder**: `pottokao/MOSS-Image-Text-Encoder-Heretic` -> `moss_te_heretic_full_int8_convrot.safetensors` (`models/text_encoders/`, 9.08 GB, decensored Qwen3.5-9B keeping full vision tower)
+- **VAE**: `Comfy-Org/MOSS-Image` -> `flux2-vae.safetensors` (`models/vae/`, 0.31 GB)
+- **Edit LoRA**: `akhaliq/MOSS-Image-Edit-HQ` -> `moss_edit_armV5.safetensors` (`models/loras/`, 0.46 GB, ai-toolkit format + `kv_cache=True`)
+- **Uncensored NSFW LoRA**: `axiomofmind/Moss-image-nsfw-uncensored-lora` -> `MOSS-Image-NSFW-Uncensored-LoRA-ComfyUI.safetensors` (`models/loras/`, 0.07 GB, optional trigger `moss_xvstyle`)
+- **Custom Nodes (auto-cloned)**: `ComfyUI-MOSS-Image-Ostris-Edit` (`https://github.com/ostris/ComfyUI-MOSS-Image-Ostris-Edit.git`) -> `TextEncodeMOSSImageOstrisEdit`, `MOSSImageOstrisEditModelPatch`
+- **Preset Workflows**:
+  - `14_MOSS-Image_无限制文生图(Heretic+NSFW).json`
+  - `15_MOSS-Image_无限制指令修图(OstrisEdit+armV5).json`
+- **Recommended Settings**: `Euler / simple`, **30–40 steps**, `CFG = 3.0`, `SkipLayerGuidanceDiTSimple(single_layers="22")`, `armV5` edit LoRA strength `1.0`, NSFW LoRA strength `0.65` (max 3 ref images via `image1..image3`).
 
-#### Reusing G4 for Turbo reference-motion shots
+### B6. Uncensored Fast I2V / FLF2V Pack: `wan22_remix_nsfw` (~33.1 GB)
 
-1. Identify the failing stage before retrying. A Colab HTTP 503 during GPU allocation is a failed allocation attempt. A desktop log that advances to successful G4 allocation and a tunnel address confirms those two stages. Check `comfy-status` separately for ComfyUI running state, the `minimax_h3_i2v_flf2v` pack's readiness, and the queue. A native model-status error can coexist with a healthy ComfyUI queue. When the user already has a healthy session, reuse its authenticated desktop connection. Keep credentials and tunnel URLs in local session state.
-2. If the official Turbo pack is missing and installation is in scope, use `comfy-install-pack --pack minimax_h3_i2v_flf2v --wait`. Use the standard Turbo graph and weights for actual generation. For reference motion in the ComfyUI API graph, use `LoadVideo` → `GetVideoComponents` → `MiniMaxH3ReferenceToVideo` with `ref_videos.ref_video_0` and a target-product `ref_images.ref_image_0`. Use `MiniMaxH3AddGuide` to anchor the required first or later frame. Confirm installed node inputs from `/object_info` before building the shot graph. When the source video causes the wrong product details to appear, use `MiniMaxH3ImageToVideo` with a clean target-product first frame for that shot.
-3. Record each shot's graph, seed, `prompt_id`, and local output. If the wait or download is interrupted, check the queue and `/history/{prompt_id}`, then recover the completed file if present. Once the queue and history confirm a shot failed or was never accepted, resubmit just that shot. Check the downloaded file decodes before treating the shot as done. Apply the authorized shutdown scope after the final downloads.
+- **High/Low Diffusion (v3.0 Lighting 8-step)**: `FX-FeiHou/wan2.2-Remix` -> `NSFW/Wan2.2_Remix_NSFW_i2v_14b_high_lighting_fp8_e4m3fn_v3.0.safetensors` & `low` (`models/diffusion_models/`, 13.31 GB each)
+- **Uncensored Text Encoder**: `NSFW-API/NSFW-Wan-UMT5-XXL` -> `nsfw_wan_umt5-xxl_fp8_scaled.safetensors` (`models/text_encoders/`, 6.27 GB, `CLIPLoader(type="wan")`)
+- **VAE**: `Comfy-Org/Wan_2.2_ComfyUI_Repackaged` -> `split_files/vae/wan_2.1_vae.safetensors` (`models/vae/`, 0.24 GB)
+- **Custom Nodes**: None (100% pure built-in ComfyUI nodes: `ModelSamplingSD3`, `WanImageToVideo`, `WanFirstLastFrameToVideo`, `KSamplerAdvanced`, `CreateVideo`, `SaveVideo`)
+- **Preset Workflows**:
+  - `16_Wan2.2-Remix_无限制单图生视频(v3.0_8步极速).json`
+  - `17_Wan2.2-Remix_无限制首尾帧过渡(v3.0_8步极速).json`
+- **Recommended Settings**: `Euler / simple`, **8 steps**, `split_step = 4` (`0->4` high, `4->10000` low), `ModelSamplingSD3 shift = 8.0`, `CFG = 1.0`, frames `4k+1` (`81 ≈ 5s` @ `16fps`).
 
-Verified on an EasyColab G4 with the official pruned INT8 weights and Turbo LoRA, using 576×1024, 24 fps, 8 steps, `res_multistep` / `simple`. Seven short clips used 56, 73 or 107 model frames. These values are an example for short vertical shots. Choose shot lengths from the source timing, round generation lengths to the model frame grid, and set delivery timing in the final assembly.
+### B7. MiniMax-H3 Short-Drama Timeline Studio: `minimax_h3_drama_director` (~39.13 GB shared + 20 MB TAE)
 
-### D. EasyColab Native DiffSynth Engines (G4 96GB + 176GB DDR5)
+- **Shared Weights**: Reuses `10Eros_Max_8stepTurbo_v1.0_hybrid-int8_HQ.safetensors` (both `model_fl2va` and `model_ref2va`), `qwen3vl_32b_heretic_minimax_h3_nvfp4.safetensors`, `minimax_h3_video_vae_int8_convrot.safetensors`, `minimax_h3_audio_vae_fp32.safetensors` (+ `vae_approx/taeh3.safetensors` from `OzzyGT/taeh3`).
+- **Custom Nodes (auto-cloned)**: `ComfyUI-MiniMaxH3-Director` (`https://github.com/seesee75-commits/ComfyUI-MiniMaxH3-Director.git`)
+- **Preset Workflows**:
+  - `18_MiniMax-H3_短剧导演_角色声纹多镜头(10Eros-Max_8步).json` (`NGContextImage` + `NGContextAudio` + `NGH3Director` + `NGProjectRender`)
+  - `19_MiniMax-H3_短剧导演_双角色分镜表成片(10Eros-Max_8步).json` (dual characters + `NGStoryboard`)
+- **Recommended Settings**: `turbo=False` (8-step already baked into `10Eros-Max`), `LCM / simple`, **8 steps**, `Shift 12/3`, `continuity="video_audio"`, `pin_frames="22"`, beat script `0-7: @Hero ...` and `@Hero says: ...`.
 
-| Model ID | HuggingFace Repo | Size | Capabilities |
-|---|---|---|---|
-| `minimax_h3` | `MiniMaxAI/MiniMax-H3` | ~134.1 GB | BF16 T2VA & FLF2V (4–15s, 24fps + 32kHz stereo), dual-backbone RAM hot-standby + Qwen3-VL prompt cache |
-| `minimax_h3_image` | `MiniMaxAI/MiniMax-H3-Image` | ~135.3 GB | 6-step native 4K (16MP) T2I & reference editing; auto-shares 32B `text_encoder` with `minimax_h3` |
+### B8. Natural Language Voice Design + Emotional Clone: `qwen3_tts_voice_design` (~9.74 GB)
+
+- **HF Snapshots (`models/qwen-tts/`)**: `Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign` (4.52 GB), `Qwen/Qwen3-TTS-12Hz-1.7B-Base` (4.54 GB), `Qwen/Qwen3-TTS-Tokenizer-12Hz` (0.68 GB). Apache-2.0.
+- **Custom Nodes (auto-cloned)**: `ComfyUI-Qwen-TTS` (`https://github.com/flybirdxx/ComfyUI-Qwen-TTS.git`, filtered to skip `onnxruntime-openvino`/`sox`).
+- **Preset Workflows**:
+  - `20_Qwen3-TTS_自然语言声音设计(VoiceDesign_1.7B).json` (`FB_Qwen3TTSVoiceDesign` -> `SaveAudio`)
+  - `21_Qwen3-TTS_声纹克隆与情感配音(Base_1.7B).json` (`LoadAudio` -> `FB_Qwen3TTSVoiceClone` -> `SaveAudio`)
+- **Drama Pipeline Synergy**: Generate clean 8–15s character voice seeds in `VoiceDesign` from pure text descriptions, then attach to `MiniMax-H3 Director` (`NGContextAudio`) or `Drama 3`.
+
+### B9. Dramatic Multi-Speaker Emotional TTS: `drama3_tts` (~44.23 GB)
+
+- **Weights**: `PedroMarinhoDev/Drama-3-ComfyUI/drama3_fp8experts_bf16.safetensors` (`models/diffusion_models/`, 38.58 GB), `drama3_codec.safetensors` (`models/vae/`, 1.57 GB), `PedroMarinhoDev/Qwen3-ASR-ComfyUI/qwen3_asr_1.7b_bf16.safetensors` (`models/asr/`, 4.08 GB).
+- **Custom Nodes (auto-cloned)**: `ComfyUI-Drama3` (`https://github.com/PedroMarinhoDev/ComfyUI-Drama3.git`, zero pip deps).
+- **Preset Workflows**:
+  - `22_Drama3_35B情感配音与音色克隆(自动ASR转录).json` (`Drama3Loader` + `Drama3CodecLoader` + `Drama3LoadReferenceAudio` + `Qwen3ASRTranscribe` + `Drama3EncodeVoice` + `Drama3Generate` + `Drama3Decode` + `SaveAudio`)
+  - `23_Drama3_35B多角色情感飙戏与舞台指令.json` (dual-speaker `voices.voice0` + `voices.voice1`, `speakers="one take per line, hearing the line before"`, `voice_guidance=1.0`).
+- **Critical Drama 3 Settings**: Keep `top_k=0`, `temperature=1.0`, `top_p=0.9` to avoid mid-pause silence traps; use `[sighs]`, `[laughs]`, `[whispers]`, `[gasp]` and `<|speaker:0..15|>` tags.
+
+### C1. Uncensored LLM/VLM Gateway: `qwen38_27b_uncensored_gguf` (~17.8 GB)
+
+- **Repo**: `JonathanColetti/Qwen3.8-27B-Uncensored-GGUF` (Apache-2.0, Heretic BF16-abliterated)
+- **Files**: `Qwen3.8-27B-Uncensored-noMTP-Q4_K_M.gguf` (15.41 GB), `mmproj-Qwen3.8-27B-Uncensored-F16.gguf` (0.86 GB), `Qwen3.8-27B-Uncensored-draft-Q4_0.gguf` (1.56 GB, MTP draft head)
+- **Usage**: Load via native workspace or `/minimax_api/model/load` (`qwen38_27b_uncensored_gguf`), then call `/v1/chat/completions` for uncensored scriptwriting, shot breakdown, or VLM reverse-prompting.
 
 ---
 
