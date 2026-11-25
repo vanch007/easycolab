@@ -2,6 +2,7 @@ import ast
 import io
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -27,6 +28,7 @@ def _load_app_comfy_helpers() -> Dict[str, Any]:
 
     wanted_assigns = {
         "COMFY_STANDARD_MODEL_SUBDIRS",
+        "_COMFY_PROTECTED_PIP_PKGS",
         "COMFY_PRESET_WORKFLOW_PACKS",
         "MODEL_CATALOG",
     }
@@ -38,6 +40,20 @@ def _load_app_comfy_helpers() -> Dict[str, Any]:
         "_build_ref2va_tara_workflow",
         "_build_seedvr2_upscaler_workflow",
         "_build_recavsr_upscaler_workflow",
+        "_build_moss_image_workflow",
+        "_build_moss_image_api_prompt_for_request",
+        "_build_qwen_image_edit_2511_workflow",
+        "_build_qwen_image_edit_2511_api_prompt_for_request",
+        "_snap_wan_frames",
+        "_build_wan22_remix_workflow",
+        "_build_wan22_remix_api_prompt_for_request",
+        "_build_h3_drama_director_workflow",
+        "_build_h3_drama_director_api_prompt_for_request",
+        "_build_qwen3_tts_workflow",
+        "_build_drama3_tts_workflow",
+        "_build_qwen3_tts_api_prompt_for_request",
+        "_build_drama3_tts_api_prompt_for_request",
+        "_extract_comfy_prompt_metadata",
         "_build_and_install_comfy_preset_workflows",
         "_get_comfy_preset_packs_status",
         "_safe_symlink_dir",
@@ -79,6 +95,7 @@ def _load_app_comfy_helpers() -> Dict[str, Any]:
 
     ns: Dict[str, Any] = {
         "os": os,
+        "re": re,
         "sys": sys,
         "json": json,
         "shutil": shutil,
@@ -353,6 +370,7 @@ class ComfyH3OptimizationsTest(unittest.TestCase):
                 content = f.read()
             self.assertIn("minimax_h3_10eros_max", content, f"missing 10Eros-Max in {cf}")
             self.assertIn("minimax_h3_sulphur3", content, f"missing Sulphur-3 in {cf}")
+            self.assertIn("moss_image_edit", content, f"missing MOSS-Image Edit in {cf}")
 
     def test_native_model_catalog_has_10eros_and_sulphur3(self):
         catalog = self.ns["MODEL_CATALOG"]
@@ -490,9 +508,10 @@ class ComfyH3OptimizationsTest(unittest.TestCase):
 
     def test_macos_native_ui_exposes_multiref_voice_corrector_and_autosleep(self):
         required_tokens = {
-            os.path.join(REPO_ROOT, "macos_app", "Sources", "ModelsAndCatalogs.swift"): ["multiref", "motion_transfer", "video_upscale", "minimax_h3_10eros_max", "minimax_h3_sulphur3", "minimax_h3_ref2va_tara", "seedvr2_upscaler", "recavsr_upscaler"],
-            os.path.join(REPO_ROOT, "macos_app", "Sources", "StudioViewModel.swift"): ["ref_images_base64", "ref_audio_base64", "ref_video_base64", "corrector_strength", "tara_strength", "seedvr2_resolution", "recavsr_scale", "autoSleepAfterGenerate", "disconnectRemoteColab"],
-            os.path.join(REPO_ROOT, "macos_app", "Sources", "MainStudioView+Workspace.swift"): ["multiref", "motion_transfer", "video_upscale", "h3CorrectorSection", "h3TaraControlSection", "seedvr2ControlSection", "recavsrControlSection", "autoSleepAfterGenerate"],
+            os.path.join(REPO_ROOT, "macos_app", "Sources", "ModelsAndCatalogs.swift"): ["multiref", "motion_transfer", "video_upscale", "drama_multishot", "voice_design", "drama_tts_clone", "minimax_h3_10eros_max", "minimax_h3_sulphur3", "minimax_h3_ref2va_tara", "recavsr_upscaler", "moss_image_edit", "qwen_image_edit_2511", "wan22_remix_nsfw", "minimax_h3_drama_director", "qwen3_tts_voice_design", "drama3_tts", "qwen38_27b_uncensored_gguf"],
+            os.path.join(REPO_ROOT, "macos_app", "Sources", "StudioViewModel.swift"): ["ref_images_base64", "ref_audio_base64", "ref_video_base64", "corrector_strength", "tara_strength", "recavsr_scale", "moss_edit_lora_strength", "moss_nsfw_lora_strength", "wan22_shift", "wan22_split_step", "wan22_cfg", "drama_project_seconds", "tts_instruct", "drama3_voice_guidance", "autoSleepAfterGenerate", "disconnectRemoteColab"],
+            os.path.join(REPO_ROOT, "macos_app", "Sources", "MainStudioView+Workspace.swift"): ["multiref", "motion_transfer", "video_upscale", "drama_multishot", "voice_clone", "drama_tts_clone", "h3CorrectorSection", "h3TaraControlSection", "recavsrControlSection", "mossImageControlSection", "wan22RemixControlSection", "h3DramaDirectorControlSection", "qwen3TTSControlSection", "drama3TTSControlSection", "autoSleepAfterGenerate"],
+            os.path.join(REPO_ROOT, "macos_app", "Sources", "StudioViewModel+Services.swift"): ["useCurrentAudioAsVoiceReference"],
         }
         for path, tokens in required_tokens.items():
             with open(path, "r", encoding="utf-8") as f:
@@ -583,104 +602,51 @@ class ComfyH3OptimizationsTest(unittest.TestCase):
             self.assertEqual(parsed["prompt"]["32"]["class_type"], "BFSMiniMaxH3NativeTemporal")
             self.assertIn("ref_videos.ref_video_0", parsed["prompt"]["8"]["inputs"])
 
-    def test_seedvr2_video_upscaler_catalog_pack_graph_and_cli(self):
-        self.assertIn("SEEDVR2", self.ns["COMFY_STANDARD_MODEL_SUBDIRS"])
-        catalog = self.ns["MODEL_CATALOG"]
-        self.assertIn("seedvr2_upscaler", catalog)
-        self.assertEqual(catalog["seedvr2_upscaler"]["pipeline_arch"], "comfy_seedvr2_upscaler")
-        self.assertEqual(catalog["seedvr2_upscaler"]["comfy_pack_id"], "seedvr2_upscaler")
-
-        packs = {p["id"]: p for p in self.ns["COMFY_PRESET_WORKFLOW_PACKS"]}
-        self.assertIn("seedvr2_upscaler", packs)
-        pack = packs["seedvr2_upscaler"]
-        model_files = {(sub, fn) for sub, fn, _, _, _ in pack["models"]}
-        self.assertIn(("SEEDVR2", "seedvr2_ema_7b_fp16.safetensors"), model_files)
-        self.assertIn(("SEEDVR2", "ema_vae_fp16.safetensors"), model_files)
-        cn_names = {c["name"] for c in pack.get("custom_nodes", [])}
-        self.assertIn("ComfyUI-SeedVR2_VideoUpscaler", cn_names)
-
-        snap = self.ns["_snap_seedvr2_batch_size"]
-        self.assertEqual(snap(17), 17)
-        self.assertEqual(snap(16), 17)
-        self.assertEqual(snap(5), 5)
-        self.assertEqual(snap(1), 1)
-
-        with tempfile.TemporaryDirectory() as tmp:
-            installed = self.ns["_build_and_install_comfy_preset_workflows"](tmp, ["seedvr2_upscaler"])
-            self.assertEqual(installed, ["12_SeedVR2_7B_FP16_视频4K超分修复.json"])
-            wf_path = os.path.join(tmp, "user", "default", "workflows", installed[0])
-            wf = json.load(open(wf_path, "r", encoding="utf-8"))
-            ntypes = {n["type"] for n in wf["nodes"]}
-            self.assertIn("SeedVR2LoadDiTModel", ntypes)
-            self.assertIn("SeedVR2LoadVAEModel", ntypes)
-            self.assertIn("SeedVR2VideoUpscaler", ntypes)
-
-        builder = self.ns["_build_seedvr2_api_prompt_for_request"]
-        req_up = SimpleNamespace(
-            seedvr2_model="seedvr2_ema_7b_sharp_fp16.safetensors",
-            seedvr2_resolution=2160,
-            seedvr2_max_resolution=0,
-            seedvr2_batch_size=16,
-            seedvr2_temporal_overlap=3,
-            seedvr2_color_correction="wavelet",
-            seedvr2_keep_audio=True,
-            seedvr2_attention_mode="sdpa",
-        )
-        g_on = builder(req_up, seed=99, ref_video_filename="clip.mp4", save_prefix="video/seedvr2_test")
-        self.assertEqual(g_on["1"]["class_type"], "VHS_LoadVideo")
-        self.assertEqual(g_on["2"]["class_type"], "SeedVR2LoadDiTModel")
-        self.assertEqual(g_on["2"]["inputs"]["model"], "seedvr2_ema_7b_sharp_fp16.safetensors")
-        self.assertEqual(g_on["2"]["inputs"]["blocks_to_swap"], 0)
-        self.assertEqual(g_on["2"]["inputs"]["offload_device"], "none")
-        self.assertFalse(g_on["2"]["inputs"]["cache_model"])
-        self.assertEqual(g_on["3"]["class_type"], "SeedVR2LoadVAEModel")
-        self.assertFalse(g_on["3"]["inputs"]["encode_tiled"])
-        self.assertTrue(g_on["3"]["inputs"]["decode_tiled"])
-        self.assertEqual(g_on["3"]["inputs"]["decode_tile_size"], 2048)
-        self.assertFalse(g_on["3"]["inputs"]["cache_model"])
-        self.assertEqual(g_on["4"]["class_type"], "SeedVR2VideoUpscaler")
-        self.assertEqual(g_on["4"]["inputs"]["resolution"], 2160)
-        self.assertEqual(g_on["4"]["inputs"]["batch_size"], 17)
-        self.assertEqual(g_on["4"]["inputs"]["color_correction"], "wavelet")
-        self.assertEqual(g_on["5"]["class_type"], "VHS_VideoInfo")
-        self.assertEqual(g_on["6"]["class_type"], "CreateVideo")
-        self.assertEqual(g_on["6"]["inputs"]["fps"], ["5", 5])
-        self.assertEqual(g_on["6"]["inputs"]["audio"], ["1", 2])
-        self.assertEqual(g_on["7"]["class_type"], "SaveVideo")
-
-        req_1080 = SimpleNamespace(**vars(req_up))
-        req_1080.seedvr2_resolution = 1080
-        g_1080 = builder(req_1080, seed=99, ref_video_filename="clip.mp4")
-        self.assertFalse(g_1080["3"]["inputs"]["decode_tiled"])
-
-        req_up.seedvr2_keep_audio = False
-        g_mute = builder(req_up, seed=99, ref_video_filename="clip.mp4")
-        self.assertNotIn("audio", g_mute["6"]["inputs"])
-
-        with tempfile.TemporaryDirectory() as tmp:
-            vid = os.path.join(tmp, "source.mp4")
-            open(vid, "wb").write(b"fake_mp4")
-            cli_path = os.path.join(REPO_ROOT, "skills", "colab-minimax-h3", "scripts", "colab_h3_cli.py")
-            proc = subprocess.run(
-                [
-                    sys.executable, cli_path, "comfy-upscale",
-                    "--video", vid,
-                    "--model", "seedvr2_ema_7b_fp16.safetensors",
-                    "--resolution", "2160",
-                    "--batch-size", "21",
-                    "--dry-run",
-                ],
-                capture_output=True, text=True, check=True,
-            )
-            parsed = json.loads(proc.stdout)
-            self.assertFalse(parsed["prompt"]["2"]["inputs"]["cache_model"])
-            self.assertFalse(parsed["prompt"]["3"]["inputs"]["cache_model"])
-            self.assertTrue(parsed["prompt"]["3"]["inputs"]["decode_tiled"])
-            self.assertEqual(parsed["prompt"]["3"]["inputs"]["decode_tile_size"], 2048)
-            self.assertEqual(parsed["prompt"]["4"]["class_type"], "SeedVR2VideoUpscaler")
-            self.assertEqual(parsed["prompt"]["4"]["inputs"]["resolution"], 2160)
-            self.assertEqual(parsed["prompt"]["4"]["inputs"]["batch_size"], 21)
-            self.assertEqual(parsed["prompt"]["6"]["inputs"]["audio"], ["1", 2])
+    def test_trimmed_catalog_and_packs_match_retained_set(self):
+        retained_models = {
+            "minimax_h3_10eros_max",
+            "minimax_h3_sulphur3",
+            "minimax_h3_ref2va_tara",
+            "recavsr_upscaler",
+            "moss_image_edit",
+            "qwen_image_edit_2511",
+            "wan22_remix_nsfw",
+            "minimax_h3_drama_director",
+            "qwen3_tts_voice_design",
+            "drama3_tts",
+            "qwen38_27b_uncensored_gguf",
+        }
+        retained_packs = {
+            "minimax_h3_10eros_max",
+            "minimax_h3_sulphur3",
+            "minimax_h3_ref2va_tara",
+            "recavsr_upscaler",
+            "moss_image_edit",
+            "qwen_image_edit_2511",
+            "wan22_remix_nsfw",
+            "minimax_h3_drama_director",
+            "qwen3_tts_voice_design",
+            "drama3_tts",
+        }
+        deleted = {
+            "minimax_h3",
+            "seedvr2_upscaler",
+            "minimax_h3_image",
+            "qwen_image_21",
+            "z_image_turbo",
+            "qwen38_27b",
+            "qwen38_27b_gguf",
+            "wan22_i2v_flf2v",
+            "minimax_h3_i2v_flf2v",
+            "ltx23_flf2v",
+            "hunyuan15_i2v_1080p",
+        }
+        catalog_keys = set(self.ns["MODEL_CATALOG"].keys())
+        pack_ids = {p["id"] for p in self.ns["COMFY_PRESET_WORKFLOW_PACKS"]}
+        self.assertEqual(catalog_keys, retained_models)
+        self.assertEqual(pack_ids, retained_packs)
+        self.assertFalse(catalog_keys & deleted)
+        self.assertFalse(pack_ids & deleted)
 
     def test_recavsr_streaming_upscaler_catalog_pack_graph_and_cli(self):
         self.assertIn("recavsr", self.ns["COMFY_STANDARD_MODEL_SUBDIRS"])
@@ -748,6 +714,512 @@ class ComfyH3OptimizationsTest(unittest.TestCase):
             self.assertEqual(parsed["prompt"]["3"]["class_type"], "ReCaVSRUpscale")
             self.assertEqual(parsed["prompt"]["3"]["inputs"]["scale"], 2.0)
             self.assertEqual(parsed["prompt"]["3"]["inputs"]["decoder"], "flashdecoder")
+
+    def test_moss_image_uncensored_edit_catalog_pack_graph_and_cli(self):
+        catalog = self.ns["MODEL_CATALOG"]
+        self.assertIn("moss_image_edit", catalog)
+        self.assertEqual(catalog["moss_image_edit"]["pipeline_arch"], "comfy_moss_image_edit")
+        self.assertEqual(catalog["moss_image_edit"]["comfy_pack_id"], "moss_image_edit")
+
+        packs = {p["id"]: p for p in self.ns["COMFY_PRESET_WORKFLOW_PACKS"]}
+        self.assertIn("moss_image_edit", packs)
+        pack = packs["moss_image_edit"]
+        model_files = {(sub, fn) for sub, fn, _, _, _ in pack["models"]}
+        self.assertIn(("diffusion_models", "moss_image_sft_bf16.safetensors"), model_files)
+        self.assertIn(("text_encoders", "moss_te_heretic_full_int8_convrot.safetensors"), model_files)
+        self.assertIn(("vae", "flux2-vae.safetensors"), model_files)
+        self.assertIn(("loras", "moss_edit_armV5.safetensors"), model_files)
+        self.assertIn(("loras", "MOSS-Image-NSFW-Uncensored-LoRA-ComfyUI.safetensors"), model_files)
+        cn_names = {c["name"] for c in pack.get("custom_nodes", [])}
+        self.assertIn("ComfyUI-MOSS-Image-Ostris-Edit", cn_names)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            installed = self.ns["_build_and_install_comfy_preset_workflows"](tmp, ["moss_image_edit"])
+            self.assertEqual(
+                installed,
+                [
+                    "14_MOSS-Image_无限制文生图(Heretic+NSFW).json",
+                    "15_MOSS-Image_无限制指令修图(OstrisEdit+armV5).json",
+                ],
+            )
+            wf_edit = json.load(open(os.path.join(tmp, "user", "default", "workflows", installed[1]), "r", encoding="utf-8"))
+            ntypes = {n["type"] for n in wf_edit["nodes"]}
+            self.assertNotIn("MOSSImageOstrisEditModelPatch", ntypes)
+            self.assertIn("TextEncodeMOSSImageEdit", ntypes)
+            self.assertIn("SkipLayerGuidanceDiTSimple", ntypes)
+
+        builder = self.ns["_build_moss_image_api_prompt_for_request"]
+        req_t2i = SimpleNamespace(
+            task_mode="t2i",
+            visual_prompt="moss_xvstyle studio portrait",
+            negative_prompt="blurry",
+            width=1024,
+            height=1024,
+            num_inference_steps=36,
+            moss_cfg=3.0,
+            moss_edit_lora_strength=1.0,
+            moss_nsfw_lora_enabled=True,
+            moss_nsfw_lora_strength=0.65,
+            moss_kv_cache=True,
+            moss_match_input_size=True,
+        )
+        g_t2i = builder(req_t2i, seed=101, ref_image_filenames=[], save_prefix="image/moss_t2i")
+        self.assertEqual(g_t2i["2"]["inputs"]["type"], "moss_image")
+        self.assertEqual(g_t2i["2"]["inputs"]["clip_name"], "moss_te_heretic_full_int8_convrot.safetensors")
+        self.assertEqual(g_t2i["6"]["inputs"]["lora_name"], "MOSS-Image-NSFW-Uncensored-LoRA-ComfyUI.safetensors")
+        self.assertEqual(g_t2i["8"]["class_type"], "CLIPTextEncode")
+        self.assertNotIn("4", g_t2i)
+
+        req_edit = SimpleNamespace(
+            task_mode="i2i_edit",
+            visual_prompt="change outfit to red dress",
+            negative_prompt="",
+            width=1024,
+            height=1024,
+            num_inference_steps=30,
+            moss_cfg=3.0,
+            moss_edit_lora_strength=1.0,
+            moss_nsfw_lora_enabled=True,
+            moss_nsfw_lora_strength=0.65,
+            moss_kv_cache=True,
+            moss_match_input_size=True,
+        )
+        g_edit = builder(req_edit, seed=202, ref_image_filenames=["a.png", "b.png"], save_prefix="image/moss_edit")
+        self.assertNotIn("4", g_edit)
+        self.assertEqual(g_edit["5"]["inputs"]["lora_name"], "moss_edit_armV5.safetensors")
+        self.assertEqual(g_edit["8"]["class_type"], "TextEncodeMOSSImageEdit")
+        self.assertEqual(g_edit["8"]["inputs"]["edit_format"], "ai-toolkit")
+        self.assertIn("images.image_0", g_edit["8"]["inputs"])
+        self.assertIn("images.image_1", g_edit["8"]["inputs"])
+        self.assertEqual(g_edit["26"]["class_type"], "GetImageSize")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            img1 = os.path.join(tmp, "ref1.png")
+            open(img1, "wb").write(b"fake_png")
+            cli_path = os.path.join(REPO_ROOT, "skills", "colab-minimax-h3", "scripts", "colab_h3_cli.py")
+            proc = subprocess.run(
+                [
+                    sys.executable, cli_path, "comfy-run-moss",
+                    "--mode", "i2i_edit",
+                    "--ref-image", img1,
+                    "--prompt", "swap background to neon alley",
+                    "--dry-run",
+                ],
+                capture_output=True, text=True, check=True,
+            )
+            parsed = json.loads(proc.stdout)
+            self.assertNotIn("4", parsed["prompt"])
+            self.assertEqual(parsed["prompt"]["5"]["inputs"]["lora_name"], "moss_edit_armV5.safetensors")
+            self.assertEqual(parsed["prompt"]["8"]["class_type"], "TextEncodeMOSSImageEdit")
+
+    def test_wan22_remix_and_qwen38_uncensored_gguf_catalog_pack_graph_and_cli(self):
+        catalog = self.ns["MODEL_CATALOG"]
+        self.assertIn("qwen38_27b_uncensored_gguf", catalog)
+        qwen_cfg = catalog["qwen38_27b_uncensored_gguf"]
+        self.assertEqual(qwen_cfg["pipeline_arch"], "gguf")
+        self.assertEqual(qwen_cfg["modality"], "llm_vlm")
+        self.assertEqual(qwen_cfg["repo_id"], "JonathanColetti/Qwen3.8-27B-Uncensored-GGUF")
+        self.assertEqual(
+            [f[0] for f in qwen_cfg["files"]],
+            [
+                "Qwen3.8-27B-Uncensored-noMTP-Q4_K_M.gguf",
+                "mmproj-Qwen3.8-27B-Uncensored-F16.gguf",
+                "Qwen3.8-27B-Uncensored-draft-Q4_0.gguf",
+            ],
+        )
+
+        self.assertIn("wan22_remix_nsfw", catalog)
+        wan_cfg = catalog["wan22_remix_nsfw"]
+        self.assertEqual(wan_cfg["pipeline_arch"], "comfy_wan22_remix")
+        self.assertEqual(wan_cfg["comfy_pack_id"], "wan22_remix_nsfw")
+        self.assertEqual(wan_cfg["modality"], "video")
+
+        packs = {p["id"]: p for p in self.ns["COMFY_PRESET_WORKFLOW_PACKS"]}
+        self.assertIn("wan22_remix_nsfw", packs)
+        pack = packs["wan22_remix_nsfw"]
+        self.assertEqual(pack.get("custom_nodes", []), [])
+        filenames = {m[1] for m in pack["models"]}
+        self.assertEqual(
+            filenames,
+            {
+                "Wan2.2_Remix_NSFW_i2v_14b_high_lighting_fp8_e4m3fn_v3.0.safetensors",
+                "Wan2.2_Remix_NSFW_i2v_14b_low_lighting_fp8_e4m3fn_v3.0.safetensors",
+                "nsfw_wan_umt5-xxl_fp8_scaled.safetensors",
+                "wan_2.1_vae.safetensors",
+            },
+        )
+        self.assertEqual(
+            set(pack["workflows"]),
+            {
+                "16_Wan2.2-Remix_无限制单图生视频(v3.0_8步极速).json",
+                "17_Wan2.2-Remix_无限制首尾帧过渡(v3.0_8步极速).json",
+            },
+        )
+
+        wf_i2v = self.ns["_build_wan22_remix_workflow"](is_flf2v=False)
+        wf_flf = self.ns["_build_wan22_remix_workflow"](is_flf2v=True)
+        self.assertIn("WanImageToVideo", {n["type"] for n in wf_i2v["nodes"]})
+        self.assertIn("WanFirstLastFrameToVideo", {n["type"] for n in wf_flf["nodes"]})
+
+        ReqCls = self.ns["GenerateVideoRequest"]
+        req_i2v = ReqCls(
+            model_id="wan22_remix_nsfw",
+            task_mode="i2v",
+            visual_prompt="cinematic portrait motion",
+            width=1280,
+            height=720,
+            num_frames=81,
+            num_inference_steps=8,
+            wan22_shift=8.0,
+            wan22_split_step=4,
+            wan22_cfg=1.0,
+        )
+        g_i2v = self.ns["_build_wan22_remix_api_prompt_for_request"](req_i2v, seed=42, first_frame_filename="start.png")
+        self.assertEqual(g_i2v["1"]["inputs"]["unet_name"], "Wan2.2_Remix_NSFW_i2v_14b_high_lighting_fp8_e4m3fn_v3.0.safetensors")
+        self.assertEqual(g_i2v["2"]["inputs"]["unet_name"], "Wan2.2_Remix_NSFW_i2v_14b_low_lighting_fp8_e4m3fn_v3.0.safetensors")
+        self.assertEqual(g_i2v["5"]["inputs"]["clip_name"], "nsfw_wan_umt5-xxl_fp8_scaled.safetensors")
+        self.assertEqual(g_i2v["11"]["class_type"], "WanImageToVideo")
+        self.assertEqual(g_i2v["12"]["inputs"]["end_at_step"], 4)
+        self.assertEqual(g_i2v["13"]["inputs"]["start_at_step"], 4)
+
+        req_flf = ReqCls(
+            model_id="wan22_remix_nsfw",
+            task_mode="fl2va",
+            visual_prompt="smooth transition",
+            width=1280,
+            height=720,
+            num_frames=80,
+            num_inference_steps=8,
+            wan22_shift=8.0,
+            wan22_split_step=4,
+            wan22_cfg=1.0,
+        )
+        g_flf = self.ns["_build_wan22_remix_api_prompt_for_request"](
+            req_flf, seed=42, first_frame_filename="start.png", last_frame_filename="end.png"
+        )
+        self.assertEqual(g_flf["11"]["class_type"], "WanFirstLastFrameToVideo")
+        self.assertEqual(g_flf["11"]["inputs"]["length"], 81)
+        self.assertEqual(g_flf["10"]["inputs"]["image"], "end.png")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            img1 = os.path.join(tmp, "first.png")
+            img2 = os.path.join(tmp, "last.png")
+            open(img1, "wb").write(b"fake_png_1")
+            open(img2, "wb").write(b"fake_png_2")
+            cli_path = os.path.join(REPO_ROOT, "skills", "colab-minimax-h3", "scripts", "colab_h3_cli.py")
+            proc = subprocess.run(
+                [
+                    sys.executable, cli_path, "comfy-run-wan22-remix",
+                    "--mode", "fl2va",
+                    "--first-frame", img1,
+                    "--last-frame", img2,
+                    "--prompt", "cinematic orbit",
+                    "--dry-run",
+                ],
+                capture_output=True, text=True, check=True,
+            )
+            parsed = json.loads(proc.stdout)
+            self.assertEqual(parsed["prompt"]["11"]["class_type"], "WanFirstLastFrameToVideo")
+            self.assertEqual(parsed["prompt"]["5"]["inputs"]["clip_name"], "nsfw_wan_umt5-xxl_fp8_scaled.safetensors")
+            self.assertEqual(parsed["prompt"]["10"]["inputs"]["image"], "last.png")
+
+    def test_h3_drama_director_catalog_pack_workflows_api_and_cli(self):
+        self.assertIn("vae_approx", self.ns["COMFY_STANDARD_MODEL_SUBDIRS"])
+        catalog = self.ns["MODEL_CATALOG"]
+        self.assertIn("minimax_h3_drama_director", catalog)
+        cfg = catalog["minimax_h3_drama_director"]
+        self.assertEqual(cfg["pipeline_arch"], "comfy_h3_drama_director")
+        self.assertEqual(cfg["comfy_pack_id"], "minimax_h3_drama_director")
+        self.assertEqual(cfg["repo_id"], "seesee75-commits/ComfyUI-MiniMaxH3-Director")
+
+        packs = {p["id"]: p for p in self.ns["COMFY_PRESET_WORKFLOW_PACKS"]}
+        self.assertIn("minimax_h3_drama_director", packs)
+        pack = packs["minimax_h3_drama_director"]
+        self.assertEqual(
+            [cn["subdir"] for cn in pack.get("custom_nodes", [])],
+            ["ComfyUI-MiniMaxH3-Director"],
+        )
+        self.assertIn("taeh3.safetensors", {m[1] for m in pack["models"]})
+        self.assertEqual(
+            set(pack["workflows"]),
+            {
+                "18_MiniMax-H3_短剧导演_角色声纹多镜头(10Eros-Max_8步).json",
+                "19_MiniMax-H3_短剧导演_双角色分镜表成片(10Eros-Max_8步).json",
+            },
+        )
+
+        wf_char = self.ns["_build_h3_drama_director_workflow"](with_storyboard=False)
+        wf_sb = self.ns["_build_h3_drama_director_workflow"](with_storyboard=True)
+        self.assertIn("NGH3Director", {n["type"] for n in wf_char["nodes"]})
+        self.assertIn("NGContextAudio", {n["type"] for n in wf_char["nodes"]})
+        self.assertIn("NGProjectRender", {n["type"] for n in wf_char["nodes"]})
+        self.assertIn("NGStoryboard", {n["type"] for n in wf_sb["nodes"]})
+
+        ReqCls = self.ns["GenerateVideoRequest"]
+        req = ReqCls(
+            model_id="minimax_h3_drama_director",
+            task_mode="drama_multishot",
+            visual_prompt="0-7: @Hero walks down neon street.\n7-14: @Hero says: Wait.",
+            soundscape_prompt="Rain and footsteps",
+            music_prompt="Ambient piano",
+            width=1280,
+            height=704,
+            num_inference_steps=8,
+            drama_project_seconds=20.0,
+            drama_continuity="video_audio",
+            drama_pin_frames="22",
+            drama_style="Cinematic",
+            drama_character_names=["Hero", "Partner"],
+        )
+        graph = self.ns["_build_h3_drama_director_api_prompt_for_request"](
+            req,
+            seed=42,
+            ref_image_filenames=["hero.png", "partner.png"],
+            ref_audio_filename="hero.wav",
+        )
+        self.assertEqual(graph["1"]["inputs"]["unet_name"], "10Eros_Max_8stepTurbo_v1.0_hybrid-int8_HQ.safetensors")
+        self.assertEqual(graph["20"]["class_type"], "NGContextImage")
+        self.assertEqual(graph["20"]["inputs"]["name"], "Hero")
+        self.assertEqual(graph["21"]["inputs"]["name"], "Partner")
+        self.assertEqual(graph["30"]["class_type"], "NGContextAudio")
+        self.assertEqual(graph["30"]["inputs"]["speaker"], "ctx_hero")
+        self.assertEqual(graph["5"]["class_type"], "NGContextConnector")
+        self.assertEqual(graph["6"]["class_type"], "NGH3Director")
+        self.assertIs(graph["6"]["inputs"]["turbo"], False)
+        self.assertEqual(graph["6"]["inputs"]["steps"], 8)
+        self.assertEqual(graph["7"]["class_type"], "NGProjectRender")
+        self.assertEqual(graph["8"]["class_type"], "SaveVideo")
+
+        meta = self.ns["_extract_comfy_prompt_metadata"](graph)
+        self.assertEqual(meta["inferred_model_id"], "minimax_h3_drama_director")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            img1 = os.path.join(tmp, "hero.png")
+            aud1 = os.path.join(tmp, "voice.wav")
+            open(img1, "wb").write(b"fake_png")
+            open(aud1, "wb").write(b"fake_wav")
+            cli_path = os.path.join(REPO_ROOT, "skills", "colab-minimax-h3", "scripts", "colab_h3_cli.py")
+            proc = subprocess.run(
+                [
+                    sys.executable, cli_path, "comfy-run-h3-drama",
+                    "--shots", "0-7: @Hero walks\n@Hero says: Ready",
+                    "--ref-image", img1,
+                    "--char-name", "Hero",
+                    "--ref-audio", aud1,
+                    "--duration", "20",
+                    "--dry-run",
+                ],
+                capture_output=True, text=True, check=True,
+            )
+            parsed = json.loads(proc.stdout)
+            self.assertEqual(parsed["prompt"]["6"]["class_type"], "NGH3Director")
+            self.assertEqual(parsed["prompt"]["30"]["inputs"]["speaker"], "ctx_hero")
+            self.assertIs(parsed["prompt"]["6"]["inputs"]["turbo"], False)
+
+    def test_tts_dual_engine_catalog_packs_workflows_graphs_and_cli(self):
+        subdirs = self.ns["COMFY_STANDARD_MODEL_SUBDIRS"]
+        self.assertIn("asr", subdirs)
+        self.assertIn("qwen-tts", subdirs)
+
+        pip_re = self.ns["_COMFY_PROTECTED_PIP_PKGS"]
+        for blocked in ("onnxruntime-openvino", "onnxruntime-gpu", "torch>=2.5", "torchaudio"):
+            self.assertIsNotNone(pip_re.match(blocked), f"should filter {blocked}")
+        for allowed in ("librosa", "soundfile", "transformers>=4.57.0", "einops", "sox", "onnxruntime", "onnxruntime>=1.16"):
+            self.assertIsNone(pip_re.match(allowed), f"should allow {allowed}")
+
+        catalog = self.ns["MODEL_CATALOG"]
+        self.assertEqual(catalog["qwen3_tts_voice_design"]["modality"], "audio")
+        self.assertEqual(catalog["qwen3_tts_voice_design"]["pipeline_arch"], "comfy_qwen3_tts")
+        self.assertEqual(catalog["drama3_tts"]["modality"], "audio")
+        self.assertEqual(catalog["drama3_tts"]["pipeline_arch"], "comfy_drama3_tts")
+
+        packs = {p["id"]: p for p in self.ns["COMFY_PRESET_WORKFLOW_PACKS"]}
+        q_pack = packs["qwen3_tts_voice_design"]
+        self.assertEqual(len(q_pack.get("hf_snapshots", [])), 3)
+        self.assertEqual([cn["subdir"] for cn in q_pack.get("custom_nodes", [])], ["ComfyUI-Qwen-TTS"])
+        d_pack = packs["drama3_tts"]
+        self.assertEqual(len(d_pack.get("models", [])), 3)
+        self.assertEqual([cn["subdir"] for cn in d_pack.get("custom_nodes", [])], ["ComfyUI-Drama3"])
+
+        wf_vd = self.ns["_build_qwen3_tts_workflow"](clone_mode=False)
+        wf_vc = self.ns["_build_qwen3_tts_workflow"](clone_mode=True)
+        self.assertIn("FB_Qwen3TTSVoiceDesign", {n["type"] for n in wf_vd["nodes"]})
+        self.assertIn("FB_Qwen3TTSVoiceClone", {n["type"] for n in wf_vc["nodes"]})
+
+        wf_d1 = self.ns["_build_drama3_tts_workflow"](multi_speaker=False)
+        wf_d2 = self.ns["_build_drama3_tts_workflow"](multi_speaker=True)
+        self.assertIn("Drama3Generate", {n["type"] for n in wf_d1["nodes"]})
+        self.assertIn("SaveAudio", {n["type"] for n in wf_d2["nodes"]})
+        # node index 2 is Drama3CodecLoader (id=2); link 13 must be preserved after pruning
+        codec_node = next(n for n in wf_d2["nodes"] if n["type"] == "Drama3CodecLoader")
+        self.assertIn(13, codec_node["outputs"][0]["links"])
+
+        ReqCls = self.ns["GenerateVideoRequest"]
+        req_q_vd = ReqCls(
+            model_id="qwen3_tts_voice_design",
+            task_mode="voice_design",
+            visual_prompt="夜雨微凉。",
+            tts_instruct="冷艳清冽女帝声线",
+            tts_language="Chinese",
+        )
+        g_q_vd = self.ns["_build_qwen3_tts_api_prompt_for_request"](req_q_vd, seed=11)
+        self.assertEqual(g_q_vd["2"]["class_type"], "FB_Qwen3TTSVoiceDesign")
+        self.assertEqual(g_q_vd["3"]["class_type"], "SaveAudio")
+        self.assertEqual(self.ns["_extract_comfy_prompt_metadata"](g_q_vd)["inferred_model_id"], "qwen3_tts_voice_design")
+
+        req_q_vc = ReqCls(
+            model_id="qwen3_tts_voice_design",
+            task_mode="voice_clone",
+            visual_prompt="今晚之后，一笔勾销。",
+            tts_instruct="冷笑低沉语气",
+            tts_language="Chinese",
+            tts_ref_text="",
+            tts_x_vector_only=False,
+        )
+        g_q_vc = self.ns["_build_qwen3_tts_api_prompt_for_request"](req_q_vc, seed=12, ref_audio_filename="seed.wav")
+        self.assertEqual(g_q_vc["1"]["class_type"], "LoadAudio")
+        self.assertEqual(g_q_vc["2"]["class_type"], "FB_Qwen3TTSVoiceClone")
+
+        req_d_clone = ReqCls(
+            model_id="drama3_tts",
+            task_mode="drama_tts_clone",
+            visual_prompt="[sighs] 事情没那么简单。",
+            drama3_experts="in RAM",
+            drama3_speakers_mode="one take per line",
+            drama3_voice_guidance=0.0,
+            drama3_shorten_pauses=True,
+            tts_ref_text="",
+            top_k=20,
+        )
+        g_d_clone = self.ns["_build_drama3_tts_api_prompt_for_request"](req_d_clone, seed=9, ref_audio_filename="hero.wav")
+        self.assertEqual(g_d_clone["41"]["class_type"], "Qwen3ASRTranscribe")
+        self.assertEqual(g_d_clone["6"]["inputs"]["voices.voice0"], ["5", 0])
+        self.assertEqual(g_d_clone["6"]["inputs"]["top_k"], 0)
+        self.assertEqual(self.ns["_extract_comfy_prompt_metadata"](g_d_clone)["inferred_model_id"], "drama3_tts")
+
+        req_d_free = ReqCls(
+            model_id="drama3_tts",
+            task_mode="drama_tts_free",
+            visual_prompt="<|speaker:0|> [whispers] 快走。",
+            top_k=0,
+        )
+        g_d_free = self.ns["_build_drama3_tts_api_prompt_for_request"](req_d_free, seed=10, ref_audio_filename=None)
+        self.assertNotIn("voices.voice0", g_d_free["6"]["inputs"])
+
+        with tempfile.TemporaryDirectory() as tmp:
+            a0 = os.path.join(tmp, "v0.wav")
+            a1 = os.path.join(tmp, "v1.wav")
+            open(a0, "wb").write(b"fake_wav0")
+            open(a1, "wb").write(b"fake_wav1")
+            cli_path = os.path.join(REPO_ROOT, "skills", "colab-minimax-h3", "scripts", "colab_h3_cli.py")
+            p1 = subprocess.run(
+                [sys.executable, cli_path, "comfy-run-qwen3-tts", "--mode", "design", "--text", "测试台词", "--instruct", "成熟男低音", "--dry-run"],
+                capture_output=True, text=True, check=True,
+            )
+            j1 = json.loads(p1.stdout)
+            self.assertEqual(j1["prompt"]["2"]["class_type"], "FB_Qwen3TTSVoiceDesign")
+
+            p2 = subprocess.run(
+                [sys.executable, cli_path, "comfy-run-qwen3-tts", "--mode", "clone", "--ref-audio", a0, "--text", "测试克隆", "--dry-run"],
+                capture_output=True, text=True, check=True,
+            )
+            j2 = json.loads(p2.stdout)
+            self.assertEqual(j2["prompt"]["2"]["class_type"], "FB_Qwen3TTSVoiceClone")
+
+            p3 = subprocess.run(
+                [
+                    sys.executable, cli_path, "comfy-run-drama3",
+                    "--text", "<|speaker:0|> [sighs] A\n<|speaker:1|> [laughs] B",
+                    "--ref-audio", a0,
+                    "--ref-audio", a1,
+                    "--speakers", "one take per line, hearing the line before",
+                    "--voice-guidance", "1.0",
+                    "--dry-run",
+                ],
+                capture_output=True, text=True, check=True,
+            )
+            j3 = json.loads(p3.stdout)
+            self.assertEqual(j3["prompt"]["6"]["class_type"], "Drama3Generate")
+            self.assertEqual(j3["prompt"]["6"]["inputs"]["top_k"], 0)
+            self.assertIn("voices.voice0", j3["prompt"]["6"]["inputs"])
+            self.assertIn("voices.voice1", j3["prompt"]["6"]["inputs"])
+
+    def test_qwen_image_edit_2511_and_short_drama_consistency_cli(self):
+        catalog = self.ns["MODEL_CATALOG"]
+        self.assertIn("qwen_image_edit_2511", catalog)
+        self.assertEqual(catalog["qwen_image_edit_2511"]["pipeline_arch"], "comfy_qwen_image_edit_2511")
+        packs = {p["id"]: p for p in self.ns["COMFY_PRESET_WORKFLOW_PACKS"]}
+        qpack = packs["qwen_image_edit_2511"]
+        self.assertEqual(len(qpack["models"]), 5)
+        self.assertEqual(qpack.get("custom_nodes", []), [])
+
+        with tempfile.TemporaryDirectory() as tmp:
+            installed = self.ns["_build_and_install_comfy_preset_workflows"](tmp, ["qwen_image_edit_2511"])
+            self.assertEqual(
+                installed,
+                [
+                    "24_Qwen-Image-Edit-2511_多图角色场景合成(4步极速).json",
+                    "25_Qwen-Image-Edit-2511_96视角旋转与分镜改图(MultiAngles).json",
+                ],
+            )
+            wf25 = self.ns["_build_qwen_image_edit_2511_workflow"](multi_angle=True)
+            self.assertIn("TextEncodeQwenImageEditPlus", {n["type"] for n in wf25["nodes"]})
+            self.assertIn("FluxKontextMultiReferenceLatentMethod", {n["type"] for n in wf25["nodes"]})
+
+        ReqCls = self.ns["GenerateVideoRequest"]
+        req = ReqCls(
+            model_id="qwen_image_edit_2511",
+            task_mode="i2i_edit",
+            visual_prompt="<sks> right side view eye-level shot medium shot",
+            width=1280,
+            height=704,
+            num_inference_steps=4,
+            qwen_edit_lightning_strength=1.0,
+            qwen_edit_angle_strength=0.9,
+        )
+        g = self.ns["_build_qwen_image_edit_2511_api_prompt_for_request"](req, seed=77, ref_image_filenames=["a.png", "b.png"])
+        self.assertEqual(g["4"]["inputs"]["lora_name"], "Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors")
+        self.assertEqual(g["5"]["inputs"]["lora_name"], "qwen-image-edit-2511-multiple-angles-lora.safetensors")
+        self.assertEqual(g["8"]["class_type"], "TextEncodeQwenImageEditPlus")
+        self.assertEqual(g["10"]["inputs"]["reference_latents_method"], "index_timestep_zero")
+        self.assertEqual(self.ns["_extract_comfy_prompt_metadata"](g)["inferred_model_id"], "qwen_image_edit_2511")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            img0 = os.path.join(tmp, "face.png")
+            img1 = os.path.join(tmp, "study.png")
+            open(img0, "wb").write(b"fake_png0")
+            open(img1, "wb").write(b"fake_png1")
+            cli_path = os.path.join(REPO_ROOT, "skills", "colab-minimax-h3", "scripts", "colab_h3_cli.py")
+            pq = subprocess.run(
+                [
+                    sys.executable, cli_path, "comfy-run-qwen-edit",
+                    "--ref-image", img0, "--ref-image", img1,
+                    "--angle-lora-strength", "0.9",
+                    "--prompt", "<sks> right side view",
+                    "--dry-run",
+                ],
+                capture_output=True, text=True, check=True,
+            )
+            jq = json.loads(pq.stdout)
+            self.assertEqual(jq["prompt"]["8"]["class_type"], "TextEncodeQwenImageEditPlus")
+            self.assertEqual(jq["prompt"]["12"]["class_type"], "EmptySD3LatentImage")
+
+            ps = subprocess.run(
+                [
+                    sys.executable, cli_path, "comfy-sweep-360-plates",
+                    "--master-plate", img1,
+                    "--scene-desc", "Sunlit wooden study",
+                    "--dry-run",
+                ],
+                capture_output=True, text=True, check=True,
+            )
+            js = json.loads(ps.stdout)
+            self.assertEqual(js["snapped_frames"], 124)
+            self.assertEqual(js["prompt"]["8"]["class_type"], "MiniMaxH3ReferenceToVideo")
+
+            for subcmd in ("extract-last-frame", "stitch-drama-jlcut"):
+                ph = subprocess.run([sys.executable, cli_path, subcmd, "--help"], capture_output=True, text=True, check=True)
+                self.assertEqual(ph.returncode, 0)
 
 
 if __name__ == "__main__":

@@ -1163,8 +1163,8 @@ class ExternalCLILogBusTests(unittest.TestCase):
                     for argv in (
                         ["comfy-start"],
                         ["comfy-install-pack", "--pack", "recavsr_upscaler"],
-                        ["download-model", "--model", "minimax_h3"],
-                        ["load-model", "--model", "minimax_h3"],
+                        ["download-model", "--model", "minimax_h3_10eros_max"],
+                        ["load-model", "--model", "minimax_h3_10eros_max"],
                     ):
                         cli_mod.main(argv)
                 cmds_seen = [r.get("command") for r in recorded]
