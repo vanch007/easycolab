@@ -1099,7 +1099,8 @@ import gc
 PIPELINE = None
 LLM_BUNDLE = None  # {"backend": "transformers"|"gguf", ...}
 LOADED_RUNTIMES: Dict[str, Dict[str, Any]] = {}  # 多模型显存共驻表: model_id -> runtime dict
-SELECTED_MODEL_ID = "minimax_h3"
+DEFAULT_MODEL_ID = "minimax_h3_10eros_max"
+SELECTED_MODEL_ID = DEFAULT_MODEL_ID
 LOADED_MODEL_ID = None
 CURRENT_MODEL_MODE = None
 QWEN_CONTEXT_LENGTH = 32768  # 用户可自定义上下文长度 (4K ~ 256K = 262144 tokens)
@@ -1381,15 +1382,6 @@ MINIMAX_H3_BF16_FILES = (
 # 开源旗舰多模型注册中心 (Hugging Face Top Models 2026 · 全量免审核 Gated=False)
 # ==============================================================================
 MODEL_CATALOG: Dict[str, Dict[str, Any]] = {
-    "minimax_h3": {
-        "id": "minimax_h3",
-        "name": "MiniMax-H3 (33B)",
-        "repo_id": "MiniMaxAI/MiniMax-H3",
-        "modality": "video_audio",
-        "category": "全模态音视频生成 · BF16 原生满血 · 32kHz 立体声",
-        "approx_size_gb": 134.1,
-        "files": MINIMAX_H3_BF16_FILES,
-    },
     "minimax_h3_10eros_max": {
         "id": "minimax_h3_10eros_max",
         "name": "10Eros-Max (MiniMax-H3 无限制)",
@@ -1486,26 +1478,6 @@ MODEL_CATALOG: Dict[str, Dict[str, Any]] = {
             ),
         ],
     },
-    "seedvr2_upscaler": {
-        "id": "seedvr2_upscaler",
-        "name": "SeedVR2 7B · 视频超分 (4K)",
-        "repo_id": "numz/SeedVR2_comfyUI",
-        "modality": "video_audio",
-        "pipeline_arch": "comfy_seedvr2_upscaler",
-        "comfy_pack_id": "seedvr2_upscaler",
-        "category": "PRO 6000 旗舰一步扩散视频超分 · SeedVR2 7B FP16 (支持 7B-sharp / 3B 切换) · 1080p/2K/4K + 原音频透传",
-        "approx_size_gb": 17.0,
-        "files": [
-            (
-                "SEEDVR2/seedvr2_ema_7b_fp16.safetensors",
-                "SeedVR2 7B FP16 满血超分 DiT 主干 (16.5 GB)",
-            ),
-            (
-                "SEEDVR2/ema_vae_fp16.safetensors",
-                "SeedVR2 共享视频 VAE FP16 (0.48 GB)",
-            ),
-        ],
-    },
     "recavsr_upscaler": {
         "id": "recavsr_upscaler",
         "name": "ReCaVSR · 极速流式超分 (4K)",
@@ -1534,104 +1506,213 @@ MODEL_CATALOG: Dict[str, Dict[str, Any]] = {
             ),
         ],
     },
-    "minimax_h3_image": {
-        "id": "minimax_h3_image",
-        "name": "MiniMax-H3-Image (33B · 4K)",
-        "repo_id": "MiniMaxAI/MiniMax-H3-Image",
+    "moss_image_edit": {
+        "id": "moss_image_edit",
+        "name": "MOSS-Image 无限制 · 指令修图",
+        "repo_id": "Comfy-Org/MOSS-Image",
         "modality": "image",
-        "pipeline_arch": "minimax_h3_image",
-        "category": "6 步原生 4K (16MP) 文生图与多参考图指令修图 · 共享编码器零拷贝复用",
-        "approx_size_gb": 135.3,
+        "pipeline_arch": "comfy_moss_image_edit",
+        "comfy_pack_id": "moss_image_edit",
+        "category": "OpenMOSS SFT BF16 + Heretic 无审核编码器 + Ostris Edit (armV5) + NSFW LoRA · 支持 1~3 图无限制指令修图与文生图",
+        "approx_size_gb": 19.4,
         "files": [
             (
-                f"transformer_diffusers/diffusion_pytorch_model-{i:05d}-of-00012.safetensors",
-                f"MiniMax-H3-Image 33B 图像 DiT 主干 {i}/12",
-            )
-            for i in range(1, 13)
-        ]
-        + [
+                "diffusion_models/moss_image_sft_bf16.safetensors",
+                "MOSS-Image SFT 5B BF16 主干 (9.47 GB)",
+            ),
             (
-                f"text_encoder/model-{i:05d}-of-00014.safetensors",
-                f"32B 视觉多模态编码器 {i}/14 (可与 MiniMax-H3 自动共享)",
-            )
-            for i in range(1, 15)
-        ]
-        + [
-            ("vae_diffusers/diffusion_pytorch_model.safetensors", "4K 16MP 高保真图像 VAE 解码器"),
+                "text_encoders/moss_te_heretic_full_int8_convrot.safetensors",
+                "Heretic 无审核 Qwen3.5-9B 多模态编码器 (9.08 GB)",
+            ),
+            (
+                "vae/flux2-vae.safetensors",
+                "FLUX.2 VAE 解码器 (0.31 GB)",
+            ),
+            (
+                "loras/moss_edit_armV5.safetensors",
+                "MOSS-Image-Edit-HQ armV5 指令修图 LoRA (0.46 GB)",
+            ),
+            (
+                "loras/MOSS-Image-NSFW-Uncensored-LoRA-ComfyUI.safetensors",
+                "MOSS-Image NSFW 无限制增强 LoRA (0.07 GB)",
+            ),
         ],
     },
-    "qwen38_27b": {
-        "id": "qwen38_27b",
-        "name": "Qwen3.8-27B",
-        "repo_id": "Qwen/Qwen3.8-27B",
-        "modality": "llm_vlm",
-        "category": "视觉理解与深度推理大模型 · BF16 原生满血",
-        "approx_size_gb": 51.8,
-        "files": [
-            (f"model-{i:05d}-of-00018.safetensors", f"Qwen3.8-27B BF16 权重分片 {i}/18")
-            for i in range(1, 19)
-        ],
-    },
-    "qwen38_27b_gguf": {
-        "id": "qwen38_27b_gguf",
-        "name": "Qwen3.8-27B-GGUF",
-        "repo_id": "unsloth/Qwen3.8-27B-GGUF",
-        "modality": "llm_vlm",
-        "category": "Unsloth UD-Q4_K_M + MTP 投机加速 · 支持 256K 上下文",
-        "approx_size_gb": 18.7,
-        "files": [
-            ("Qwen3.8-27B-UD-Q4_K_M.gguf", "Unsloth UD-Q4_K_M 主模型权重 (约 16.5 GB)"),
-            ("mmproj-F16.gguf", "多模态视觉投影器 mmproj-F16 (约 0.93 GB)"),
-            ("MTP/mtp-Qwen3.8-27B-Q4_0.gguf", "Unsloth MTP 多词元并行投机解码头 (约 1.31 GB)"),
-        ],
-    },
-    "qwen_image_21": {
-        "id": "qwen_image_21",
-        "name": "Qwen-Image-2.1",
-        "repo_id": "Qwen/Qwen-Image-2.1",
+    "qwen_image_edit_2511": {
+        "id": "qwen_image_edit_2511",
+        "name": "Qwen-Image-Edit-2511 · 多图融合与96视角修图",
+        "repo_id": "Comfy-Org/Qwen-Image-Edit_ComfyUI",
         "modality": "image",
-        "category": "旗舰文生图与多图指令修图",
-        "approx_size_gb": 30.9,
+        "pipeline_arch": "comfy_qwen_image_edit_2511",
+        "comfy_pack_id": "qwen_image_edit_2511",
+        "category": "Qwen-Image-Edit 2511 FP8Mixed + Qwen2.5-VL 7B + Lightning 4步加速 + fal 96视角 Multi-Angles LoRA · 原生多图人物场景融合与精准换视角",
+        "approx_size_gb": 29.16,
         "files": [
-            ("transformer/diffusion_pytorch_model-00001-of-00002.safetensors", "DiT 图像主干 1/2"),
-            ("transformer/diffusion_pytorch_model-00002-of-00002.safetensors", "DiT 图像主干 2/2"),
-            ("text_encoder/model-00001-of-00004.safetensors", "多模态编码器 1/4"),
-            ("text_encoder/model-00002-of-00004.safetensors", "多模态编码器 2/4"),
-            ("text_encoder/model-00003-of-00004.safetensors", "多模态编码器 3/4"),
-            ("text_encoder/model-00004-of-00004.safetensors", "多模态编码器 4/4"),
-            ("vae/diffusion_pytorch_model.safetensors", "高保真图像 VAE"),
+            (
+                "diffusion_models/qwen_image_edit_2511_fp8mixed.safetensors",
+                "Qwen-Image-Edit-2511 FP8Mixed 主干 (19.12 GB)",
+            ),
+            (
+                "text_encoders/qwen_2.5_vl_7b_fp8_scaled.safetensors",
+                "Qwen 2.5 VL 7B FP8 多模态视觉编码器 (8.74 GB)",
+            ),
+            (
+                "vae/qwen_image_vae.safetensors",
+                "Qwen-Image 图像 VAE (0.24 GB)",
+            ),
+            (
+                "loras/qwen-image-edit-2511-multiple-angles-lora.safetensors",
+                "fal 96视角相机控制 Multi-Angles LoRA (0.27 GB)",
+            ),
+            (
+                "loras/Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors",
+                "LightX2V 4步极速蒸馏 Lightning LoRA (0.79 GB)",
+            ),
         ],
     },
-    "z_image_turbo": {
-        "id": "z_image_turbo",
-        "name": "Z-Image-Turbo",
-        "repo_id": "Tongyi-MAI/Z-Image-Turbo",
-        "modality": "image",
-        "pipeline_arch": "z_image_turbo",
-        "category": "8 步极速超清写实与中英文字生图",
-        "approx_size_gb": 30.6,
+    "wan22_remix_nsfw": {
+        "id": "wan22_remix_nsfw",
+        "name": "Wan2.2-Remix 无限制 · 14B",
+        "repo_id": "FX-FeiHou/wan2.2-Remix",
+        "modality": "video",
+        "pipeline_arch": "comfy_wan22_remix",
+        "comfy_pack_id": "wan22_remix_nsfw",
+        "category": "Wan2.2-Remix NSFW I2V v3.0 (High+Low FP8 Lightning 8步融合) + NSFW-Wan-UMT5-XXL · 纯原生节点极致写实动态",
+        "approx_size_gb": 33.13,
         "files": [
-            ("transformer/diffusion_pytorch_model-00001-of-00003.safetensors", "Z-Image DiT 主干 1/3"),
-            ("transformer/diffusion_pytorch_model-00002-of-00003.safetensors", "Z-Image DiT 主干 2/3"),
-            ("transformer/diffusion_pytorch_model-00003-of-00003.safetensors", "Z-Image DiT 主干 3/3"),
-            ("text_encoder/model-00001-of-00003.safetensors", "文本编码器 1/3"),
-            ("text_encoder/model-00002-of-00003.safetensors", "文本编码器 2/3"),
-            ("text_encoder/model-00003-of-00003.safetensors", "文本编码器 3/3"),
-            ("vae/diffusion_pytorch_model.safetensors", "图像 VAE 解码器"),
+            (
+                "diffusion_models/Wan2.2_Remix_NSFW_i2v_14b_high_lighting_fp8_e4m3fn_v3.0.safetensors",
+                "Wan2.2-Remix v3.0 高噪阶段 14B FP8 主干 (13.31 GB)",
+            ),
+            (
+                "diffusion_models/Wan2.2_Remix_NSFW_i2v_14b_low_lighting_fp8_e4m3fn_v3.0.safetensors",
+                "Wan2.2-Remix v3.0 低噪精修 14B FP8 主干 (13.31 GB)",
+            ),
+            (
+                "text_encoders/nsfw_wan_umt5-xxl_fp8_scaled.safetensors",
+                "NSFW 去限制 UMT5-XXL FP8 文本编码器 (6.27 GB)",
+            ),
+            (
+                "vae/wan_2.1_vae.safetensors",
+                "Wan 2.1 视频 VAE (0.24 GB)",
+            ),
+        ],
+    },
+    "minimax_h3_drama_director": {
+        "id": "minimax_h3_drama_director",
+        "name": "MiniMax-H3 短剧导演 · 多镜头连拍",
+        "repo_id": "seesee75-commits/ComfyUI-MiniMaxH3-Director",
+        "modality": "video",
+        "pipeline_arch": "comfy_h3_drama_director",
+        "comfy_pack_id": "minimax_h3_drama_director",
+        "category": "ComfyUI-MiniMaxH3-Director 时间线短剧工作台 + 10Eros-Max 8步无限制底座 · 角色卡/声纹卡/分镜表/音画无缝长视频续拍",
+        "approx_size_gb": 39.13,
+        "files": [
+            (
+                "diffusion_models/10Eros_Max_8stepTurbo_v1.0_hybrid-int8_HQ.safetensors",
+                "10Eros-Max v1.0 无限制 8步Turbo 融合主模型 (21.32 GB，与 10Eros-Max 共享)",
+            ),
+            (
+                "text_encoders/qwen3vl_32b_heretic_minimax_h3_nvfp4.safetensors",
+                "Heretic 无审核版 Qwen3-VL-32B NVFP4 文本编码器 (14.61 GB，共享)",
+            ),
+            (
+                "vae/minimax_h3_video_vae_int8_convrot.safetensors",
+                "MiniMax-H3 视频编码解码器 Video VAE (2.62 GB，共享)",
+            ),
+            (
+                "vae/minimax_h3_audio_vae_fp32.safetensors",
+                "MiniMax-H3 立体声音频 VAE (0.56 GB，共享)",
+            ),
+            (
+                "vae_approx/taeh3.safetensors",
+                "MiniMax-H3 实时采样预览 TAE (20 MB)",
+            ),
+        ],
+    },
+    "qwen3_tts_voice_design": {
+        "id": "qwen3_tts_voice_design",
+        "name": "Qwen3-TTS 1.7B · 声音设计与情感克隆",
+        "repo_id": "Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign",
+        "modality": "audio",
+        "pipeline_arch": "comfy_qwen3_tts",
+        "comfy_pack_id": "qwen3_tts_voice_design",
+        "category": "Apache-2.0 开源自然语言声音设计 (VoiceDesign 1.7B) + 零样本音色克隆与情感指令 (Base 1.7B)，可零音频捏造角色声纹种子直供 MiniMax-H3 / Drama 3",
+        "approx_size_gb": 9.74,
+        "files": [
+            (
+                "qwen-tts/Qwen3-TTS-12Hz-1.7B-VoiceDesign/model.safetensors",
+                "Qwen3-TTS 1.7B 自然语言声音设计主权重 (4.52 GB)",
+            ),
+            (
+                "qwen-tts/Qwen3-TTS-12Hz-1.7B-Base/model.safetensors",
+                "Qwen3-TTS 1.7B 零样本声纹克隆与情感配音权重 (4.54 GB)",
+            ),
+            (
+                "qwen-tts/Qwen3-TTS-Tokenizer-12Hz/model.safetensors",
+                "Qwen3-TTS 12Hz 语音分词器权重 (0.68 GB)",
+            ),
+        ],
+    },
+    "drama3_tts": {
+        "id": "drama3_tts",
+        "name": "Fish Audio Drama 3 · 35B 戏剧情感配音",
+        "repo_id": "PedroMarinhoDev/Drama-3-ComfyUI",
+        "modality": "audio",
+        "pipeline_arch": "comfy_drama3_tts",
+        "comfy_pack_id": "drama3_tts",
+        "category": "Fish Audio Drama 3 35B MoE (2026-10-29 重训 FP8) + Codec + Qwen3-ASR 1.7B 自动转录 · 原生零依赖 ComfyUI 节点，支持 [sighs]/[whispers]/[laughs] 舞台指令与 16 角色互听飙戏",
+        "approx_size_gb": 44.23,
+        "files": [
+            (
+                "diffusion_models/drama3_fp8experts_bf16.safetensors",
+                "Fish Audio Drama 3 35B MoE FP8 权重 (38.58 GB)",
+            ),
+            (
+                "vae/drama3_codec.safetensors",
+                "Fish Audio Drama 3 44.1kHz 语音编解码器 (1.57 GB)",
+            ),
+            (
+                "asr/qwen3_asr_1.7b_bf16.safetensors",
+                "Qwen3-ASR 1.7B 自动参考音频转录模型 (4.08 GB)",
+            ),
+        ],
+    },
+    "qwen38_27b_uncensored_gguf": {
+        "id": "qwen38_27b_uncensored_gguf",
+        "name": "Qwen3.8-27B-Uncensored-GGUF",
+        "repo_id": "JonathanColetti/Qwen3.8-27B-Uncensored-GGUF",
+        "modality": "llm_vlm",
+        "pipeline_arch": "gguf",
+        "category": "Heretic BF16 去审查 Qwen3.8-27B Q4_K_M + F16 视觉投影器 + MTP 投机解码头 · 256K 上下文无限制对话/反推提示词",
+        "approx_size_gb": 17.83,
+        "files": [
+            (
+                "Qwen3.8-27B-Uncensored-noMTP-Q4_K_M.gguf",
+                "Heretic 去审查 Q4_K_M 主权重 (15.41 GB)",
+            ),
+            (
+                "mmproj-Qwen3.8-27B-Uncensored-F16.gguf",
+                "F16 多模态视觉投影器 mmproj (0.86 GB)",
+            ),
+            (
+                "Qwen3.8-27B-Uncensored-draft-Q4_0.gguf",
+                "MTP 多词元并行投机解码头 Q4_0 (1.56 GB)",
+            ),
         ],
     },
 }
 
-MINIMAX_H3_IMAGE_FILES = list(MODEL_CATALOG["minimax_h3_image"]["files"])
+MINIMAX_H3_IMAGE_FILES = list(MODEL_CATALOG.get("minimax_h3_image", {}).get("files", []))
 BUILTIN_MODEL_IDS = set(MODEL_CATALOG.keys())
 CUSTOM_MODELS_LOCK = threading.Lock()
 
 
 def _normalize_builtin_model_alias(model_id: Optional[str], repo_id: str = "") -> Optional[str]:
-    """兼容曾通过自定义仓库手动导入的内置旗舰模型 ID（如 custom_minimaxai_minimax_h3_image -> minimax_h3_image）"""
+    """兼容曾通过自定义仓库手动导入的内置旗舰模型 ID"""
     mid = (model_id or "").strip()
     rlow = (repo_id or "").strip().lower()
-    if mid in ("custom_minimaxai_minimax_h3_image", "minimax-h3-image") or rlow == "minimaxai/minimax-h3-image":
+    if (mid in ("custom_minimaxai_minimax_h3_image", "minimax-h3-image") or rlow == "minimaxai/minimax-h3-image") and "minimax_h3_image" in MODEL_CATALOG:
         return "minimax_h3_image"
     return mid or None
 
@@ -2254,7 +2335,7 @@ def inspect_and_resolve_hf_repo(
     repo_low = repo_clean.lower()
     # 兼容已知特定多模态/图像生成仓库结构（如用户在客户端手动导入）
     if not pat_clean:
-        if repo_low == "minimaxai/minimax-h3-image" or ("minimax-h3-image" in repo_low and "gguf" not in repo_low):
+        if "minimax_h3_image" in MODEL_CATALOG and (repo_low == "minimaxai/minimax-h3-image" or ("minimax-h3-image" in repo_low and "gguf" not in repo_low)):
             m_img_spec = MODEL_CATALOG["minimax_h3_image"]
             return {
                 "repo_id": repo_clean,
@@ -2275,7 +2356,7 @@ def inspect_and_resolve_hf_repo(
                 "approx_size_gb": 134.1,
                 "files": list(MINIMAX_H3_BF16_FILES),
             }
-        if repo_low == "qwen/qwen-image-2.1" or ("qwen-image-2.1" in repo_low and "gguf" not in repo_low):
+        if "qwen_image_21" in MODEL_CATALOG and (repo_low == "qwen/qwen-image-2.1" or ("qwen-image-2.1" in repo_low and "gguf" not in repo_low)):
             q_spec = MODEL_CATALOG["qwen_image_21"]
             return {
                 "repo_id": repo_clean,
@@ -2286,7 +2367,7 @@ def inspect_and_resolve_hf_repo(
                 "approx_size_gb": q_spec["approx_size_gb"],
                 "files": list(q_spec["files"]),
             }
-        if repo_low == "tongyi-mai/z-image-turbo" or ("z-image-turbo" in repo_low and "gguf" not in repo_low):
+        if "z_image_turbo" in MODEL_CATALOG and (repo_low == "tongyi-mai/z-image-turbo" or ("z-image-turbo" in repo_low and "gguf" not in repo_low)):
             z_spec = MODEL_CATALOG["z_image_turbo"]
             return {
                 "repo_id": repo_clean,
@@ -2566,7 +2647,7 @@ def register_custom_hf_model_core(
         )
         repo_clean = resolved["repo_id"]
         pat_clean = resolved["include_pattern"]
-        if repo_clean.lower() == "minimaxai/minimax-h3-image" and not pat_clean:
+        if "minimax_h3_image" in MODEL_CATALOG and repo_clean.lower() == "minimaxai/minimax-h3-image" and not pat_clean:
             with CUSTOM_MODELS_LOCK:
                 stale_ids = [
                     cid for cid, cspec in MODEL_CATALOG.items()
@@ -2643,7 +2724,7 @@ def remove_custom_hf_model_core(model_id: str, delete_files: bool = False) -> Tu
     with _TELEMETRY_LOCK:
         _CACHED_FILE_STATUS_MAP.pop(mid, None)
     if SELECTED_MODEL_ID == mid:
-        SELECTED_MODEL_ID = "z_image_turbo" if "z_image_turbo" in MODEL_CATALOG else next(iter(MODEL_CATALOG.keys()))
+        SELECTED_MODEL_ID = DEFAULT_MODEL_ID if DEFAULT_MODEL_ID in MODEL_CATALOG else next(iter(MODEL_CATALOG.keys()))
     msg = f"已从模型中心移除自定义模型「{name}」"
     MODEL_DOWNLOAD_STATE["message"] = msg
     print(f"[自定义模型] {msg}")
@@ -3282,7 +3363,7 @@ def _safe_shm_available_bytes(reserve_ram_gb: float = 34.0) -> int:
 
 def _get_model_dirs(model_id: str) -> Tuple[Optional[str], str, str]:
     """返回指定模型的 (RAM内存盘目录或None, 本地高速NVMe目录, Google Drive/持久盘目录)"""
-    spec = MODEL_CATALOG.get(model_id, MODEL_CATALOG["minimax_h3"])
+    spec = MODEL_CATALOG.get(model_id) or MODEL_CATALOG.get(DEFAULT_MODEL_ID) or next(iter(MODEL_CATALOG.values()))
     repo_sub = spec["repo_id"]
     pipeline_arch = spec.get("pipeline_arch") or model_id
     ram_dir = None
@@ -3309,7 +3390,7 @@ def _get_model_dirs(model_id: str) -> Tuple[Optional[str], str, str]:
 def _find_existing_model_file(model_id: str, fname: str, _allow_peer_share: bool = True) -> Optional[str]:
     """按速度优先级查找已存在的模型权重文件：1. /dev/shm 内存盘 -> 2. 本地 NVMe -> 3. Google Drive (含历史目录与跨模型共享编码器兼容)"""
     ram_dir, nvme_dir, drive_dir = _get_model_dirs(model_id)
-    spec = MODEL_CATALOG.get(model_id, MODEL_CATALOG["minimax_h3"])
+    spec = MODEL_CATALOG.get(model_id) or MODEL_CATALOG.get(DEFAULT_MODEL_ID) or next(iter(MODEL_CATALOG.values()))
     repo_sub = spec["repo_id"]
     pipeline_arch = spec.get("pipeline_arch") or model_id
     candidates = []
@@ -3416,7 +3497,7 @@ def _check_comfy_pack_model_files_status(target_id: str, spec: Dict[str, Any]) -
             nodes_ok = False
         files_info.append({
             "name": f"custom_nodes/{subdir}",
-            "desc": f"扩展节点包 {subdir} (S3 修正器推理必需)",
+            "desc": f"扩展节点包 {subdir} (工作流包推理必需)",
             "exists": node_exists,
             "size_gb": 0.01 if node_exists else 0.0,
         })
@@ -4053,7 +4134,7 @@ def download_model_weights_core(model_id: Optional[str] = None, hf_token: str = 
 
 
 def download_minimax_h3_weights_core(hf_token: str = "") -> Tuple[bool, str]:
-    return download_model_weights_core("minimax_h3", hf_token)
+    return download_model_weights_core(SELECTED_MODEL_ID, hf_token)
 
 
 # ==============================================================================
@@ -4168,7 +4249,7 @@ def prepare_minimax_h3_image_assembled_dir(
     if not link_weights:
         return assembled_dir
 
-    spec = MODEL_CATALOG.get(target_id, MODEL_CATALOG["minimax_h3_image"])
+    spec = MODEL_CATALOG.get(target_id) or MODEL_CATALOG.get(DEFAULT_MODEL_ID) or next(iter(MODEL_CATALOG.values()))
     req_rel_names = [fn for fn, _ in spec["files"]]
     resolved_paths: List[str] = []
     for rel_fn in req_rel_names:
@@ -4838,9 +4919,13 @@ def _start_qwen_gguf_server(
 
         if ready:
             ctx_k_str = f"{ctx_len // 1024}K"
-            if model_id == "qwen38_27b_gguf":
-                quant_tag = "UD-Q4_K_M+MTP" if use_mtp else "UD-Q4_K_M"
-                mode_label = f"Qwen3.8-27B · {quant_tag} · {ctx_k_str} (KV:{kv_type})"
+            if model_id in ("qwen38_27b_gguf", "qwen38_27b_uncensored_gguf"):
+                if model_id == "qwen38_27b_uncensored_gguf":
+                    quant_tag = "Q4_K_M+MTP" if use_mtp else "Q4_K_M"
+                    mode_label = f"Qwen3.8-27B 无限制 · {quant_tag} · {ctx_k_str} (KV:{kv_type})"
+                else:
+                    quant_tag = "UD-Q4_K_M+MTP" if use_mtp else "UD-Q4_K_M"
+                    mode_label = f"Qwen3.8-27B · {quant_tag} · {ctx_k_str} (KV:{kv_type})"
             else:
                 extra_tag = " · MTP" if use_mtp else (" · MoE异构" if moe_ot else "")
                 mode_label = f"{model_name} · GGUF{extra_tag} · {ctx_k_str} (KV:{kv_type})"
@@ -5156,7 +5241,11 @@ def load_model_to_vram_core(
     elif pipeline_arch == "gguf":
         main_ggufs = [
             fn for fn, _ in spec.get("files", [])
-            if fn.lower().endswith(".gguf") and "mmproj" not in fn.lower() and "/mtp" not in fn.lower() and not os.path.basename(fn.lower()).startswith("mtp")
+            if fn.lower().endswith(".gguf")
+            and "mmproj" not in fn.lower()
+            and "/mtp" not in fn.lower()
+            and not os.path.basename(fn.lower()).startswith("mtp")
+            and "-draft-" not in fn.lower()
         ]
         if not main_ggufs or not all(_find_existing_model_file(target_id, fn) for fn in main_ggufs):
             return False, f"{spec['name']} GGUF 主权重尚未下载完整 ({file_status['downloaded_count']}/{file_status['total_count']})！请先点击「下载权重」。"
@@ -5183,7 +5272,11 @@ def load_model_to_vram_core(
             elif pipeline_arch in ("qwen38_27b_gguf", "gguf"):
                 q4_kv_gb = (ctx_len / 262144.0) * 4.6
                 required_free_gb = min(max(12.0, approx_gb + 2.0 + q4_kv_gb), max(12.0, total_vram_gb - 1.2))
-            elif pipeline_arch in ("minimax_h3", "minimax_h3_image", "comfy_h3_10eros_max", "comfy_h3_sulphur3", "comfy_h3_ref2va_tara", "comfy_seedvr2_upscaler", "comfy_recavsr_upscaler"):
+            elif pipeline_arch == "comfy_qwen3_tts":
+                required_free_gb = min(18.0, max(10.0, total_vram_gb - 5.0))
+            elif pipeline_arch == "comfy_drama3_tts":
+                required_free_gb = min(50.0, max(16.0, total_vram_gb - 5.0))
+            elif pipeline_arch in ("minimax_h3", "minimax_h3_image", "comfy_h3_10eros_max", "comfy_h3_sulphur3", "comfy_h3_ref2va_tara", "comfy_seedvr2_upscaler", "comfy_recavsr_upscaler", "comfy_moss_image_edit", "comfy_qwen_image_edit_2511", "comfy_wan22_remix", "comfy_h3_drama_director"):
                 # BF16 单阶段峰值约 62.5GB；在 G4 (96GB) 上可与 Qwen3.8-GGUF (~21GB) 同时共驻显存
                 required_free_gb = min(65.0, max(24.0, total_vram_gb - 5.0))
             elif pipeline_arch == "transformers":
@@ -5571,7 +5664,10 @@ def load_model_to_vram_core(
                 else:
                     all_gguf_rels = [fn for fn, _ in spec.get("files", []) if fn.lower().endswith(".gguf")]
                     mmproj_rels = [fn for fn in all_gguf_rels if "mmproj" in fn.lower()]
-                    mtp_rels = [fn for fn in all_gguf_rels if ("/mtp" in fn.lower() or os.path.basename(fn.lower()).startswith("mtp"))]
+                    mtp_rels = [
+                        fn for fn in all_gguf_rels
+                        if ("/mtp" in fn.lower() or os.path.basename(fn.lower()).startswith("mtp") or "-draft-" in fn.lower())
+                    ]
                     main_rels = sorted([fn for fn in all_gguf_rels if fn not in mmproj_rels and fn not in mtp_rels])
                     if not main_rels:
                         raise RuntimeError(f"未在 {spec['name']} 中找到主 GGUF 权重文件")
@@ -5592,7 +5688,7 @@ def load_model_to_vram_core(
                 )
                 mode_label = new_llm["mode_label"]
 
-            elif pipeline_arch in ("comfy_h3_10eros_max", "comfy_h3_sulphur3", "comfy_h3_ref2va_tara", "comfy_seedvr2_upscaler", "comfy_recavsr_upscaler"):
+            elif pipeline_arch in ("comfy_h3_10eros_max", "comfy_h3_sulphur3", "comfy_h3_ref2va_tara", "comfy_seedvr2_upscaler", "comfy_recavsr_upscaler", "comfy_moss_image_edit", "comfy_qwen_image_edit_2511", "comfy_wan22_remix", "comfy_h3_drama_director", "comfy_qwen3_tts", "comfy_drama3_tts"):
                 MODEL_DOWNLOAD_STATE["progress"] = 0.25
                 MODEL_DOWNLOAD_STATE["message"] = f"正在启动并预热 {spec['name']} ComfyUI 推理引擎 (--highvram)..."
                 stop_sync = threading.Event()
@@ -5670,7 +5766,7 @@ def load_minimax_h3_to_vram_core(
     offload_mode: str = "fast_mmap",
     hf_token: str = "",
 ) -> Tuple[bool, str]:
-    return load_model_to_vram_core("minimax_h3", "bf16", offload_mode, hf_token)
+    return load_model_to_vram_core(SELECTED_MODEL_ID, "bf16", offload_mode, hf_token)
 
 
 def _enable_high_vram_optimizations(
@@ -6130,6 +6226,7 @@ COMFY_STANDARD_MODEL_SUBDIRS = [
     "diffusion_models",
     "unet",
     "vae",
+    "vae_approx",
     "loras",
     "text_encoders",
     "clip",
@@ -6140,6 +6237,8 @@ COMFY_STANDARD_MODEL_SUBDIRS = [
     "h3_correctors",
     "SEEDVR2",
     "recavsr",
+    "asr",
+    "qwen-tts",
     "audio_encoders",
     "embeddings",
     "style_models",
@@ -6147,7 +6246,7 @@ COMFY_STANDARD_MODEL_SUBDIRS = [
 ]
 
 _COMFY_PROTECTED_PIP_PKGS = re.compile(
-    r"^\s*(torch|torchvision|torchaudio|xformers)($|[<>=!~;\s\[])",
+    r"^\s*(torch|torchvision|torchaudio|xformers|onnxruntime-(?:openvino|gpu))($|[<>=!~;\s\[])",
     re.IGNORECASE,
 )
 _COMFY_BG_SYNC_STARTED = False
@@ -6159,76 +6258,6 @@ COMFY_TEMPLATE_RAW_BASE = "https://raw.githubusercontent.com/Comfy-Org/workflow_
 
 # 100% 免审核 (Gated=False) 官方原生节点预置图生视频 / 首尾帧运镜工作流包
 COMFY_PRESET_WORKFLOW_PACKS: List[Dict[str, Any]] = [
-    {
-        "id": "wan22_i2v_flf2v",
-        "title": "万相 Wan2.2 14B · 图生视频 + 首尾帧双工作流",
-        "badge": "新手首选 · 4步极速",
-        "scenario": "含「单图动起来」与「首尾双图丝滑过渡」2 套中文画布，G4 约 25 秒出片，纯官方内置节点零红框报错",
-        "approx_size_gb": 35.4,
-        "workflows": [
-            "01_Wan2.2_极速单图生视频(4步傻瓜版).json",
-            "02_Wan2.2_首尾帧丝滑过渡(双图4步极速).json",
-        ],
-        "models": [
-            ("text_encoders", "umt5_xxl_fp8_e4m3fn_scaled.safetensors", "Comfy-Org/Wan_2.1_ComfyUI_repackaged", "split_files/text_encoders/umt5_xxl_fp8_e4m3fn_scaled.safetensors", 6.27),
-            ("vae", "wan_2.1_vae.safetensors", "Comfy-Org/Wan_2.2_ComfyUI_Repackaged", "split_files/vae/wan_2.1_vae.safetensors", 0.24),
-            ("diffusion_models", "wan2.2_i2v_high_noise_14B_fp8_scaled.safetensors", "Comfy-Org/Wan_2.2_ComfyUI_Repackaged", "split_files/diffusion_models/wan2.2_i2v_high_noise_14B_fp8_scaled.safetensors", 13.31),
-            ("diffusion_models", "wan2.2_i2v_low_noise_14B_fp8_scaled.safetensors", "Comfy-Org/Wan_2.2_ComfyUI_Repackaged", "split_files/diffusion_models/wan2.2_i2v_low_noise_14B_fp8_scaled.safetensors", 13.31),
-            ("loras", "wan2.2_i2v_lightx2v_4steps_lora_v1_high_noise.safetensors", "Comfy-Org/Wan_2.2_ComfyUI_Repackaged", "split_files/loras/wan2.2_i2v_lightx2v_4steps_lora_v1_high_noise.safetensors", 1.14),
-            ("loras", "wan2.2_i2v_lightx2v_4steps_lora_v1_low_noise.safetensors", "Comfy-Org/Wan_2.2_ComfyUI_Repackaged", "split_files/loras/wan2.2_i2v_lightx2v_4steps_lora_v1_low_noise.safetensors", 1.14),
-        ],
-    },
-    {
-        "id": "minimax_h3_i2v_flf2v",
-        "title": "MiniMax-H3 Turbo · 图生有声视频 + 首尾帧双工作流",
-        "badge": "自带立体声音效 · 8步加速",
-        "scenario": "含「单图生有声视频」与「首尾双图有声过渡」2 套极简画布，一次生成高清动态画面 + 同步环境音效/配乐/对白",
-        "approx_size_gb": 39.1,
-        "workflows": [
-            "03_MiniMax-H3_极速图生有声视频(单图带立体声).json",
-            "04_MiniMax-H3_首尾帧有声过渡(双图带立体声).json",
-        ],
-        "models": [
-            ("vae", "minimax_h3_video_vae_int8_convrot.safetensors", "Comfy-Org/MiniMax-H3", "vae/minimax_h3_video_vae_int8_convrot.safetensors", 2.62),
-            ("vae", "minimax_h3_audio_vae_fp32.safetensors", "Comfy-Org/MiniMax-H3", "vae/minimax_h3_audio_vae_fp32.safetensors", 0.56),
-            ("diffusion_models", "minimax_h3_fl2va_pruned_int8_convrot.safetensors", "Comfy-Org/MiniMax-H3", "diffusion_models/minimax_h3_fl2va_pruned_int8_convrot.safetensors", 19.53),
-            ("text_encoders", "qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors", "Comfy-Org/MiniMax-H3", "text_encoders/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors", 14.61),
-            ("loras", "minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors", "lightx2v/Minimax-h3-Turbo", "minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors", 1.82),
-        ],
-    },
-    {
-        "id": "ltx23_flf2v",
-        "title": "LTX-2.3 (22B) · 首尾帧电影级运镜有声工作流",
-        "badge": "电影推拉摇移 · 仅 2 个权重",
-        "scenario": "专为首尾关键帧大幅度镜头运动优化（如高空俯拍平滑推镜至低角度特写 + 自动合成配乐音轨）",
-        "approx_size_gb": 36.3,
-        "workflows": [
-            "05_LTX-2.3_首尾帧电影运镜(双图极速带音效).json",
-        ],
-        "models": [
-            ("checkpoints", "ltx-2.3-22b-distilled-fp8.safetensors", "Lightricks/LTX-2.3-fp8", "ltx-2.3-22b-distilled-fp8.safetensors", 27.50),
-            ("text_encoders", "gemma_3_12B_it_fp4_mixed.safetensors", "Comfy-Org/ltx-2", "split_files/text_encoders/gemma_3_12B_it_fp4_mixed.safetensors", 8.80),
-        ],
-    },
-    {
-        "id": "hunyuan15_i2v_1080p",
-        "title": "混元 HunyuanVideo 1.5 · 单图直出 1080P 超分工作流",
-        "badge": "720P + 1080P 双路超清",
-        "scenario": "已默认激活潜空间超分管线，传 1 张图一键自动渲染 720P 原片与 1920×1080 超高清成片",
-        "approx_size_gb": 43.5,
-        "workflows": [
-            "06_Hunyuan1.5_单图直出1080P超清视频.json",
-        ],
-        "models": [
-            ("clip_vision", "sigclip_vision_patch14_384.safetensors", "Comfy-Org/sigclip_vision_384", "sigclip_vision_patch14_384.safetensors", 0.80),
-            ("text_encoders", "qwen_2.5_vl_7b_fp8_scaled.safetensors", "Comfy-Org/HunyuanVideo_1.5_repackaged", "split_files/text_encoders/qwen_2.5_vl_7b_fp8_scaled.safetensors", 8.74),
-            ("text_encoders", "byt5_small_glyphxl_fp16.safetensors", "Comfy-Org/HunyuanVideo_1.5_repackaged", "split_files/text_encoders/byt5_small_glyphxl_fp16.safetensors", 0.41),
-            ("latent_upscale_models", "hunyuanvideo15_latent_upsampler_1080p.safetensors", "Comfy-Org/HunyuanVideo_1.5_repackaged", "split_files/latent_upscale_models/hunyuanvideo15_latent_upsampler_1080p.safetensors", 0.45),
-            ("diffusion_models", "hunyuanvideo1.5_1080p_sr_distilled_fp16.safetensors", "Comfy-Org/HunyuanVideo_1.5_repackaged", "split_files/diffusion_models/hunyuanvideo1.5_1080p_sr_distilled_fp16.safetensors", 15.20),
-            ("vae", "hunyuanvideo15_vae_fp16.safetensors", "Comfy-Org/HunyuanVideo_1.5_repackaged", "split_files/vae/hunyuanvideo15_vae_fp16.safetensors", 2.35),
-            ("diffusion_models", "hunyuanvideo1.5_720p_i2v_fp16.safetensors", "Comfy-Org/HunyuanVideo_1.5_repackaged", "split_files/diffusion_models/hunyuanvideo1.5_720p_i2v_fp16.safetensors", 15.51),
-        ],
-    },
     {
         "id": "minimax_h3_10eros_max",
         "title": "10Eros-Max (MiniMax-H3 无限制) · 多图参考 + 首尾帧 8步极速",
@@ -6299,28 +6328,6 @@ COMFY_PRESET_WORKFLOW_PACKS: List[Dict[str, Any]] = [
         ],
     },
     {
-        "id": "seedvr2_upscaler",
-        "title": "SeedVR2 7B FP16 · 4K 电影级视频超分 (PRO 6000 满血版)",
-        "badge": "视频超分 · 一步扩散 4K",
-        "scenario": "ByteDance SeedVR2 7B FP16 一步扩散视频超分修复（支持 7B / 7B-sharp / 3B 切换），适配 PRO 6000 96GB 原生无切块大窗口推理，保留原视频帧率与音轨",
-        "approx_size_gb": 17.0,
-        "workflows": [
-            "12_SeedVR2_7B_FP16_视频4K超分修复.json",
-        ],
-        "models": [
-            ("SEEDVR2", "seedvr2_ema_7b_fp16.safetensors", "numz/SeedVR2_comfyUI", "seedvr2_ema_7b_fp16.safetensors", 16.5),
-            ("SEEDVR2", "ema_vae_fp16.safetensors", "numz/SeedVR2_comfyUI", "ema_vae_fp16.safetensors", 0.48),
-        ],
-        "custom_nodes": [
-            {
-                "type": "git",
-                "name": "ComfyUI-SeedVR2_VideoUpscaler",
-                "url": "https://github.com/numz/ComfyUI-SeedVR2_VideoUpscaler.git",
-                "subdir": "ComfyUI-SeedVR2_VideoUpscaler",
-            }
-        ],
-    },
-    {
         "id": "recavsr_upscaler",
         "title": "ReCaVSR · Wan2.2-5B 极速流式视频超分 (FlashDecoder 4K)",
         "badge": "极速流式 · 4K 快 15×",
@@ -6341,6 +6348,142 @@ COMFY_PRESET_WORKFLOW_PACKS: List[Dict[str, Any]] = [
                 "name": "ComfyUI-ReCaVSR",
                 "url": "https://github.com/PedroMarinhoDev/ComfyUI-ReCaVSR.git",
                 "subdir": "ComfyUI-ReCaVSR",
+            }
+        ],
+    },
+    {
+        "id": "moss_image_edit",
+        "title": "MOSS-Image 无限制 · 文生图 & 指令修图 (Heretic + armV5 + NSFW LoRA)",
+        "badge": "无限制 · 3图指令修图",
+        "scenario": "内置 MOSS-Image SFT BF16 底座 + pottokao Heretic 无审核 Qwen3.5-9B 编码器 + Ostris Edit (armV5) 多图修图 + NSFW Uncensored LoRA，一次配齐文生图与 1~3 图无限制修图工作流",
+        "approx_size_gb": 19.4,
+        "workflows": [
+            "14_MOSS-Image_无限制文生图(Heretic+NSFW).json",
+            "15_MOSS-Image_无限制指令修图(OstrisEdit+armV5).json",
+        ],
+        "models": [
+            ("diffusion_models", "moss_image_sft_bf16.safetensors", "Comfy-Org/MOSS-Image", "diffusion_models/moss_image_sft_bf16.safetensors", 9.47),
+            ("text_encoders", "moss_te_heretic_full_int8_convrot.safetensors", "pottokao/MOSS-Image-Text-Encoder-Heretic", "int8/moss_te_heretic_full_int8_convrot.safetensors", 9.08),
+            ("vae", "flux2-vae.safetensors", "Comfy-Org/MOSS-Image", "vae/flux2-vae.safetensors", 0.31),
+            ("loras", "moss_edit_armV5.safetensors", "akhaliq/MOSS-Image-Edit-HQ", "weights/armV5/armV5.safetensors", 0.46),
+            ("loras", "MOSS-Image-NSFW-Uncensored-LoRA-ComfyUI.safetensors", "axiomofmind/Moss-image-nsfw-uncensored-lora", "MOSS-Image-NSFW-Uncensored-LoRA-ComfyUI.safetensors", 0.07),
+        ],
+        "custom_nodes": [
+            {
+                "type": "git",
+                "name": "ComfyUI-MOSS-Image-Ostris-Edit",
+                "url": "https://github.com/ostris/ComfyUI-MOSS-Image-Ostris-Edit.git",
+                "subdir": "ComfyUI-MOSS-Image-Ostris-Edit",
+            }
+        ],
+    },
+    {
+        "id": "qwen_image_edit_2511",
+        "title": "Qwen-Image-Edit-2511 · 原生多图合成 & 96视角旋转 (4步极速)",
+        "badge": "0自定义节点 · 多图锁脸/96视角",
+        "scenario": "基于 Qwen-Image-Edit-2511 FP8Mixed + Qwen2.5-VL-7B + LightX2V 4步加速 + fal 96视角 Multi-Angles LoRA，支持 1~3 图角色/场景合成与精细相机旋转",
+        "approx_size_gb": 29.16,
+        "workflows": [
+            "24_Qwen-Image-Edit-2511_多图角色场景合成(4步极速).json",
+            "25_Qwen-Image-Edit-2511_96视角旋转与分镜改图(MultiAngles).json",
+        ],
+        "models": [
+            ("diffusion_models", "qwen_image_edit_2511_fp8mixed.safetensors", "Comfy-Org/Qwen-Image-Edit_ComfyUI", "split_files/diffusion_models/qwen_image_edit_2511_fp8mixed.safetensors", 19.12),
+            ("text_encoders", "qwen_2.5_vl_7b_fp8_scaled.safetensors", "Comfy-Org/Qwen-Image_ComfyUI", "split_files/text_encoders/qwen_2.5_vl_7b_fp8_scaled.safetensors", 8.74),
+            ("vae", "qwen_image_vae.safetensors", "Comfy-Org/Qwen-Image_ComfyUI", "split_files/vae/qwen_image_vae.safetensors", 0.24),
+            ("loras", "qwen-image-edit-2511-multiple-angles-lora.safetensors", "fal/Qwen-Image-Edit-2511-Multiple-Angles-LoRA", "qwen-image-edit-2511-multiple-angles-lora.safetensors", 0.27),
+            ("loras", "Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors", "lightx2v/Qwen-Image-Edit-2511-Lightning", "Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors", 0.79),
+        ],
+    },
+    {
+        "id": "wan22_remix_nsfw",
+        "title": "Wan2.2-Remix 无限制 · 14B NSFW 图生/首尾帧 (v3.0 8步)",
+        "badge": "无内容限制 · 极致写实动态",
+        "scenario": "基于 FX-FeiHou/wan2.2-Remix NSFW I2V v3.0 (High+Low 双阶段 FP8 Lightning 融合) + NSFW-Wan-UMT5-XXL 编码器，100% 内置节点，8 步输出高写实人物动作与表情（无音轨）",
+        "approx_size_gb": 33.13,
+        "workflows": [
+            "16_Wan2.2-Remix_无限制单图生视频(v3.0_8步极速).json",
+            "17_Wan2.2-Remix_无限制首尾帧过渡(v3.0_8步极速).json",
+        ],
+        "models": [
+            ("diffusion_models", "Wan2.2_Remix_NSFW_i2v_14b_high_lighting_fp8_e4m3fn_v3.0.safetensors", "FX-FeiHou/wan2.2-Remix", "NSFW/Wan2.2_Remix_NSFW_i2v_14b_high_lighting_fp8_e4m3fn_v3.0.safetensors", 13.31),
+            ("diffusion_models", "Wan2.2_Remix_NSFW_i2v_14b_low_lighting_fp8_e4m3fn_v3.0.safetensors", "FX-FeiHou/wan2.2-Remix", "NSFW/Wan2.2_Remix_NSFW_i2v_14b_low_lighting_fp8_e4m3fn_v3.0.safetensors", 13.31),
+            ("text_encoders", "nsfw_wan_umt5-xxl_fp8_scaled.safetensors", "NSFW-API/NSFW-Wan-UMT5-XXL", "nsfw_wan_umt5-xxl_fp8_scaled.safetensors", 6.27),
+            ("vae", "wan_2.1_vae.safetensors", "Comfy-Org/Wan_2.2_ComfyUI_Repackaged", "split_files/vae/wan_2.1_vae.safetensors", 0.24),
+        ],
+    },
+    {
+        "id": "minimax_h3_drama_director",
+        "title": "MiniMax-H3 短剧导演 · 角色声纹多镜头 + 分镜表成片 (10Eros-Max 8步)",
+        "badge": "短剧时间线 · 音画无缝续拍",
+        "scenario": "集成 ComfyUI-MiniMaxH3-Director (NGH3Director + NGStoryboard) 并直连 10Eros-Max 8步无限制底座与 Heretic 编码器；支持多角色图卡、独立声纹卡、任意时长自动分段续拍、单镜重拍与断点续渲",
+        "approx_size_gb": 39.13,
+        "workflows": [
+            "18_MiniMax-H3_短剧导演_角色声纹多镜头(10Eros-Max_8步).json",
+            "19_MiniMax-H3_短剧导演_双角色分镜表成片(10Eros-Max_8步).json",
+        ],
+        "models": [
+            ("vae", "minimax_h3_video_vae_int8_convrot.safetensors", "Comfy-Org/MiniMax-H3", "vae/minimax_h3_video_vae_int8_convrot.safetensors", 2.62),
+            ("vae", "minimax_h3_audio_vae_fp32.safetensors", "Comfy-Org/MiniMax-H3", "vae/minimax_h3_audio_vae_fp32.safetensors", 0.56),
+            ("text_encoders", "qwen3vl_32b_heretic_minimax_h3_nvfp4.safetensors", "Momoking/Qwen3-VL-32B-Heretic-MiniMax-H3-NVFP4", "qwen3vl_32b_heretic_minimax_h3_nvfp4.safetensors", 14.61),
+            ("diffusion_models", "10Eros_Max_8stepTurbo_v1.0_hybrid-int8_HQ.safetensors", "TenStrip/10Eros-Max", "10Eros_Max_8stepTurbo_v1.0_hybrid-int8_HQ.safetensors", 21.32),
+            ("vae_approx", "taeh3.safetensors", "OzzyGT/taeh3", "taeh3.safetensors", 0.01),
+        ],
+        "custom_nodes": [
+            {
+                "type": "git",
+                "name": "ComfyUI-MiniMaxH3-Director",
+                "url": "https://github.com/seesee75-commits/ComfyUI-MiniMaxH3-Director.git",
+                "subdir": "ComfyUI-MiniMaxH3-Director",
+            }
+        ],
+    },
+    {
+        "id": "qwen3_tts_voice_design",
+        "title": "Qwen3-TTS 1.7B · 自然语言声音设计 + 情感声纹克隆 (Apache-2.0)",
+        "badge": "声音设计 · 情感配音",
+        "scenario": "支持零音频用中文/英文自然语言捏造角色声线 (VoiceDesign)，并支持 3~15s 声纹克隆与情绪指令 (Base)，生成的高清声纹种子可直接喂给 MiniMax-H3 短剧导演或 Drama 3",
+        "approx_size_gb": 9.74,
+        "workflows": [
+            "20_Qwen3-TTS_自然语言声音设计(VoiceDesign_1.7B).json",
+            "21_Qwen3-TTS_声纹克隆与情感配音(Base_1.7B).json",
+        ],
+        "models": [],
+        "hf_snapshots": [
+            ("qwen-tts", "Qwen3-TTS-12Hz-1.7B-VoiceDesign", "Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign", "model.safetensors", 4.52),
+            ("qwen-tts", "Qwen3-TTS-12Hz-1.7B-Base", "Qwen/Qwen3-TTS-12Hz-1.7B-Base", "model.safetensors", 4.54),
+            ("qwen-tts", "Qwen3-TTS-Tokenizer-12Hz", "Qwen/Qwen3-TTS-Tokenizer-12Hz", "model.safetensors", 0.68),
+        ],
+        "custom_nodes": [
+            {
+                "type": "git",
+                "name": "ComfyUI-Qwen-TTS",
+                "url": "https://github.com/flybirdxx/ComfyUI-Qwen-TTS.git",
+                "subdir": "ComfyUI-Qwen-TTS",
+            }
+        ],
+    },
+    {
+        "id": "drama3_tts",
+        "title": "Fish Audio Drama 3 · 35B 戏剧级情感配音与 16 角色飙戏 (含 Qwen3-ASR)",
+        "badge": "35B MoE · 舞台指令",
+        "scenario": "集成 PedroMarinhoDev/ComfyUI-Drama3（零 pip 依赖），支持 3~30s 声纹克隆、Qwen3-ASR 自动转录、[sighs]/[whispers]/[laughs] 行内情绪舞台指示与多角色互听接戏",
+        "approx_size_gb": 44.23,
+        "workflows": [
+            "22_Drama3_35B情感配音与音色克隆(自动ASR转录).json",
+            "23_Drama3_35B多角色情感飙戏与舞台指令.json",
+        ],
+        "models": [
+            ("diffusion_models", "drama3_fp8experts_bf16.safetensors", "PedroMarinhoDev/Drama-3-ComfyUI", "drama3_fp8experts_bf16.safetensors", 38.58),
+            ("vae", "drama3_codec.safetensors", "PedroMarinhoDev/Drama-3-ComfyUI", "drama3_codec.safetensors", 1.57),
+            ("asr", "qwen3_asr_1.7b_bf16.safetensors", "PedroMarinhoDev/Qwen3-ASR-ComfyUI", "qwen3_asr_1.7b_bf16.safetensors", 4.08),
+        ],
+        "custom_nodes": [
+            {
+                "type": "git",
+                "name": "ComfyUI-Drama3",
+                "url": "https://github.com/PedroMarinhoDev/ComfyUI-Drama3.git",
+                "subdir": "ComfyUI-Drama3",
             }
         ],
     },
@@ -6413,6 +6556,23 @@ def _ensure_comfyui_beginner_assets(comfy_root: str, persist_root: str):
             dr.polygon([(0, 540), (210, 460), (490, 510), (820, 395), (1090, 470), (1280, 430), (1280, 720), (0, 720)], fill=(24, 16, 36))
             dr.rectangle([0, 575, w, h], fill=(16, 12, 28))
             im.save(end_img_p, format="PNG")
+
+        voice_wav_p = os.path.join(input_persist, "easycolab_sample_voice.wav")
+        if not os.path.isfile(voice_wav_p):
+            import math
+            import struct
+            import wave
+            sr = 32000
+            n_frames = sr
+            with wave.open(voice_wav_p, "wb") as wf_wav:
+                wf_wav.setnchannels(2)
+                wf_wav.setsampwidth(2)
+                wf_wav.setframerate(sr)
+                frames_bytes = bytearray()
+                for idx in range(n_frames):
+                    sample = int(900.0 * math.sin(2.0 * math.pi * 220.0 * (idx / float(sr))) * math.exp(-3.0 * idx / float(sr)))
+                    frames_bytes.extend(struct.pack("<hh", sample, sample))
+                wf_wav.writeframes(bytes(frames_bytes))
     except Exception as e:
         print(f"[ComfyUI] 生成默认占位参考图提示: {e}")
 
@@ -7020,6 +7180,7 @@ def _build_10eros_max_workflow(is_multi_ref: bool = True) -> Dict[str, Any]:
     return wf
 
 
+
 def _build_sulphur3_workflow(is_i2v: bool = False) -> Dict[str, Any]:
     """构建 SulphurAI/Sulphur-3 无限制底座 + s3_corrector 效果修正器工作流（文生 / 首尾帧图生）"""
     nodes: List[Dict[str, Any]] = [
@@ -7563,6 +7724,7 @@ def _build_sulphur3_workflow(is_i2v: bool = False) -> Dict[str, Any]:
     return wf
 
 
+
 def _build_ref2va_tara_workflow() -> Dict[str, Any]:
     """构建 MiniMax-H3 Ref2VA + TARA (BFSMiniMaxH3NativeTemporal) + Motion Transfer LoRA 视频动作复刻工作流"""
     prompt_text = (
@@ -7968,6 +8130,7 @@ def _build_ref2va_tara_workflow() -> Dict[str, Any]:
     return wf
 
 
+
 def _build_seedvr2_upscaler_workflow() -> Dict[str, Any]:
     """构建可直接打开的 SeedVR2 7B FP16 电影级视频超分修复（PRO 6000 满血版）ComfyUI 画布工作流"""
     nodes = [
@@ -8123,6 +8286,7 @@ def _build_seedvr2_upscaler_workflow() -> Dict[str, Any]:
     return wf
 
 
+
 def _build_recavsr_upscaler_workflow() -> Dict[str, Any]:
     """构建可直接打开的 ReCaVSR (Wan2.2-5B 一步流式 + FlashDecoder) ComfyUI 画布工作流"""
     nodes = [
@@ -8214,6 +8378,1917 @@ def _build_recavsr_upscaler_workflow() -> Dict[str, Any]:
     return wf
 
 
+def _build_wan22_remix_workflow(is_flf2v: bool = False) -> Dict[str, Any]:
+    """构建可直接打开的 Wan2.2-Remix NSFW v3.0 (High+Low FP8 Lightning 8步 · 100% 内置节点) ComfyUI 工作流"""
+    neg_default = (
+        "色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，"
+        "最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，畸形手部，畸形脸部，低画质，模糊"
+    )
+    pos_default = (
+        "Smooth cinematic camera movement, natural breathing and expressive body motion, "
+        "realistic skin texture, soft studio rim lighting, coherent anatomy, 24fps filmic realism."
+    )
+    nodes: List[Dict[str, Any]] = [
+        {
+            "id": 1,
+            "type": "UNETLoader",
+            "pos": [-680, 120],
+            "size": [340, 82],
+            "flags": {},
+            "order": 0,
+            "mode": 0,
+            "inputs": [],
+            "outputs": [{"name": "MODEL", "type": "MODEL", "links": [1]}],
+            "title": "High-Noise 主干 (Wan2.2-Remix v3.0)",
+            "properties": {"Node name for S&R": "UNETLoader"},
+            "widgets_values": [
+                "Wan2.2_Remix_NSFW_i2v_14b_high_lighting_fp8_e4m3fn_v3.0.safetensors",
+                "fp8_e4m3fn",
+            ],
+        },
+        {
+            "id": 2,
+            "type": "UNETLoader",
+            "pos": [-680, 260],
+            "size": [340, 82],
+            "flags": {},
+            "order": 1,
+            "mode": 0,
+            "inputs": [],
+            "outputs": [{"name": "MODEL", "type": "MODEL", "links": [2]}],
+            "title": "Low-Noise 主干 (Wan2.2-Remix v3.0)",
+            "properties": {"Node name for S&R": "UNETLoader"},
+            "widgets_values": [
+                "Wan2.2_Remix_NSFW_i2v_14b_low_lighting_fp8_e4m3fn_v3.0.safetensors",
+                "fp8_e4m3fn",
+            ],
+        },
+        {
+            "id": 3,
+            "type": "ModelSamplingSD3",
+            "pos": [-280, 120],
+            "size": [220, 58],
+            "flags": {},
+            "order": 2,
+            "mode": 0,
+            "inputs": [{"name": "model", "type": "MODEL", "link": 1}],
+            "outputs": [{"name": "MODEL", "type": "MODEL", "links": [3]}],
+            "properties": {"Node name for S&R": "ModelSamplingSD3"},
+            "widgets_values": [8.0],
+        },
+        {
+            "id": 4,
+            "type": "ModelSamplingSD3",
+            "pos": [-280, 260],
+            "size": [220, 58],
+            "flags": {},
+            "order": 3,
+            "mode": 0,
+            "inputs": [{"name": "model", "type": "MODEL", "link": 2}],
+            "outputs": [{"name": "MODEL", "type": "MODEL", "links": [4]}],
+            "properties": {"Node name for S&R": "ModelSamplingSD3"},
+            "widgets_values": [8.0],
+        },
+        {
+            "id": 5,
+            "type": "CLIPLoader",
+            "pos": [-680, 400],
+            "size": [340, 106],
+            "flags": {},
+            "order": 4,
+            "mode": 0,
+            "inputs": [],
+            "outputs": [{"name": "CLIP", "type": "CLIP", "links": [5, 6]}],
+            "title": "NSFW 无限制 UMT5-XXL 编码器",
+            "properties": {"Node name for S&R": "CLIPLoader"},
+            "widgets_values": ["nsfw_wan_umt5-xxl_fp8_scaled.safetensors", "wan", "default"],
+        },
+        {
+            "id": 6,
+            "type": "VAELoader",
+            "pos": [-680, 560],
+            "size": [340, 58],
+            "flags": {},
+            "order": 5,
+            "mode": 0,
+            "inputs": [],
+            "outputs": [{"name": "VAE", "type": "VAE", "links": [7, 8]}],
+            "properties": {"Node name for S&R": "VAELoader"},
+            "widgets_values": ["wan_2.1_vae.safetensors"],
+        },
+        {
+            "id": 7,
+            "type": "CLIPTextEncode",
+            "pos": [-280, 380],
+            "size": [420, 140],
+            "flags": {},
+            "order": 6,
+            "mode": 0,
+            "inputs": [{"name": "clip", "type": "CLIP", "link": 5}],
+            "outputs": [{"name": "CONDITIONING", "type": "CONDITIONING", "links": [9]}],
+            "title": "③ 输入正向动作与镜头提示词 (支持 NSFW 无限制)",
+            "properties": {"Node name for S&R": "CLIPTextEncode"},
+            "widgets_values": [pos_default],
+        },
+        {
+            "id": 8,
+            "type": "CLIPTextEncode",
+            "pos": [-280, 560],
+            "size": [420, 110],
+            "flags": {},
+            "order": 7,
+            "mode": 0,
+            "inputs": [{"name": "clip", "type": "CLIP", "link": 6}],
+            "outputs": [{"name": "CONDITIONING", "type": "CONDITIONING", "links": [10]}],
+            "title": "反向提示词 (质量防崩坏)",
+            "properties": {"Node name for S&R": "CLIPTextEncode"},
+            "widgets_values": [neg_default],
+        },
+        {
+            "id": 9,
+            "type": "LoadImage",
+            "pos": [-680, 680],
+            "size": [300, 314],
+            "flags": {},
+            "order": 8,
+            "mode": 0,
+            "inputs": [],
+            "outputs": [{"name": "IMAGE", "type": "IMAGE", "links": [11]}, {"name": "MASK", "type": "MASK", "links": None}],
+            "title": "① 点击上传起始首帧图片 (Start Frame)",
+            "properties": {"Node name for S&R": "LoadImage"},
+            "widgets_values": ["easycolab_sample_start.png", "image"],
+        },
+    ]
+
+    links: List[List[Any]] = [
+        [1, 1, 0, 3, 0, "MODEL"],
+        [2, 2, 0, 4, 0, "MODEL"],
+        [3, 3, 0, 12, 0, "MODEL"],
+        [4, 4, 0, 13, 0, "MODEL"],
+        [5, 5, 0, 7, 0, "CLIP"],
+        [6, 5, 0, 8, 0, "CLIP"],
+        [7, 6, 0, 11, 2, "VAE"],
+        [8, 6, 0, 14, 1, "VAE"],
+        [9, 7, 0, 11, 0, "CONDITIONING"],
+        [10, 8, 0, 11, 1, "CONDITIONING"],
+        [11, 9, 0, 11, 3, "IMAGE"],
+    ]
+
+    wan_inputs: List[Dict[str, Any]] = [
+        {"name": "positive", "type": "CONDITIONING", "link": 9},
+        {"name": "negative", "type": "CONDITIONING", "link": 10},
+        {"name": "vae", "type": "VAE", "link": 7},
+        {"name": "start_image", "type": "IMAGE", "link": 11},
+    ]
+    if is_flf2v:
+        nodes.append({
+            "id": 10,
+            "type": "LoadImage",
+            "pos": [-340, 720],
+            "size": [300, 314],
+            "flags": {},
+            "order": 9,
+            "mode": 0,
+            "inputs": [],
+            "outputs": [{"name": "IMAGE", "type": "IMAGE", "links": [12]}, {"name": "MASK", "type": "MASK", "links": None}],
+            "title": "② 点击上传结束尾帧图片 (End Frame)",
+            "properties": {"Node name for S&R": "LoadImage"},
+            "widgets_values": ["easycolab_sample_end.png", "image"],
+        })
+        links.append([12, 10, 0, 11, 4, "IMAGE"])
+        wan_inputs.append({"name": "end_image", "type": "IMAGE", "link": 12})
+
+    nodes.extend([
+        {
+            "id": 11,
+            "type": "WanFirstLastFrameToVideo" if is_flf2v else "WanImageToVideo",
+            "pos": [200, 380],
+            "size": [320, 220],
+            "flags": {},
+            "order": 10,
+            "mode": 0,
+            "inputs": wan_inputs,
+            "outputs": [
+                {"name": "positive", "type": "CONDITIONING", "links": [13, 16]},
+                {"name": "negative", "type": "CONDITIONING", "links": [14, 17]},
+                {"name": "latent", "type": "LATENT", "links": [15]},
+            ],
+            "title": "④ 分辨率与总帧数 (81帧≈5秒 @16fps)",
+            "properties": {"Node name for S&R": "WanFirstLastFrameToVideo" if is_flf2v else "WanImageToVideo"},
+            "widgets_values": [1280, 720, 81, 1],
+        },
+        {
+            "id": 12,
+            "type": "KSamplerAdvanced",
+            "pos": [580, 120],
+            "size": [315, 334],
+            "flags": {},
+            "order": 11,
+            "mode": 0,
+            "inputs": [
+                {"name": "model", "type": "MODEL", "link": 3},
+                {"name": "positive", "type": "CONDITIONING", "link": 13},
+                {"name": "negative", "type": "CONDITIONING", "link": 14},
+                {"name": "latent_image", "type": "LATENT", "link": 15},
+            ],
+            "outputs": [{"name": "LATENT", "type": "LATENT", "links": [18]}],
+            "title": "高噪阶段采样 (Steps 0→4)",
+            "properties": {"Node name for S&R": "KSamplerAdvanced"},
+            "widgets_values": ["enable", 42, "randomize", 8, 1.0, "euler", "simple", 0, 4, "enable"],
+        },
+        {
+            "id": 13,
+            "type": "KSamplerAdvanced",
+            "pos": [940, 120],
+            "size": [315, 334],
+            "flags": {},
+            "order": 12,
+            "mode": 0,
+            "inputs": [
+                {"name": "model", "type": "MODEL", "link": 4},
+                {"name": "positive", "type": "CONDITIONING", "link": 16},
+                {"name": "negative", "type": "CONDITIONING", "link": 17},
+                {"name": "latent_image", "type": "LATENT", "link": 18},
+            ],
+            "outputs": [{"name": "LATENT", "type": "LATENT", "links": [19]}],
+            "title": "低噪精修采样 (Steps 4→8)",
+            "properties": {"Node name for S&R": "KSamplerAdvanced"},
+            "widgets_values": ["disable", 0, "fixed", 8, 1.0, "euler", "simple", 4, 10000, "disable"],
+        },
+        {
+            "id": 14,
+            "type": "VAEDecode",
+            "pos": [1300, 120],
+            "size": [210, 46],
+            "flags": {},
+            "order": 13,
+            "mode": 0,
+            "inputs": [{"name": "samples", "type": "LATENT", "link": 19}, {"name": "vae", "type": "VAE", "link": 8}],
+            "outputs": [{"name": "IMAGE", "type": "IMAGE", "links": [20]}],
+            "properties": {"Node name for S&R": "VAEDecode"},
+        },
+        {
+            "id": 15,
+            "type": "CreateVideo",
+            "pos": [1300, 220],
+            "size": [240, 78],
+            "flags": {},
+            "order": 14,
+            "mode": 0,
+            "inputs": [{"name": "images", "type": "IMAGE", "link": 20}],
+            "outputs": [{"name": "VIDEO", "type": "VIDEO", "links": [21]}],
+            "properties": {"Node name for S&R": "CreateVideo"},
+            "widgets_values": [16.0],
+        },
+        {
+            "id": 16,
+            "type": "SaveVideo",
+            "pos": [1300, 350],
+            "size": [340, 320],
+            "flags": {},
+            "order": 15,
+            "mode": 0,
+            "inputs": [{"name": "video", "type": "VIDEO", "link": 21}],
+            "outputs": [],
+            "title": "⑤ Wan2.2-Remix 成片预览与自动保存",
+            "properties": {"Node name for S&R": "SaveVideo"},
+            "widgets_values": [
+                "video/Wan2.2_Remix_首尾帧" if is_flf2v else "video/Wan2.2_Remix_单图",
+                "auto",
+                "auto",
+            ],
+        },
+        _make_zh_guide_note(
+            516 if not is_flf2v else 517,
+            [-1120, 120],
+            "【Wan2.2-Remix 无限制 NSFW v3.0 · 8步极速】",
+            "## 纯内置节点 · High+Low Lightning 融合\n\n"
+            + (
+                "1. **传首尾两张图**：在 **① 起始首帧** 与 **② 结束尾帧** 上传参考图。\n"
+                if is_flf2v
+                else "1. **传首帧图**：在 **① 起始首帧** 上传参考图。\n"
+            )
+            + "2. **写动作描述**：在 **③ 正向提示词** 填写镜头与人体动作（搭配 NSFW 去限制 UMT5-XXL 编码器）。\n"
+            "3. **点运行**：8 步总采样（0→4 高噪 / 4→8 低噪，`shift=8.0, CFG=1.0`），100% 官方节点零红框。",
+        ),
+    ])
+
+    links.extend([
+        [13, 11, 0, 12, 1, "CONDITIONING"],
+        [14, 11, 1, 12, 2, "CONDITIONING"],
+        [15, 11, 2, 12, 3, "LATENT"],
+        [16, 11, 0, 13, 1, "CONDITIONING"],
+        [17, 11, 1, 13, 2, "CONDITIONING"],
+        [18, 12, 0, 13, 3, "LATENT"],
+        [19, 13, 0, 14, 0, "LATENT"],
+        [20, 14, 0, 15, 0, "IMAGE"],
+        [21, 15, 0, 16, 0, "VIDEO"],
+    ])
+    wf: Dict[str, Any] = {
+        "last_node_id": 520,
+        "last_link_id": 25,
+        "nodes": nodes,
+        "links": links,
+        "groups": [],
+        "config": {},
+        "extra": {"ds": {"scale": 0.65, "offset": [1160, -80]}},
+        "version": 0.4,
+    }
+    _prune_workflow_dangling_links(wf)
+    return wf
+
+
+def _build_moss_image_workflow(edit_mode: bool = False) -> Dict[str, Any]:
+    """构建可直接打开的 MOSS-Image 无限制（Heretic TE + NSFW LoRA + Ostris Edit armV5）ComfyUI 工作流"""
+    nodes: List[Dict[str, Any]] = [
+        {
+            "id": 1,
+            "type": "UNETLoader",
+            "pos": [-620, 560],
+            "size": [300, 82],
+            "flags": {},
+            "order": 0,
+            "mode": 0,
+            "inputs": [],
+            "outputs": [{"name": "MODEL", "type": "MODEL", "links": [1]}],
+            "title": "MOSS-Image SFT 主干 (BF16)",
+            "properties": {"Node name for S&R": "UNETLoader"},
+            "widgets_values": ["moss_image_sft_bf16.safetensors", "default"],
+        },
+        {
+            "id": 2,
+            "type": "CLIPLoader",
+            "pos": [-620, 690],
+            "size": [300, 106],
+            "flags": {},
+            "order": 1,
+            "mode": 0,
+            "inputs": [],
+            "outputs": [{"name": "CLIP", "type": "CLIP", "links": [2, 3]}],
+            "title": "Heretic 无审核 Qwen3.5-9B 文本编码器",
+            "properties": {"Node name for S&R": "CLIPLoader"},
+            "widgets_values": ["moss_te_heretic_full_int8_convrot.safetensors", "moss_image", "default"],
+        },
+        {
+            "id": 3,
+            "type": "VAELoader",
+            "pos": [-620, 440],
+            "size": [300, 58],
+            "flags": {},
+            "order": 2,
+            "mode": 0,
+            "inputs": [],
+            "outputs": [{"name": "VAE", "type": "VAE", "links": [4, 5, 6]}],
+            "title": "FLUX.2 VAE",
+            "properties": {"Node name for S&R": "VAELoader"},
+            "widgets_values": ["flux2-vae.safetensors"],
+        },
+        {
+            "id": 4,
+            "type": "LoraLoaderModelOnly",
+            "pos": [-260, 670],
+            "size": [290, 82],
+            "flags": {},
+            "order": 4,
+            "mode": 0,
+            "inputs": [{"name": "model", "type": "MODEL", "link": 10 if edit_mode else 1}],
+            "outputs": [{"name": "MODEL", "type": "MODEL", "links": [12]}],
+            "title": "NSFW 无限制 LoRA (可调权重)",
+            "properties": {"Node name for S&R": "LoraLoaderModelOnly"},
+            "widgets_values": [
+                "MOSS-Image-NSFW-Uncensored-LoRA-ComfyUI.safetensors",
+                0.65 if edit_mode else 0.85,
+            ],
+        },
+        {
+            "id": 5,
+            "type": "SkipLayerGuidanceDiTSimple",
+            "pos": [-260, 800],
+            "size": [290, 130],
+            "flags": {},
+            "order": 5,
+            "mode": 0,
+            "inputs": [{"name": "model", "type": "MODEL", "link": 12}],
+            "outputs": [{"name": "MODEL", "type": "MODEL", "links": [13]}],
+            "title": "MOSS 官方层跳引导 (Layer 22)",
+            "properties": {"Node name for S&R": "SkipLayerGuidanceDiTSimple"},
+            "widgets_values": ["", "22", 0.0, 1.0],
+        },
+        {
+            "id": 6,
+            "type": "EmptyLatentImage",
+            "pos": [-260, 970],
+            "size": [290, 106],
+            "flags": {},
+            "order": 6,
+            "mode": 0,
+            "inputs": (
+                [
+                    {"name": "width", "type": "INT", "link": 20, "widget": {"name": "width"}},
+                    {"name": "height", "type": "INT", "link": 21, "widget": {"name": "height"}},
+                ]
+                if edit_mode
+                else []
+            ),
+            "outputs": [{"name": "LATENT", "type": "LATENT", "links": [14]}],
+            "properties": {"Node name for S&R": "EmptyLatentImage"},
+            "widgets_values": [1024, 1024, 1],
+        },
+        {
+            "id": 7,
+            "type": "TextEncodeMOSSImageEdit" if edit_mode else "CLIPTextEncode",
+            "pos": [-260, -25],
+            "size": [420, 236],
+            "flags": {},
+            "order": 7,
+            "mode": 0,
+            "inputs": (
+                [
+                    {"name": "clip", "type": "CLIP", "link": 2},
+                    {"name": "vae", "type": "VAE", "link": 4, "shape": 7},
+                    {"name": "images.image_0", "type": "IMAGE", "link": 22, "shape": 7},
+                    {"name": "images.image_1", "type": "IMAGE", "link": None, "shape": 7},
+                    {"name": "images.image_2", "type": "IMAGE", "link": None, "shape": 7},
+                ]
+                if edit_mode
+                else [{"name": "clip", "type": "CLIP", "link": 2}]
+            ),
+            "outputs": [{"name": "CONDITIONING", "type": "CONDITIONING", "links": [15]}],
+            "title": "① 正向提示词 (支持英文指令与 Picture 1..3)",
+            "properties": {"Node name for S&R": "TextEncodeMOSSImageEdit" if edit_mode else "CLIPTextEncode"},
+            "widgets_values": (
+                [
+                    "Change the outfit to a luxury silk evening dress under golden sunset studio lighting, keep identity and pose consistent.",
+                    "ai-toolkit",
+                    1.0,
+                ]
+                if edit_mode
+                else ["moss_xvstyle, editorial fashion portrait, soft cinematic window light, natural skin texture, rich depth of field, 8k film photography"]
+            ),
+        },
+        {
+            "id": 8,
+            "type": "TextEncodeMOSSImageEdit" if edit_mode else "CLIPTextEncode",
+            "pos": [-260, 250],
+            "size": [420, 200],
+            "flags": {},
+            "order": 8,
+            "mode": 0,
+            "inputs": (
+                [
+                    {"name": "clip", "type": "CLIP", "link": 3},
+                    {"name": "vae", "type": "VAE", "link": 5, "shape": 7},
+                    {"name": "images.image_0", "type": "IMAGE", "link": 23, "shape": 7},
+                    {"name": "images.image_1", "type": "IMAGE", "link": None, "shape": 7},
+                    {"name": "images.image_2", "type": "IMAGE", "link": None, "shape": 7},
+                ]
+                if edit_mode
+                else [{"name": "clip", "type": "CLIP", "link": 3}]
+            ),
+            "outputs": [{"name": "CONDITIONING", "type": "CONDITIONING", "links": [16]}],
+            "title": "② 反向提示词 (可选)",
+            "properties": {"Node name for S&R": "TextEncodeMOSSImageEdit" if edit_mode else "CLIPTextEncode"},
+            "widgets_values": (["", "ai-toolkit", 1.0] if edit_mode else [""]),
+        },
+        {
+            "id": 9,
+            "type": "KSampler",
+            "pos": [220, 560],
+            "size": [280, 262],
+            "flags": {},
+            "order": 9,
+            "mode": 0,
+            "inputs": [
+                {"name": "model", "type": "MODEL", "link": 13},
+                {"name": "positive", "type": "CONDITIONING", "link": 15},
+                {"name": "negative", "type": "CONDITIONING", "link": 16},
+                {"name": "latent_image", "type": "LATENT", "link": 14},
+            ],
+            "outputs": [{"name": "LATENT", "type": "LATENT", "links": [17]}],
+            "properties": {"Node name for S&R": "KSampler"},
+            "widgets_values": [42, "fixed", 30, 3.0, "euler", "simple", 1.0],
+        },
+        {
+            "id": 10,
+            "type": "VAEDecode",
+            "pos": [550, 440],
+            "size": [225, 46],
+            "flags": {},
+            "order": 10,
+            "mode": 0,
+            "inputs": [
+                {"name": "samples", "type": "LATENT", "link": 17},
+                {"name": "vae", "type": "VAE", "link": 6},
+            ],
+            "outputs": [{"name": "IMAGE", "type": "IMAGE", "links": [18]}],
+            "properties": {"Node name for S&R": "VAEDecode"},
+            "widgets_values": [],
+        },
+        {
+            "id": 11,
+            "type": "SaveImage",
+            "pos": [550, 560],
+            "size": [480, 520],
+            "flags": {},
+            "order": 11,
+            "mode": 0,
+            "inputs": [{"name": "images", "type": "IMAGE", "link": 18}],
+            "outputs": [],
+            "title": "③ 成片预览与保存",
+            "properties": {"Node name for S&R": "SaveImage"},
+            "widgets_values": [
+                "image/MOSS_Image_Edit_无限制修图" if edit_mode else "image/MOSS_Image_无限制文生图"
+            ],
+        },
+    ]
+    links: List[Any] = [
+        [2, 2, 0, 7, 0, "CLIP"],
+        [3, 2, 0, 8, 0, "CLIP"],
+        [6, 3, 0, 10, 1, "VAE"],
+        [12, 4, 0, 5, 0, "MODEL"],
+        [13, 5, 0, 9, 0, "MODEL"],
+        [14, 6, 0, 9, 3, "LATENT"],
+        [15, 7, 0, 9, 1, "CONDITIONING"],
+        [16, 8, 0, 9, 2, "CONDITIONING"],
+        [17, 9, 0, 10, 0, "LATENT"],
+        [18, 10, 0, 11, 0, "IMAGE"],
+    ]
+
+    if edit_mode:
+        nodes.extend([
+            {
+                "id": 13,
+                "type": "LoraLoaderModelOnly",
+                "pos": [-260, 560],
+                "size": [290, 82],
+                "flags": {},
+                "order": 3,
+                "mode": 0,
+                "inputs": [{"name": "model", "type": "MODEL", "link": 1}],
+                "outputs": [{"name": "MODEL", "type": "MODEL", "links": [10]}],
+                "title": "armV5 高保真指令修图 LoRA",
+                "properties": {"Node name for S&R": "LoraLoaderModelOnly"},
+                "widgets_values": ["moss_edit_armV5.safetensors", 1.0],
+            },
+            {
+                "id": 14,
+                "type": "LoadImage",
+                "pos": [-1100, 420],
+                "size": [400, 480],
+                "flags": {},
+                "order": 0,
+                "mode": 0,
+                "inputs": [],
+                "outputs": [
+                    {"name": "IMAGE", "type": "IMAGE", "links": [19]},
+                    {"name": "MASK", "type": "MASK", "links": []},
+                ],
+                "title": "① 待编辑参考图 (image1)",
+                "properties": {"Node name for S&R": "LoadImage"},
+                "widgets_values": ["easycolab_sample_start.png", "image"],
+            },
+            {
+                "id": 15,
+                "type": "FluxKontextImageScale",
+                "pos": [-930, 960],
+                "size": [225, 26],
+                "flags": {},
+                "order": 1,
+                "mode": 0,
+                "inputs": [{"name": "image", "type": "IMAGE", "link": 19}],
+                "outputs": [{"name": "IMAGE", "type": "IMAGE", "links": [22, 23, 24]}],
+                "properties": {"Node name for S&R": "FluxKontextImageScale"},
+                "widgets_values": [],
+            },
+            {
+                "id": 16,
+                "type": "GetImageSize",
+                "pos": [-650, 925],
+                "size": [225, 90],
+                "flags": {},
+                "order": 2,
+                "mode": 0,
+                "inputs": [{"name": "image", "type": "IMAGE", "link": 24}],
+                "outputs": [
+                    {"name": "width", "type": "INT", "links": [20]},
+                    {"name": "height", "type": "INT", "links": [21]},
+                    {"name": "batch_size", "type": "INT", "links": []},
+                ],
+                "properties": {"Node name for S&R": "GetImageSize"},
+                "widgets_values": [],
+            },
+        ])
+        links.extend([
+            [1, 1, 0, 13, 0, "MODEL"],
+            [10, 13, 0, 4, 0, "MODEL"],
+            [4, 3, 0, 7, 1, "VAE"],
+            [5, 3, 0, 8, 1, "VAE"],
+            [19, 14, 0, 15, 0, "IMAGE"],
+            [24, 15, 0, 16, 0, "IMAGE"],
+            [20, 16, 0, 6, 0, "INT"],
+            [21, 16, 1, 6, 1, "INT"],
+            [22, 15, 0, 7, 2, "IMAGE"],
+            [23, 15, 0, 8, 2, "IMAGE"],
+        ])
+    else:
+        links.append([1, 1, 0, 4, 0, "MODEL"])
+
+    nodes.append(
+        _make_zh_guide_note(
+            545,
+            [-1100, -40],
+            "【EasyColab · MOSS-Image 无限制修图指南】",
+            "## MOSS-Image 无限制组合 (Heretic TE + armV5 Edit + NSFW LoRA)\n\n"
+            "1. **Heretic Qwen3.5-9B**：已去除拒绝阈值，完整保留视觉塔，可正常编码无限制与多图指令。\n"
+            "2. **Edit 模式**：接入 **Ostris Edit Patch (`kv_cache=True`)** + **`moss_edit_armV5.safetensors`**，支持 1~3 张参考图与原生指令修图（`CFG 3.0`, `30 步`）。\n"
+            "3. **无限制叠加**：`MOSS-Image-NSFW-Uncensored-LoRA` 触发词可选 `moss_xvstyle`；与 Edit LoRA 叠加时建议 `0.5~0.7` 保持人物脸型与原图一致性。",
+        )
+    )
+    wf = {
+        "last_node_id": 550,
+        "last_link_id": 30,
+        "nodes": nodes,
+        "links": links,
+        "groups": [],
+        "config": {},
+        "extra": {"ds": {"scale": 0.68, "offset": [1160, 120]}},
+        "version": 0.4,
+    }
+    _prune_workflow_dangling_links(wf)
+    return wf
+
+
+def _build_qwen_image_edit_2511_workflow(multi_angle: bool = False) -> Dict[str, Any]:
+    """构建可直接打开的 Qwen-Image-Edit-2511 (原生多图融合 / fal 96视角旋转 + Lightning 4步) ComfyUI 工作流"""
+    prompt_val = (
+        "<sks> right side view eye-level shot medium shot, keep exact face, hair, glasses and outfit consistent in studio lighting"
+        if multi_angle
+        else "Place the woman from Picture 1 seated inside Picture 2's sunlit Imperial Study while strictly preserving Picture 1's face, hairstyle and outfit and Picture 2's architecture."
+    )
+    nodes: List[Dict[str, Any]] = [
+        {
+            "id": 1,
+            "type": "UNETLoader",
+            "pos": [-680, 480],
+            "size": [340, 82],
+            "flags": {},
+            "order": 0,
+            "mode": 0,
+            "inputs": [],
+            "outputs": [{"name": "MODEL", "type": "MODEL", "links": [1]}],
+            "title": "Qwen-Image-Edit-2511 主干 (FP8Mixed)",
+            "properties": {"Node name for S&R": "UNETLoader"},
+            "widgets_values": ["qwen_image_edit_2511_fp8mixed.safetensors", "default"],
+        },
+        {
+            "id": 2,
+            "type": "CLIPLoader",
+            "pos": [-680, 610],
+            "size": [340, 106],
+            "flags": {},
+            "order": 1,
+            "mode": 0,
+            "inputs": [],
+            "outputs": [{"name": "CLIP", "type": "CLIP", "links": [2, 3]}],
+            "title": "Qwen2.5-VL-7B 视觉文本编码器 (FP8)",
+            "properties": {"Node name for S&R": "CLIPLoader"},
+            "widgets_values": ["qwen_2.5_vl_7b_fp8_scaled.safetensors", "qwen_image", "default"],
+        },
+        {
+            "id": 3,
+            "type": "VAELoader",
+            "pos": [-680, 370],
+            "size": [340, 58],
+            "flags": {},
+            "order": 2,
+            "mode": 0,
+            "inputs": [],
+            "outputs": [{"name": "VAE", "type": "VAE", "links": [4, 5, 6]}],
+            "title": "Qwen-Image VAE",
+            "properties": {"Node name for S&R": "VAELoader"},
+            "widgets_values": ["qwen_image_vae.safetensors"],
+        },
+        {
+            "id": 4,
+            "type": "LoraLoaderModelOnly",
+            "pos": [-290, 480],
+            "size": [320, 82],
+            "flags": {},
+            "order": 3,
+            "mode": 0,
+            "inputs": [{"name": "model", "type": "MODEL", "link": 1}],
+            "outputs": [{"name": "MODEL", "type": "MODEL", "links": [10]}],
+            "title": "LightX2V 4步极速 Lightning LoRA",
+            "properties": {"Node name for S&R": "LoraLoaderModelOnly"},
+            "widgets_values": ["Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors", 1.0],
+        },
+        {
+            "id": 5,
+            "type": "LoraLoaderModelOnly",
+            "pos": [-290, 610],
+            "size": [320, 82],
+            "flags": {},
+            "order": 4,
+            "mode": 0,
+            "inputs": [{"name": "model", "type": "MODEL", "link": 10}],
+            "outputs": [{"name": "MODEL", "type": "MODEL", "links": [11]}],
+            "title": "fal 96视角旋转 Multi-Angles LoRA (不用置0)",
+            "properties": {"Node name for S&R": "LoraLoaderModelOnly"},
+            "widgets_values": ["qwen-image-edit-2511-multiple-angles-lora.safetensors", 0.9 if multi_angle else 0.0],
+        },
+        {
+            "id": 6,
+            "type": "ModelSamplingAuraFlow",
+            "pos": [-290, 730],
+            "size": [320, 82],
+            "flags": {},
+            "order": 5,
+            "mode": 0,
+            "inputs": [{"name": "model", "type": "MODEL", "link": 11}],
+            "outputs": [{"name": "MODEL", "type": "MODEL", "links": [12]}],
+            "properties": {"Node name for S&R": "ModelSamplingAuraFlow"},
+            "widgets_values": [3.1, "flow"],
+        },
+        {
+            "id": 7,
+            "type": "CFGNorm",
+            "pos": [-290, 850],
+            "size": [320, 82],
+            "flags": {},
+            "order": 6,
+            "mode": 0,
+            "inputs": [{"name": "model", "type": "MODEL", "link": 12}],
+            "outputs": [{"name": "MODEL", "type": "MODEL", "links": [13]}],
+            "properties": {"Node name for S&R": "CFGNorm"},
+            "widgets_values": [1.0, False],
+        },
+        {
+            "id": 14,
+            "type": "LoadImage",
+            "pos": [-1120, 260],
+            "size": [380, 420],
+            "flags": {},
+            "order": 0,
+            "mode": 0,
+            "inputs": [],
+            "outputs": [
+                {"name": "IMAGE", "type": "IMAGE", "links": [19]},
+                {"name": "MASK", "type": "MASK", "links": []},
+            ],
+            "title": "① 主角/源图 (image1)",
+            "properties": {"Node name for S&R": "LoadImage"},
+            "widgets_values": ["easycolab_sample_start.png", "image"],
+        },
+        {
+            "id": 15,
+            "type": "ImageScaleToTotalPixels",
+            "pos": [-700, 120],
+            "size": [280, 106],
+            "flags": {},
+            "order": 1,
+            "mode": 0,
+            "inputs": [{"name": "image", "type": "IMAGE", "link": 19}],
+            "outputs": [{"name": "IMAGE", "type": "IMAGE", "links": [20, 21]}],
+            "title": "安全限缩至 1MP (防显存溢出)",
+            "properties": {"Node name for S&R": "ImageScaleToTotalPixels"},
+            "widgets_values": ["lanczos", 1.0, 1],
+        },
+        {
+            "id": 8,
+            "type": "TextEncodeQwenImageEditPlus",
+            "pos": [-290, -20],
+            "size": [420, 220],
+            "flags": {},
+            "order": 7,
+            "mode": 0,
+            "inputs": [
+                {"name": "clip", "type": "CLIP", "link": 2},
+                {"name": "vae", "type": "VAE", "link": 4, "shape": 7},
+                {"name": "image1", "type": "IMAGE", "link": 20, "shape": 7},
+                {"name": "image2", "type": "IMAGE", "link": None, "shape": 7},
+                {"name": "image3", "type": "IMAGE", "link": None, "shape": 7},
+            ],
+            "outputs": [{"name": "CONDITIONING", "type": "CONDITIONING", "links": [14]}],
+            "title": "② 正向编辑指令 (支持 <sks> 96视角与 Picture 1..3)",
+            "properties": {"Node name for S&R": "TextEncodeQwenImageEditPlus"},
+            "widgets_values": [prompt_val],
+        },
+        {
+            "id": 9,
+            "type": "TextEncodeQwenImageEditPlus",
+            "pos": [-290, 230],
+            "size": [420, 180],
+            "flags": {},
+            "order": 8,
+            "mode": 0,
+            "inputs": [
+                {"name": "clip", "type": "CLIP", "link": 3},
+                {"name": "vae", "type": "VAE", "link": 5, "shape": 7},
+                {"name": "image1", "type": "IMAGE", "link": 21, "shape": 7},
+                {"name": "image2", "type": "IMAGE", "link": None, "shape": 7},
+                {"name": "image3", "type": "IMAGE", "link": None, "shape": 7},
+            ],
+            "outputs": [{"name": "CONDITIONING", "type": "CONDITIONING", "links": [15]}],
+            "title": "③ 反向提示词 (可选)",
+            "properties": {"Node name for S&R": "TextEncodeQwenImageEditPlus"},
+            "widgets_values": [""],
+        },
+        {
+            "id": 10,
+            "type": "FluxKontextMultiReferenceLatentMethod",
+            "pos": [180, -20],
+            "size": [320, 60],
+            "flags": {},
+            "order": 9,
+            "mode": 0,
+            "inputs": [{"name": "conditioning", "type": "CONDITIONING", "link": 14}],
+            "outputs": [{"name": "CONDITIONING", "type": "CONDITIONING", "links": [16]}],
+            "properties": {"Node name for S&R": "FluxKontextMultiReferenceLatentMethod"},
+            "widgets_values": ["index_timestep_zero"],
+        },
+        {
+            "id": 11,
+            "type": "FluxKontextMultiReferenceLatentMethod",
+            "pos": [180, 230],
+            "size": [320, 60],
+            "flags": {},
+            "order": 10,
+            "mode": 0,
+            "inputs": [{"name": "conditioning", "type": "CONDITIONING", "link": 15}],
+            "outputs": [{"name": "CONDITIONING", "type": "CONDITIONING", "links": [17]}],
+            "properties": {"Node name for S&R": "FluxKontextMultiReferenceLatentMethod"},
+            "widgets_values": ["index_timestep_zero"],
+        },
+        {
+            "id": 12,
+            "type": "EmptySD3LatentImage",
+            "pos": [180, 960],
+            "size": [280, 106],
+            "flags": {},
+            "order": 11,
+            "mode": 0,
+            "inputs": [],
+            "outputs": [{"name": "LATENT", "type": "LATENT", "links": [18]}],
+            "properties": {"Node name for S&R": "EmptySD3LatentImage"},
+            "widgets_values": [1280, 704, 1],
+        },
+        {
+            "id": 13,
+            "type": "KSampler",
+            "pos": [220, 520],
+            "size": [280, 262],
+            "flags": {},
+            "order": 12,
+            "mode": 0,
+            "inputs": [
+                {"name": "model", "type": "MODEL", "link": 13},
+                {"name": "positive", "type": "CONDITIONING", "link": 16},
+                {"name": "negative", "type": "CONDITIONING", "link": 17},
+                {"name": "latent_image", "type": "LATENT", "link": 18},
+            ],
+            "outputs": [{"name": "LATENT", "type": "LATENT", "links": [22]}],
+            "properties": {"Node name for S&R": "KSampler"},
+            "widgets_values": [42, "fixed", 4, 1.0, "euler", "simple", 1.0],
+        },
+        {
+            "id": 16,
+            "type": "VAEDecode",
+            "pos": [550, 440],
+            "size": [225, 46],
+            "flags": {},
+            "order": 13,
+            "mode": 0,
+            "inputs": [
+                {"name": "samples", "type": "LATENT", "link": 22},
+                {"name": "vae", "type": "VAE", "link": 6},
+            ],
+            "outputs": [{"name": "IMAGE", "type": "IMAGE", "links": [23]}],
+            "properties": {"Node name for S&R": "VAEDecode"},
+            "widgets_values": [],
+        },
+        {
+            "id": 17,
+            "type": "SaveImage",
+            "pos": [550, 540],
+            "size": [480, 520],
+            "flags": {},
+            "order": 14,
+            "mode": 0,
+            "inputs": [{"name": "images", "type": "IMAGE", "link": 23}],
+            "outputs": [],
+            "title": "④ 成片预览与保存",
+            "properties": {"Node name for S&R": "SaveImage"},
+            "widgets_values": ["image/Qwen_Edit_2511_MultiAngles" if multi_angle else "image/Qwen_Edit_2511_Composite"],
+        },
+    ]
+    links: List[Any] = [
+        [1, 1, 0, 4, 0, "MODEL"],
+        [10, 4, 0, 5, 0, "MODEL"],
+        [11, 5, 0, 6, 0, "MODEL"],
+        [12, 6, 0, 7, 0, "MODEL"],
+        [13, 7, 0, 13, 0, "MODEL"],
+        [2, 2, 0, 8, 0, "CLIP"],
+        [3, 2, 0, 9, 0, "CLIP"],
+        [4, 3, 0, 8, 1, "VAE"],
+        [5, 3, 0, 9, 1, "VAE"],
+        [6, 3, 0, 16, 1, "VAE"],
+        [14, 8, 0, 10, 0, "CONDITIONING"],
+        [15, 9, 0, 11, 0, "CONDITIONING"],
+        [16, 10, 0, 13, 1, "CONDITIONING"],
+        [17, 11, 0, 13, 2, "CONDITIONING"],
+        [18, 12, 0, 13, 3, "LATENT"],
+        [19, 14, 0, 15, 0, "IMAGE"],
+        [20, 15, 0, 8, 2, "IMAGE"],
+        [21, 15, 0, 9, 2, "IMAGE"],
+        [22, 13, 0, 16, 0, "LATENT"],
+        [23, 16, 0, 17, 0, "IMAGE"],
+    ]
+    nodes.append(
+        _make_zh_guide_note(
+            625,
+            [-1120, -40],
+            "【Qwen-Image-Edit-2511 · 原生多图/96视角指南】",
+            "## 4步极速锁脸多图合成 & fal 96视角旋转 (零自定义节点)\n\n"
+            "1. **多图参考 (`image1..3`)**：可连 1~3 张人物/道具/场景卡，经 `ImageScaleToTotalPixels(1MP)` 后送入 `TextEncodeQwenImageEditPlus` + `index_timestep_zero`。\n"
+            "2. **4步极速 vs 标准精度**：`Lightning 4steps` 配 `steps=4, cfg=1.0, shift=3.1` 仅需数秒出图。\n"
+            "3. **96视角旋转**：打开 `Multi-Angles LoRA (0.8~1.0)`，在提示词前加 `<sks> front/right side/back view eye-level/low-angle shot medium shot`。",
+        )
+    )
+    wf_q = {
+        "last_node_id": 630,
+        "last_link_id": 30,
+        "nodes": nodes,
+        "links": links,
+        "groups": [],
+        "config": {},
+        "extra": {"ds": {"scale": 0.68, "offset": [1160, 120]}},
+        "version": 0.4,
+    }
+    _prune_workflow_dangling_links(wf_q)
+    return wf_q
+
+
+def _build_h3_drama_director_workflow(with_storyboard: bool = False) -> Dict[str, Any]:
+    """构建 ComfyUI-MiniMaxH3-Director 短剧时间线工作流（角色卡/声纹卡/分镜表 + 10Eros-Max 8步无限制底座）"""
+    if with_storyboard:
+        shots_payload = json.dumps(
+            {
+                "format": "h3-director-shots",
+                "schema_version": 1,
+                "shots": [
+                    {
+                        "id": "sb-p1",
+                        "start": 0,
+                        "end": 6,
+                        "text": "Wide shot of a neon-lit rain alley at midnight: @Hero stands under a translucent umbrella checking an encrypted phone, @Partner approaches from the glowing doorway.",
+                        "media": [
+                            {"schema_version": 1, "context_id": "ctx_hero", "role": "context"},
+                            {"schema_version": 1, "context_id": "ctx_partner", "role": "context"},
+                        ],
+                        "spoken": [],
+                        "locked_fields": [],
+                        "draft": None,
+                    },
+                    {
+                        "id": "sb-p2",
+                        "start": 6,
+                        "end": 13,
+                        "text": "Medium two-shot: @Hero lowers the umbrella as raindrops shimmer in magenta rim light, turning sharply toward @Partner.",
+                        "media": [
+                            {"schema_version": 1, "context_id": "ctx_hero", "role": "context"},
+                            {"schema_version": 1, "context_id": "ctx_partner", "role": "context"},
+                        ],
+                        "spoken": [
+                            {"schema_version": 1, "text": "You brought the keydrive before midnight. I knew you would make it.", "speaker_id": "ctx_hero", "voice": "calm alto voice", "language": "English", "delivery": "says"}
+                        ],
+                        "locked_fields": [],
+                        "draft": None,
+                    },
+                    {
+                        "id": "sb-p3",
+                        "start": 13,
+                        "end": 20,
+                        "text": "Close-up reaction: @Partner steps into the warm streetlamp glow, nods calmly, and hands @Hero the metal case as distant thunder rumbles.",
+                        "media": [
+                            {"schema_version": 1, "context_id": "ctx_hero", "role": "context"},
+                            {"schema_version": 1, "context_id": "ctx_partner", "role": "context"},
+                        ],
+                        "spoken": [],
+                        "locked_fields": [],
+                        "draft": None,
+                    },
+                ],
+                "audio": [],
+                "audio_lanes": [],
+                "look": "Cinematic live action, neon rain reflections, crisp 35mm film grain.",
+            },
+            ensure_ascii=False,
+        )
+        board_payload = json.dumps(
+            {
+                "format": "h3-storyboard",
+                "schema_version": 1,
+                "id": "easycolab_h3_drama_sb",
+                "title": "MIDNIGHT HANDOFF",
+                "subtitle": "HERO & PARTNER - 20 SECONDS",
+                "aspect": "16:9",
+                "idea": "@Hero and @Partner meet in a rainy neon alley at midnight for a tense secret handoff.",
+                "panels": [
+                    {"id": "p1", "seconds": 6, "title": "ARRIVAL", "caption": "@Hero waits in rain as @Partner enters.", "prompt": "Wide shot of @Hero and @Partner in a rainy neon alley."},
+                    {"id": "p2", "seconds": 7, "title": "CONFRONTATION", "caption": "@Hero speaks calmly in close-up.", "prompt": "Medium two-shot of @Hero speaking to @Partner."},
+                    {"id": "p3", "seconds": 7, "title": "HANDOFF", "caption": "@Partner passes the metal case.", "prompt": "Close-up of @Partner handing the metal case to @Hero."},
+                ],
+            },
+            ensure_ascii=False,
+        )
+        idea_text = "@Hero and @Partner meet in a rainy neon alley at midnight for a tense secret handoff."
+        project_sec = 20.0
+        save_prefix = "video/H3_Drama_Storyboard"
+        note_id = 519
+        note_title = "【MiniMax-H3 短剧导演 · 双角色分镜表成片指南】"
+    else:
+        shots_payload = json.dumps(
+            {
+                "format": "h3-director-shots",
+                "schema_version": 1,
+                "shots": [
+                    {
+                        "id": "s1",
+                        "start": 0,
+                        "end": 7,
+                        "text": "@Hero walks slowly along a rain-slicked lantern street at dusk while the camera tracks beside her in smooth handheld motion.",
+                        "media": [{"schema_version": 1, "context_id": "ctx_hero", "role": "context"}],
+                        "spoken": [],
+                        "locked_fields": [],
+                        "draft": None,
+                    },
+                    {
+                        "id": "s2",
+                        "start": 7,
+                        "end": 14,
+                        "text": "Medium close-up: @Hero stops under the eaves, looks directly toward the lens, and speaks with composed intensity.",
+                        "media": [{"schema_version": 1, "context_id": "ctx_hero", "role": "context"}],
+                        "spoken": [
+                            {"schema_version": 1, "text": "The storm starts tonight, and no one leaves before dawn.", "speaker_id": "ctx_hero", "voice": "calm expressive voice", "language": "English", "delivery": "says"}
+                        ],
+                        "locked_fields": [],
+                        "draft": None,
+                    },
+                    {
+                        "id": "s3",
+                        "start": 14,
+                        "end": 20,
+                        "text": "Slow pull-back wide shot: @Hero turns toward the glowing courtyard doorway as mist drifts across the stone steps.",
+                        "media": [{"schema_version": 1, "context_id": "ctx_hero", "role": "context"}],
+                        "spoken": [],
+                        "locked_fields": [],
+                        "draft": None,
+                    },
+                ],
+                "audio": [],
+                "audio_lanes": [],
+                "look": "Cinematic live action, soft rim light, natural skin texture, shallow depth of field.",
+            },
+            ensure_ascii=False,
+        )
+        board_payload = ""
+        idea_text = "@Hero walks down a lantern-lit street at dusk, delivers a pivotal line, and enters the courtyard."
+        project_sec = 20.0
+        save_prefix = "video/H3_Drama_Director"
+        note_id = 518
+        note_title = "【MiniMax-H3 短剧导演 · 角色声纹多镜头指南】"
+
+    director_widgets = [
+        idea_text,
+        shots_payload,
+        project_sec,
+        0.0,
+        1280,
+        704,
+        "ref2va",
+        "video_audio",
+        "22",
+        "Steady evening rain, soft footsteps on wet cobblestones, distant wind chimes.",
+        "Moody minimal cello and ambient piano underscore.",
+        "Cinematic",
+        2026,
+        "fixed",
+        8,
+        "lcm",
+        "simple",
+        12.0,
+        3.0,
+        False,
+        "none",
+        "none",
+        "crop",
+        "match",
+        "",
+        True,
+        True,
+        1.0,
+        0.0,
+        1.0,
+        "",
+        "video",
+        False,
+        "",
+    ]
+
+    nodes: List[Dict[str, Any]] = [
+        {
+            "id": 1,
+            "type": "UNETLoader",
+            "pos": [-760, 0],
+            "size": [380, 82],
+            "flags": {},
+            "order": 0,
+            "mode": 0,
+            "inputs": [],
+            "outputs": [{"name": "MODEL", "type": "MODEL", "links": [1, 2]}],
+            "title": "加载 10Eros-Max v1.0 无限制 8步Turbo 底座",
+            "properties": {"Node name for S&R": "UNETLoader"},
+            "widgets_values": ["10Eros_Max_8stepTurbo_v1.0_hybrid-int8_HQ.safetensors", "default"],
+        },
+        {
+            "id": 2,
+            "type": "CLIPLoader",
+            "pos": [-760, 140],
+            "size": [380, 106],
+            "flags": {},
+            "order": 1,
+            "mode": 0,
+            "inputs": [],
+            "outputs": [{"name": "CLIP", "type": "CLIP", "links": [3, 4]}],
+            "title": "无审核 Heretic Qwen3-VL 32B 编码器",
+            "properties": {"Node name for S&R": "CLIPLoader"},
+            "widgets_values": ["qwen3vl_32b_heretic_minimax_h3_nvfp4.safetensors", "minimax", "default"],
+        },
+        {
+            "id": 3,
+            "type": "VAELoader",
+            "pos": [-760, 300],
+            "size": [380, 58],
+            "flags": {},
+            "order": 2,
+            "mode": 0,
+            "inputs": [],
+            "outputs": [{"name": "VAE", "type": "VAE", "links": [5]}],
+            "title": "MiniMax-H3 Video VAE",
+            "properties": {"Node name for S&R": "VAELoader"},
+            "widgets_values": ["minimax_h3_video_vae_int8_convrot.safetensors"],
+        },
+        {
+            "id": 4,
+            "type": "VAELoader",
+            "pos": [-760, 400],
+            "size": [380, 58],
+            "flags": {},
+            "order": 3,
+            "mode": 0,
+            "inputs": [],
+            "outputs": [{"name": "VAE", "type": "VAE", "links": [6]}],
+            "title": "MiniMax-H3 Audio VAE",
+            "properties": {"Node name for S&R": "VAELoader"},
+            "widgets_values": ["minimax_h3_audio_vae_fp32.safetensors"],
+        },
+        {
+            "id": 5,
+            "type": "VAELoader",
+            "pos": [-760, 500],
+            "size": [380, 58],
+            "flags": {},
+            "order": 4,
+            "mode": 0,
+            "inputs": [],
+            "outputs": [{"name": "VAE", "type": "VAE", "links": [7]}],
+            "title": "Preview VAE (taeh3 实时采样预览)",
+            "properties": {"Node name for S&R": "VAELoader"},
+            "widgets_values": ["taeh3.safetensors"],
+        },
+        {
+            "id": 6,
+            "type": "NGAIProvider",
+            "pos": [-760, 620],
+            "size": [380, 160],
+            "flags": {},
+            "order": 5,
+            "mode": 0,
+            "inputs": [{"name": "clip", "type": "CLIP", "link": 4}],
+            "outputs": [{"name": "AI provider", "type": "NG_AI_PROVIDER", "links": [8, 9, 10]}],
+            "title": "H3 AI 助手连接（可选自动补全提示词）",
+            "properties": {"Node name for S&R": "NGAIProvider"},
+            "widgets_values": ["local", "ollama", "", "", "", True, False, 120, 512, 0, 0.3, 0.9, 40, 0, 0, 0, 0, False, "", "stable_diffusion", ""],
+        },
+        {
+            "id": 7,
+            "type": "NGContextImage",
+            "pos": [-280, -240],
+            "size": [360, 290],
+            "flags": {},
+            "order": 6,
+            "mode": 0,
+            "inputs": [{"name": "ai_provider", "type": "NG_AI_PROVIDER", "shape": 7, "link": 9}],
+            "outputs": [{"name": "context", "type": "NG_CONTEXT", "links": [11]}],
+            "title": "① 主角角色卡 (@Hero · 替换成你的定妆照)",
+            "properties": {"Node name for S&R": "NGContextImage"},
+            "widgets_values": [
+                "easycolab_sample_start.png",
+                "Hero",
+                "Young lead woman in dark cinematic coat, sharp facial features, soft evening rim light.",
+                "character",
+                "reference",
+                "high",
+                "ctx_hero",
+                "#86b8d5",
+                "",
+                "",
+                "",
+                "",
+                "image",
+                "",
+            ],
+        },
+        {
+            "id": 9,
+            "type": "NGContextConnector",
+            "pos": [180, 40],
+            "size": [320, 460],
+            "flags": {},
+            "order": 8,
+            "mode": 0,
+            "inputs": [
+                {"name": "clip", "type": "CLIP", "link": 3},
+                {"name": "vae", "type": "VAE", "link": 5},
+                {"name": "audio_vae", "type": "VAE", "link": 6},
+                {"name": "model_fl2va", "type": "MODEL", "shape": 7, "link": 1},
+                {"name": "model_ref2va", "type": "MODEL", "shape": 7, "link": 2},
+                {"name": "ai_provider", "type": "NG_AI_PROVIDER", "shape": 7, "link": 8},
+                {"name": "context_text.text_0", "type": "NG_CONTEXT", "shape": 7, "link": None},
+                {"name": "context_image.image_0", "type": "NG_CONTEXT", "shape": 7, "link": 11},
+                {"name": "context_image.image_1", "type": "NG_CONTEXT", "shape": 7, "link": 12 if with_storyboard else None},
+                {"name": "context_video.video_0", "type": "NG_CONTEXT", "shape": 7, "link": None},
+                {"name": "context_audio.audio_0", "type": "NG_CONTEXT", "shape": 7, "link": 13 if not with_storyboard else None},
+                {"name": "preview_vae", "type": "VAE", "shape": 7, "link": 7},
+            ],
+            "outputs": [{"name": "H3 context", "type": "NG_DIRECTOR_INPUT", "links": [14]}],
+            "title": "③ H3 短剧上下文聚合器",
+            "properties": {"Node name for S&R": "NGContextConnector"},
+            "widgets_values": [""],
+        },
+        {
+            "id": 10,
+            "type": "NGH3Director",
+            "pos": [580, -40],
+            "size": [520, 740],
+            "flags": {},
+            "order": 9,
+            "mode": 0,
+            "inputs": [
+                {"name": "context", "type": "NG_DIRECTOR_INPUT", "link": 14},
+                {"name": "prepend_text", "type": "STRING", "shape": 7, "widget": {"name": "prepend_text"}, "link": None},
+            ],
+            "outputs": [
+                {"name": "result", "type": "NG_DIRECTOR_RESULT", "links": [15]},
+                {"name": "chunks", "type": "NG_CHUNK", "links": None},
+            ],
+            "title": "④ MiniMax-H3 短剧导演时间线 (分段续拍 + 对白口型)",
+            "properties": {"Node name for S&R": "NGH3Director"},
+            "widgets_values": director_widgets,
+            "widgets_values_named": {
+                "idea": idea_text,
+                "shots": shots_payload,
+                "project_seconds": project_sec,
+                "chunk_seconds": 0.0,
+                "width": 1280,
+                "height": 704,
+                "mode": "ref2va",
+                "continuity": "video_audio",
+                "pin_frames": "22",
+                "soundscape": "Steady evening rain, soft footsteps on wet cobblestones, distant wind chimes.",
+                "music": "Moody minimal cello and ambient piano underscore.",
+                "style": "Cinematic",
+                "seed": 2026,
+                "steps": 8,
+                "sampler_name": "lcm",
+                "scheduler": "simple",
+                "shift_video": 12.0,
+                "shift_audio": 3.0,
+                "turbo": False,
+                "turbo_lora_fl2va": "none",
+                "turbo_lora_ref2va": "none",
+                "resize_method": "crop",
+                "ref_image_size": "match",
+                "resume": True,
+                "resume_delete_done": True,
+                "output": "video",
+                "spectrum": False,
+            },
+        },
+        {
+            "id": 11,
+            "type": "NGProjectRender",
+            "pos": [1180, 40],
+            "size": [340, 180],
+            "flags": {},
+            "order": 10,
+            "mode": 0,
+            "inputs": [{"name": "sequence", "type": "NG_DIRECTOR_RESULT", "link": 15}],
+            "outputs": [
+                {"name": "video", "type": "VIDEO", "links": [16]},
+                {"name": "images", "type": "IMAGE", "links": None},
+                {"name": "audio", "type": "AUDIO", "links": None},
+                {"name": "render_warnings", "type": "STRING", "links": None},
+            ],
+            "title": "⑤ 多镜头自动分段渲染与音画拼接",
+            "properties": {"Node name for S&R": "NGProjectRender"},
+            "widgets_values": [""],
+        },
+        {
+            "id": 12,
+            "type": "SaveVideo",
+            "pos": [1580, 40],
+            "size": [420, 420],
+            "flags": {},
+            "order": 11,
+            "mode": 0,
+            "inputs": [{"name": "video", "type": "VIDEO", "link": 16}],
+            "outputs": [],
+            "title": "⑥ 短剧成片预览与自动保存",
+            "properties": {"Node name for S&R": "SaveVideo"},
+            "widgets_values": [save_prefix, "auto", "auto", "auto"],
+        },
+        _make_zh_guide_note(
+            note_id,
+            [-1160, 0],
+            note_title,
+            "## MiniMax-H3 短剧导演时间线（10Eros-Max 无限制 8步加速）\n\n"
+            "1. **直接复用 10Eros-Max**：已关闭额外外挂 Turbo LoRA 开关，直接以 `LCM / simple / 8步` 跑完多镜头分段与音画无缝续拍（节省显存且零额外大模型下载）。\n"
+            "2. **角色与声纹锁定**：在左侧角色卡 / 声纹卡替换定妆照与对白人声，然后在导演时间线写 `@Hero`、`@Partner` 与对白台词。\n"
+            "3. **断点续渲与重拍**：内置 `resume=True`；任意长短剧分片会自动拼接并保留立体声对白/环境音/配乐。",
+        ),
+    ]
+
+    links: List[List[Any]] = [
+        [1, 1, 0, 9, 3, "MODEL"],
+        [2, 1, 0, 9, 4, "MODEL"],
+        [3, 2, 0, 9, 0, "CLIP"],
+        [4, 2, 0, 6, 0, "CLIP"],
+        [5, 3, 0, 9, 1, "VAE"],
+        [6, 4, 0, 9, 2, "VAE"],
+        [7, 5, 0, 9, 11, "VAE"],
+        [8, 6, 0, 9, 5, "NG_AI_PROVIDER"],
+        [9, 6, 0, 7, 0, "NG_AI_PROVIDER"],
+        [11, 7, 0, 9, 7, "NG_CONTEXT"],
+        [14, 9, 0, 10, 0, "NG_DIRECTOR_INPUT"],
+        [15, 10, 0, 11, 0, "NG_DIRECTOR_RESULT"],
+        [16, 11, 0, 12, 0, "VIDEO"],
+    ]
+
+    if with_storyboard:
+        nodes.extend([
+            {
+                "id": 8,
+                "type": "NGContextImage",
+                "pos": [-280, 120],
+                "size": [360, 290],
+                "flags": {},
+                "order": 7,
+                "mode": 0,
+                "inputs": [{"name": "ai_provider", "type": "NG_AI_PROVIDER", "shape": 7, "link": 10}],
+                "outputs": [{"name": "context", "type": "NG_CONTEXT", "links": [12]}],
+                "title": "② 搭档角色卡 (@Partner · 替换参考图)",
+                "properties": {"Node name for S&R": "NGContextImage"},
+                "widgets_values": [
+                    "easycolab_sample_end.png",
+                    "Partner",
+                    "Calm detective wearing trench coat, moody amber streetlamp lighting.",
+                    "character",
+                    "reference",
+                    "high",
+                    "ctx_partner",
+                    "#e08b4f",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "image",
+                    "",
+                ],
+            },
+            {
+                "id": 13,
+                "type": "NGStoryboard",
+                "pos": [180, -360],
+                "size": [480, 340],
+                "flags": {},
+                "order": 7,
+                "mode": 0,
+                "inputs": [{"name": "context", "type": "NG_DIRECTOR_INPUT", "shape": 7, "link": None}],
+                "outputs": [
+                    {"name": "sheet", "type": "IMAGE", "links": None},
+                    {"name": "panels", "type": "IMAGE", "links": None},
+                    {"name": "shots", "type": "STRING", "links": None},
+                ],
+                "title": "③ 分镜画板 (NGStoryboard 编排多格分镜)",
+                "properties": {"Node name for S&R": "NGStoryboard"},
+                "widgets_values": [board_payload, "", 0],
+            },
+        ])
+        links.extend([
+            [10, 6, 0, 8, 0, "NG_AI_PROVIDER"],
+            [12, 8, 0, 9, 8, "NG_CONTEXT"],
+        ])
+    else:
+        nodes.append(
+            {
+                "id": 8,
+                "type": "NGContextAudio",
+                "pos": [-280, 120],
+                "size": [360, 280],
+                "flags": {},
+                "order": 7,
+                "mode": 0,
+                "inputs": [{"name": "ai_provider", "type": "NG_AI_PROVIDER", "shape": 7, "link": 10}],
+                "outputs": [{"name": "context", "type": "NG_CONTEXT", "links": [13]}],
+                "title": "② 主角声纹卡 (绑定 @Hero 说话音色)",
+                "properties": {"Node name for S&R": "NGContextAudio"},
+                "widgets_values": [
+                    "easycolab_sample_voice.wav",
+                    "Hero voice",
+                    "",
+                    "voice",
+                    "voice",
+                    "high",
+                    "ctx_hero",
+                    "ctx_hero_voice",
+                    "#d095ce",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                ],
+            }
+        )
+        links.extend([
+            [10, 6, 0, 8, 0, "NG_AI_PROVIDER"],
+            [13, 8, 0, 9, 10, "NG_CONTEXT"],
+        ])
+
+    wf: Dict[str, Any] = {
+        "last_node_id": 530,
+        "last_link_id": 25,
+        "nodes": nodes,
+        "links": links,
+        "groups": [],
+        "config": {},
+        "extra": {"ds": {"scale": 0.58, "offset": [1200, 380]}},
+        "version": 0.4,
+    }
+    _prune_workflow_dangling_links(wf)
+    return wf
+
+
+def _build_qwen3_tts_workflow(clone_mode: bool = False) -> Dict[str, Any]:
+    """构建 ComfyUI-Qwen-TTS (1.7B VoiceDesign 自然语言声音设计 / Base 声纹克隆与情感指令) 中文工作流"""
+    if clone_mode:
+        nodes = [
+            _make_zh_guide_note(
+                600,
+                [-520, -40],
+                "【Qwen3-TTS 1.7B · 声纹克隆与情感配音】",
+                (
+                    "### 三步完成短剧角色情感克隆配音\n"
+                    "1. **上传参考音**：在 ② 节点选择 3~15 秒干净角色人声（推荐先用工作流 `20` 声音设计生成）。\n"
+                    "2. **输入台词与情感指令**：在 ③ 节点 `target_text` 写台词，在 `instruct` 写情绪导演指令（如：`用压抑着怒火、冷笑的语气慢速说出`）。\n"
+                    "3. **点右上角「运行」**：结果自动保存为无损音频并可直接试听或导出给 MiniMax-H3 短剧导演。"
+                ),
+            ),
+            {
+                "id": 1,
+                "type": "LoadAudio",
+                "pos": [-60, 120],
+                "size": [340, 140],
+                "flags": {},
+                "order": 1,
+                "mode": 0,
+                "inputs": [],
+                "outputs": [{"name": "AUDIO", "type": "AUDIO", "links": [1]}],
+                "title": "① 加载角色声纹参考音频 (3~15s)",
+                "properties": {"Node name for S&R": "LoadAudio"},
+                "widgets_values": ["easycolab_sample_voice.wav", None, None],
+            },
+            {
+                "id": 2,
+                "type": "FB_Qwen3TTSVoiceClone",
+                "pos": [340, -20],
+                "size": [480, 520],
+                "flags": {},
+                "order": 2,
+                "mode": 0,
+                "inputs": [
+                    {"name": "ref_audio", "type": "AUDIO", "shape": 7, "link": 1},
+                    {"name": "voice_clone_prompt", "type": "VOICE_CLONE_PROMPT", "shape": 7, "link": None},
+                ],
+                "outputs": [{"name": "audio", "type": "AUDIO", "links": [2]}],
+                "title": "② Qwen3-TTS 1.7B · 声纹克隆与情感指令配音",
+                "properties": {"Node name for S&R": "FB_Qwen3TTSVoiceClone"},
+                "widgets_values": [
+                    "这杯茶凉了，就像你当初在长街上留给我的那个背影。不过没关系，今晚之后，这笔账我们一笔勾销。",
+                    "1.7B",
+                    "auto",
+                    "bf16",
+                    "Chinese",
+                    "",
+                    42,
+                    "randomize",
+                    2048,
+                    1.0,
+                    50,
+                    0.9,
+                    1.05,
+                    False,
+                    "用充满戏剧张力、低沉克制又隐约带着冷笑和怒意的语气说",
+                    "auto",
+                    False,
+                ],
+            },
+            {
+                "id": 3,
+                "type": "SaveAudio",
+                "pos": [890, 80],
+                "size": [340, 140],
+                "flags": {},
+                "order": 3,
+                "mode": 0,
+                "inputs": [{"name": "audio", "type": "AUDIO", "link": 2}],
+                "outputs": [],
+                "title": "③ 保存克隆情感音频 (.flac)",
+                "properties": {"Node name for S&R": "SaveAudio"},
+                "widgets_values": ["audio/Qwen3TTS_VoiceClone"],
+            },
+        ]
+        links = [
+            [1, 1, 0, 2, 0, "AUDIO"],
+            [2, 2, 0, 3, 0, "AUDIO"],
+        ]
+    else:
+        nodes = [
+            _make_zh_guide_note(
+                601,
+                [-480, -40],
+                "【Qwen3-TTS 1.7B · 自然语言声音设计】",
+                (
+                    "### 零音频从文字捏造专属角色声线\n"
+                    "1. **描述声线与情绪 (`instruct`)**：用自然语言指定年龄、性别、音色质感、语速、地域口音或剧情感。\n"
+                    "2. **输入试音台词 (`text`)**：建议输入 8~15 秒台词，生成的音频可直接作为 MiniMax-H3 短剧导演与 Fish Drama 3 的角色声纹种子！\n"
+                    "3. **点右上角「运行」**：自动保存至 `output/audio/`。"
+                ),
+            ),
+            {
+                "id": 1,
+                "type": "FB_Qwen3TTSVoiceDesign",
+                "pos": [20, -20],
+                "size": [480, 480],
+                "flags": {},
+                "order": 1,
+                "mode": 0,
+                "inputs": [],
+                "outputs": [{"name": "audio", "type": "AUDIO", "links": [1]}],
+                "title": "① Qwen3-TTS 1.7B · 自然语言声音设计",
+                "properties": {"Node name for S&R": "FB_Qwen3TTSVoiceDesign"},
+                "widgets_values": [
+                    "雨下了一整夜，你却连一句告别都没留。不过也好，从今以后，这盘棋该由我来落子了。",
+                    "28岁冷艳古风女帝，声线清冽带有磁性颗粒感，语速沉稳克制，末尾带一丝戏谑威压与叹息感。",
+                    "1.7B",
+                    "auto",
+                    "bf16",
+                    "Chinese",
+                    42,
+                    "randomize",
+                    2048,
+                    1.0,
+                    50,
+                    0.9,
+                    1.05,
+                    "auto",
+                    False,
+                ],
+            },
+            {
+                "id": 2,
+                "type": "SaveAudio",
+                "pos": [570, 60],
+                "size": [340, 140],
+                "flags": {},
+                "order": 2,
+                "mode": 0,
+                "inputs": [{"name": "audio", "type": "AUDIO", "link": 1}],
+                "outputs": [],
+                "title": "② 保存设计的角色声纹音频 (.flac)",
+                "properties": {"Node name for S&R": "SaveAudio"},
+                "widgets_values": ["audio/Qwen3TTS_VoiceDesign"],
+            },
+        ]
+        links = [[1, 1, 0, 2, 0, "AUDIO"]]
+
+    wf: Dict[str, Any] = {
+        "last_node_id": 610,
+        "last_link_id": 10,
+        "nodes": nodes,
+        "links": links,
+        "groups": [],
+        "config": {},
+        "extra": {"ds": {"scale": 0.72, "offset": [620, 220]}},
+        "version": 0.4,
+    }
+    _prune_workflow_dangling_links(wf)
+    return wf
+
+
+def _build_drama3_tts_workflow(multi_speaker: bool = False) -> Dict[str, Any]:
+    """构建 PedroMarinhoDev/ComfyUI-Drama3 (Fish Audio Drama 3 35B MoE + Qwen3-ASR) 中文工作流"""
+    note_title = (
+        "【Fish Audio Drama 3 · 双角色互听情感飙戏】"
+        if multi_speaker
+        else "【Fish Audio Drama 3 · 35B 情感配音与音色克隆】"
+    )
+    note_body = (
+        "### 双角色戏剧配音指引\n"
+        "1. 在左侧两个 **Load Reference Audio** 分别选好 `<|speaker:0|>` 与 `<|speaker:1|>` 的声纹参考（3~20s 干净人声）。\n"
+        "2. Qwen3-ASR 会自动识别参考音频台词喂给 Drama 3。\n"
+        "3. 在 **Drama 3 Generate** 用 `<|speaker:0|>`、`<|speaker:1|>` 区分角色，并在台词中穿插 `[sighs]`、`[whispers]`、`[laughs]` 等舞台情绪标签。\n"
+        "4. 推荐保持 `top_k = 0`、`temperature = 1.0`、`top_p = 0.9` 与 `voice_guidance = 1.0` 防串音。"
+        if multi_speaker
+        else "### 单角色戏剧情感配音指引\n"
+        "1. 在 **Load Reference Audio** 选 3~20 秒干净角色声纹参考（可用 Qwen3-TTS VoiceDesign 现捏一个）。\n"
+        "2. Qwen3-ASR 自动写入参考音频文字稿并绑定至 `Drama 3 Encode Voice`。\n"
+        "3. 在 **Drama 3 Generate** 编写台词，穿插 `[sighs]`、`[laughs]`、`[whispers]`、`[gasp]` 舞台指示。\n"
+        "4. 默认 `top_k = 0` 防止长停顿静音，`experts = in RAM` 兼顾 G4 显存与高帧率缓存。"
+    )
+    script_text = (
+        "<|speaker:0|> [sighs] 你终于肯露面了？雨下了一整夜，我以为你早就把我忘了。\n"
+        "<|speaker:1|> [chuckles] 怎么会呢，殿下。我要是不来，谁替你收拾这盘残局？\n"
+        "<|speaker:0|> [whispers] 小声点，门外还有人盯着。把东西放这儿，天亮前离开。"
+        if multi_speaker
+        else "[sighs] 本宫早就说过，这件事绝没有那么简单。[laughs] 不过嘛，既然你敢接招，本宫就陪你玩到底。"
+    )
+    save_prefix = "audio/Drama3_Dialogue" if multi_speaker else "audio/Drama3_Clone"
+    speakers_mode = "one take per line, hearing the line before" if multi_speaker else "one take per line"
+    voice_guidance = 1.0 if multi_speaker else 0.0
+
+    nodes: List[Dict[str, Any]] = [
+        _make_zh_guide_note(620, [-980, -180], note_title, note_body),
+        {
+            "id": 1,
+            "type": "Drama3Loader",
+            "pos": [-500, -240],
+            "size": [360, 190],
+            "flags": {},
+            "order": 1,
+            "mode": 0,
+            "inputs": [],
+            "outputs": [{"name": "DRAMA3_MODEL", "type": "DRAMA3_MODEL", "links": [1]}],
+            "title": "① 加载 Fish Audio Drama 3 (35B MoE FP8)",
+            "properties": {"Node name for S&R": "Drama3Loader"},
+            "widgets_values": ["drama3_fp8experts_bf16.safetensors", "in RAM", 0.0, "none", 0, True],
+        },
+        {
+            "id": 2,
+            "type": "Drama3CodecLoader",
+            "pos": [-500, 10],
+            "size": [360, 90],
+            "flags": {},
+            "order": 2,
+            "mode": 0,
+            "inputs": [],
+            "outputs": [{"name": "DRAMA3_CODEC", "type": "DRAMA3_CODEC", "links": [2, 3]}],
+            "title": "② 加载 Drama 3 Codec (44.1kHz)",
+            "properties": {"Node name for S&R": "Drama3CodecLoader"},
+            "widgets_values": ["drama3_codec.safetensors"],
+        },
+        {
+            "id": 3,
+            "type": "Qwen3ASRLoader",
+            "pos": [-500, 150],
+            "size": [360, 90],
+            "flags": {},
+            "order": 3,
+            "mode": 0,
+            "inputs": [],
+            "outputs": [{"name": "QWEN3_ASR_MODEL", "type": "QWEN3_ASR_MODEL", "links": [4]}],
+            "title": "③ 加载 Qwen3-ASR 1.7B 自动转录模型",
+            "properties": {"Node name for S&R": "Qwen3ASRLoader"},
+            "widgets_values": ["qwen3_asr_1.7b_bf16.safetensors"],
+        },
+        {
+            "id": 4,
+            "type": "Drama3LoadReferenceAudio",
+            "pos": [-500, 300],
+            "size": [360, 160],
+            "flags": {},
+            "order": 4,
+            "mode": 0,
+            "inputs": [],
+            "outputs": [{"name": "AUDIO", "type": "AUDIO", "links": [5, 6]}],
+            "title": "④ 角色0声纹参考音频 (<|speaker:0|>)",
+            "properties": {"Node name for S&R": "Drama3LoadReferenceAudio"},
+            "widgets_values": ["easycolab_sample_voice.wav", "", True, "20 s"],
+        },
+        {
+            "id": 5,
+            "type": "Qwen3ASRTranscribe",
+            "pos": [-80, 150],
+            "size": [320, 150],
+            "flags": {},
+            "order": 5,
+            "mode": 0,
+            "inputs": [
+                {"name": "model", "type": "QWEN3_ASR_MODEL", "link": 4},
+                {"name": "audio", "type": "AUDIO", "link": 5},
+            ],
+            "outputs": [
+                {"name": "text", "type": "STRING", "links": [7]},
+                {"name": "language", "type": "STRING", "links": []},
+            ],
+            "title": "⑤ 自动转录角色0参考台词",
+            "properties": {"Node name for S&R": "Qwen3ASRTranscribe"},
+            "widgets_values": ["auto", "", 4096],
+        },
+        {
+            "id": 6,
+            "type": "Drama3EncodeVoice",
+            "pos": [-80, 350],
+            "size": [320, 150],
+            "flags": {},
+            "order": 6,
+            "mode": 0,
+            "inputs": [
+                {"name": "codec", "type": "DRAMA3_CODEC", "link": 2},
+                {"name": "audio", "type": "AUDIO", "link": 6},
+                {"name": "transcript", "type": "STRING", "link": 7, "widget": {"name": "transcript"}},
+            ],
+            "outputs": [{"name": "DRAMA3_VOICE", "type": "DRAMA3_VOICE", "links": [8]}],
+            "title": "⑥ 编码角色0声纹 (<|speaker:0|>)",
+            "properties": {"Node name for S&R": "Drama3EncodeVoice"},
+            "widgets_values": [""],
+        },
+        {
+            "id": 7,
+            "type": "Drama3Generate",
+            "pos": [320, -140],
+            "size": [440, 380],
+            "flags": {},
+            "order": 7,
+            "mode": 0,
+            "inputs": [
+                {"name": "model", "type": "DRAMA3_MODEL", "link": 1},
+                {"name": "voices.voice0", "type": "DRAMA3_VOICE", "link": 8},
+                {"name": "voices.voice1", "type": "DRAMA3_VOICE", "link": 14 if multi_speaker else None},
+            ],
+            "outputs": [{"name": "DRAMA3_CODES", "type": "DRAMA3_CODES", "links": [9]}],
+            "title": "⑦ Drama 3 情感配音与舞台导演",
+            "properties": {"Node name for S&R": "Drama3Generate"},
+            "widgets_values": [
+                script_text,
+                42,
+                "randomize",
+                1.0,
+                0.9,
+                0,
+                0,
+                True,
+                speakers_mode,
+                voice_guidance,
+            ],
+        },
+        {
+            "id": 8,
+            "type": "Drama3Decode",
+            "pos": [820, -40],
+            "size": [300, 110],
+            "flags": {},
+            "order": 8,
+            "mode": 0,
+            "inputs": [
+                {"name": "codec", "type": "DRAMA3_CODEC", "link": 3},
+                {"name": "codes", "type": "DRAMA3_CODES", "link": 9},
+            ],
+            "outputs": [{"name": "AUDIO", "type": "AUDIO", "links": [10]}],
+            "title": "⑧ 解码 44.1kHz 高保真语音",
+            "properties": {"Node name for S&R": "Drama3Decode"},
+            "widgets_values": [True],
+        },
+        {
+            "id": 9,
+            "type": "SaveAudio",
+            "pos": [1170, -40],
+            "size": [330, 130],
+            "flags": {},
+            "order": 9,
+            "mode": 0,
+            "inputs": [{"name": "audio", "type": "AUDIO", "link": 10}],
+            "outputs": [],
+            "title": "⑨ 保存戏剧情感配音 (.flac)",
+            "properties": {"Node name for S&R": "SaveAudio"},
+            "widgets_values": [save_prefix],
+        },
+    ]
+
+    links: List[Any] = [
+        [1, 1, 0, 7, 0, "DRAMA3_MODEL"],
+        [2, 2, 0, 6, 0, "DRAMA3_CODEC"],
+        [3, 2, 0, 8, 0, "DRAMA3_CODEC"],
+        [4, 3, 0, 5, 0, "QWEN3_ASR_MODEL"],
+        [5, 4, 0, 5, 1, "AUDIO"],
+        [6, 4, 0, 6, 1, "AUDIO"],
+        [7, 5, 0, 6, 2, "STRING"],
+        [8, 6, 0, 7, 1, "DRAMA3_VOICE"],
+        [9, 7, 0, 8, 1, "DRAMA3_CODES"],
+        [10, 8, 0, 9, 0, "AUDIO"],
+    ]
+
+    if multi_speaker:
+        nodes[3]["outputs"][0]["links"].append(11)
+        nodes[2]["outputs"][0]["links"].append(13)
+        nodes.extend([
+            {
+                "id": 10,
+                "type": "Drama3LoadReferenceAudio",
+                "pos": [-500, 520],
+                "size": [360, 160],
+                "flags": {},
+                "order": 4,
+                "mode": 0,
+                "inputs": [],
+                "outputs": [{"name": "AUDIO", "type": "AUDIO", "links": [15, 16]}],
+                "title": "④b 角色1声纹参考音频 (<|speaker:1|>)",
+                "properties": {"Node name for S&R": "Drama3LoadReferenceAudio"},
+                "widgets_values": ["easycolab_sample_voice.wav", "", True, "20 s"],
+            },
+            {
+                "id": 11,
+                "type": "Qwen3ASRTranscribe",
+                "pos": [-80, 540],
+                "size": [320, 150],
+                "flags": {},
+                "order": 5,
+                "mode": 0,
+                "inputs": [
+                    {"name": "model", "type": "QWEN3_ASR_MODEL", "link": 11},
+                    {"name": "audio", "type": "AUDIO", "link": 15},
+                ],
+                "outputs": [
+                    {"name": "text", "type": "STRING", "links": [17]},
+                    {"name": "language", "type": "STRING", "links": []},
+                ],
+                "title": "⑤b 自动转录角色1参考台词",
+                "properties": {"Node name for S&R": "Qwen3ASRTranscribe"},
+                "widgets_values": ["auto", "", 4096],
+            },
+            {
+                "id": 12,
+                "type": "Drama3EncodeVoice",
+                "pos": [-80, 730],
+                "size": [320, 150],
+                "flags": {},
+                "order": 6,
+                "mode": 0,
+                "inputs": [
+                    {"name": "codec", "type": "DRAMA3_CODEC", "link": 13},
+                    {"name": "audio", "type": "AUDIO", "link": 16},
+                    {"name": "transcript", "type": "STRING", "link": 17, "widget": {"name": "transcript"}},
+                ],
+                "outputs": [{"name": "DRAMA3_VOICE", "type": "DRAMA3_VOICE", "links": [14]}],
+                "title": "⑥b 编码角色1声纹 (<|speaker:1|>)",
+                "properties": {"Node name for S&R": "Drama3EncodeVoice"},
+                "widgets_values": [""],
+            },
+        ])
+        links.extend([
+            [11, 3, 0, 11, 0, "QWEN3_ASR_MODEL"],
+            [13, 2, 0, 12, 0, "DRAMA3_CODEC"],
+            [14, 12, 0, 7, 2, "DRAMA3_VOICE"],
+            [15, 10, 0, 11, 1, "AUDIO"],
+            [16, 10, 0, 12, 1, "AUDIO"],
+            [17, 11, 0, 12, 2, "STRING"],
+        ])
+
+    wf: Dict[str, Any] = {
+        "last_node_id": 630,
+        "last_link_id": 25,
+        "nodes": nodes,
+        "links": links,
+        "groups": [],
+        "config": {},
+        "extra": {"ds": {"scale": 0.62, "offset": [1080, 320]}},
+        "version": 0.4,
+    }
+    _prune_workflow_dangling_links(wf)
+    return wf
+
+
 def _build_and_install_comfy_preset_workflows(
     persist_root: str,
     pack_ids: Optional[List[str]] = None,
@@ -8223,369 +10298,6 @@ def _build_and_install_comfy_preset_workflows(
     os.makedirs(wf_dir, exist_ok=True)
     target_set = set(pack_ids) if pack_ids else {p["id"] for p in COMFY_PRESET_WORKFLOW_PACKS}
     installed_files: List[str] = []
-
-    # 1. 万相 Wan2.2 14B (单图 I2V + 首尾帧 FLF2V 4步极速版)
-    if "wan22_i2v_flf2v" in target_set:
-        try:
-            d_i2v = _fetch_official_comfy_template("video_wan2_2_14B_i2v.json")
-            kept_nodes = []
-            for n in d_i2v.get("nodes", []):
-                ntype = n.get("type")
-                if ntype == "MarkdownNote":
-                    continue
-                if n.get("id") == 97 and ntype == "LoadImage":
-                    n["title"] = "① 点击此处选择起始图片 (Choose file to upload)"
-                    n["widgets_values"] = ["easycolab_sample_start.png", "image"]
-                    n.pop("widgets_values_named", None)
-                elif n.get("id") == 129:
-                    n["title"] = "② 填写画面动作与镜头描述 (G4 已预设 1280×720 · 4步极速)"
-                    wv = list(n.get("widgets_values") or [])
-                    if len(wv) >= 4:
-                        wv[0] = "镜头缓慢向前推进，晨曦阳光洒在海面与远山上，云层轻柔流动，水面泛起细腻金光涟漪，电影级光影质感。"
-                        wv[1] = 1280
-                        wv[2] = 720
-                    n["widgets_values"] = wv
-                    n.pop("widgets_values_named", None)
-                elif ntype == "SaveVideo":
-                    n["title"] = "③ 生成结果预览与自动保存 (右键可下载视频)"
-                    n["widgets_values"] = ["video/Wan2.2_单图生视频", "auto", "auto"]
-                    n.pop("widgets_values_named", None)
-                kept_nodes.append(n)
-            kept_nodes.append(_make_zh_guide_note(
-                501,
-                [-520, -420],
-                "【EasyColab 三步傻瓜出片指南 · 单图生视频】",
-                "## 三步直接出片（无需连线！）\n\n"
-                "1. **传图**：点击右侧 **「① 点击此处选择起始图片」** 节点底部的上传按钮，选一张你的图片。\n"
-                "2. **写动作**：在中间 **「② 填写画面动作与镜头描述」** 第一个文本框里用中文或英文写希望画面怎么动（如：镜头推进、人物转头微笑、发丝随风飘动）。\n"
-                "3. **点运行**：点击网页右上角蓝色的 **「运行 (Run)」** 按钮，G4 显卡约 **25 秒** 即可在右侧直接预览成片！\n\n"
-                "> 提示：所有生成的视频都会自动同步至你的 Google Drive，也可回到 EasyColab 客户端一键拉取到 Mac 本地。",
-            ))
-            d_i2v["nodes"] = kept_nodes
-            d_i2v["last_node_id"] = max(int(d_i2v.get("last_node_id") or 200), 505)
-            d_i2v.setdefault("extra", {})["ds"] = {"scale": 0.72, "offset": [580, 560]}
-            _prune_workflow_dangling_links(d_i2v)
-            out_1 = os.path.join(wf_dir, "01_Wan2.2_极速单图生视频(4步傻瓜版).json")
-            with open(out_1, "w", encoding="utf-8") as wf:
-                json.dump(d_i2v, wf, ensure_ascii=False, indent=2)
-            installed_files.append(os.path.basename(out_1))
-        except Exception as e:
-            print(f"[ComfyUI 工作流生成] Wan2.2 I2V 模板处理异常: {e}")
-
-        try:
-            d_flf = _fetch_official_comfy_template("video_wan2_2_14B_flf2v.json")
-            # 仅提取官方模板中 4-Step LightX2V LoRA 极速分支连通分量 (原 mode=4)，彻底剔除慢速重复节点并自动激活 (mode=0)
-            active_ids = {n["id"] for n in d_flf.get("nodes", []) if n.get("mode") == 4}
-            flf_nodes = []
-            for n in d_flf.get("nodes", []):
-                nid = n.get("id")
-                if nid not in active_ids or n.get("type") == "Note":
-                    continue
-                n["mode"] = 0
-                if isinstance(n.get("pos"), list) and len(n["pos"]) >= 2:
-                    n["pos"] = [n["pos"][0], n["pos"][1] - 1600]
-                if nid == 68 and n.get("type") == "LoadImage":
-                    # link 157 -> node 67 slot 5 (start_image)
-                    n["title"] = "① 点击上传起始首帧图片 (Start Frame)"
-                    n["widgets_values"] = ["easycolab_sample_start.png", "image"]
-                    n.pop("widgets_values_named", None)
-                elif nid == 62 and n.get("type") == "LoadImage":
-                    # link 158 -> node 67 slot 6 (end_image)
-                    n["title"] = "② 点击上传结束尾帧图片 (End Frame)"
-                    n["widgets_values"] = ["easycolab_sample_end.png", "image"]
-                    n.pop("widgets_values_named", None)
-                elif nid == 6 and n.get("type") == "CLIPTextEncode":
-                    n["title"] = "③ 输入首尾帧过渡动作与运镜描述 (正向提示词)"
-                    n["widgets_values"] = [
-                        "清晨海面的朝阳缓缓升起并化作绚丽的傍晚漫天晚霞，镜头平稳向右推进，云层与海浪自然流动过渡，光影由冷蓝渐变为温暖金红，画面连贯丝滑。"
-                    ]
-                    n.pop("widgets_values_named", None)
-                elif nid == 7 and n.get("type") == "CLIPTextEncode":
-                    n["title"] = "反向提示词 (保持默认即可)"
-                elif nid == 67 and n.get("type") == "WanFirstLastFrameToVideo":
-                    n["title"] = "④ 视频尺寸与总帧数 (81帧≈5秒 · 1280×720)"
-                    n["widgets_values"] = [1280, 720, 81, 1]
-                    n.pop("widgets_values_named", None)
-                elif nid == 61 and n.get("type") == "SaveVideo":
-                    n["title"] = "⑤ 首尾帧过渡成片预览与自动保存"
-                    n["widgets_values"] = ["video/Wan2.2_首尾帧过渡", "auto", "auto"]
-                    n.pop("widgets_values_named", None)
-                flf_nodes.append(n)
-
-            flf_nodes.append(_make_zh_guide_note(
-                502,
-                [-430, 490],
-                "【EasyColab 三步傻瓜出片指南 · 首尾帧过渡】",
-                "## 首尾两张图丝滑变形/运镜（4步极速已开启）\n\n"
-                "1. **传首尾两张图**：在右侧 **「① 起始首帧图片」** 和 **「② 结束尾帧图片」** 分别上传开头和结尾画面。\n"
-                "2. **写过渡过程**：在 **「③ 输入首尾帧过渡动作与运镜描述」** 写清楚从图 1 怎么变化/运镜到图 2。\n"
-                "3. **点右上角运行**：无需按任何快捷键，4 步加速 LoRA 已自动配好，约 **25~35 秒** 直接生成丝滑过渡视频！",
-            ))
-            d_flf["nodes"] = flf_nodes
-            d_flf["links"] = [
-                lk for lk in d_flf.get("links", [])
-                if lk[1] in active_ids and lk[3] in active_ids
-            ]
-            zh_group_titles = {
-                1: "自动模型加载区 (无需改动)",
-                2: "第一步：上传起始首帧图片",
-                5: "第二步：上传结束尾帧图片",
-                3: "第三步：输入画面过渡描述",
-                4: "第四步：视频分辨率与帧数 (默认 1280×720)",
-            }
-            kept_groups = []
-            for g in d_flf.get("groups", []):
-                gid = g.get("id")
-                if gid in zh_group_titles:
-                    b = list(g.get("bounding", [0, 0, 400, 400]))
-                    if len(b) >= 2:
-                        b[1] = b[1] - 1600
-                    g["bounding"] = b
-                    g["title"] = zh_group_titles[gid]
-                    kept_groups.append(g)
-            d_flf["groups"] = kept_groups
-            d_flf["last_node_id"] = max(int(d_flf.get("last_node_id") or 200), 505)
-            d_flf.setdefault("extra", {})["ds"] = {"scale": 0.62, "offset": [480, 120]}
-            _prune_workflow_dangling_links(d_flf)
-            out_2 = os.path.join(wf_dir, "02_Wan2.2_首尾帧丝滑过渡(双图4步极速).json")
-            with open(out_2, "w", encoding="utf-8") as wf:
-                json.dump(d_flf, wf, ensure_ascii=False, indent=2)
-            installed_files.append(os.path.basename(out_2))
-        except Exception as e:
-            print(f"[ComfyUI 工作流生成] Wan2.2 FLF2V 模板处理异常: {e}")
-
-    # 2. MiniMax-H3 Turbo (单图有声视频 + 首尾帧有声视频 8步极速双工作流)
-    if "minimax_h3_i2v_flf2v" in target_set:
-        try:
-            import copy
-            d_h3_raw = _fetch_official_comfy_template("video_minimax_h3_i2v.json")
-
-            def _customize_h3(is_dual_frame: bool) -> Dict[str, Any]:
-                d_h3 = copy.deepcopy(d_h3_raw)
-                nodes_out = []
-                for n in d_h3.get("nodes", []):
-                    nid = n.get("id")
-                    ntype = n.get("type")
-                    if ntype == "MarkdownNote" or nid in (119, 120):
-                        continue
-                    if nid == 114 and ntype == "LoadImage":
-                        n["title"] = "① 点击上传起始首帧图片 (First Frame)"
-                        n["widgets_values"] = ["easycolab_sample_start.png", "image"]
-                        n["widgets_values_named"] = {"image": "easycolab_sample_start.png", "upload": "image"}
-                        n["pos"] = [-1320, 4820]
-                    elif nid == 115 and ntype == "ResolutionSelector":
-                        n["title"] = "画幅比例与清晰度 (0.6≈1056×608 · 0.98=1344×768)"
-                        n["widgets_values"] = ["16:9 (Widescreen)", 0.6, 32]
-                        n["widgets_values_named"] = {
-                            "aspect_ratio": "16:9 (Widescreen)",
-                            "megapixels": 0.6,
-                            "multiple": 32,
-                        }
-                        n["pos"] = [-1320, 5660] if is_dual_frame else [-1320, 5260]
-                    elif nid == 105:
-                        n["title"] = (
-                            "③ 填写过渡动作 + 音效配乐描述 (8步 Turbo 极速已开启)"
-                            if is_dual_frame
-                            else "② 填写画面动作 + 音效配乐描述 (8步 Turbo 极速已开启)"
-                        )
-                        zh_prompt = (
-                            "电影级航拍镜头：画面从清晨宁静的蔚蓝海岸平稳推进并过渡至漫天金红晚霞的黄昏海湾，海浪轻拍礁石，光影自然流转。\n"
-                            "Audio: 轻柔的海浪拍岸声、温暖的海风吹拂声，伴随舒缓治愈的钢琴与大提琴电影配乐。"
-                            if is_dual_frame
-                            else "电影级运镜缓慢向前推进，清晨阳光穿透薄雾洒在海面，金光波光粼粼，飞鸟掠过天际。\n"
-                                 "Audio: 清脆的海浪声、微风声与远处海鸥鸣叫，搭配温柔空灵的钢琴环境配乐。"
-                        )
-                        wv = list(n.get("widgets_values") or [])
-                        if len(wv) >= 10:
-                            wv[0] = zh_prompt
-                            wv[9] = True  # 默认启用 8-step Turbo LoRA 极速出片
-                        n["widgets_values"] = wv
-                        if isinstance(n.get("widgets_values_named"), dict):
-                            n["widgets_values_named"]["prompt"] = zh_prompt
-                            n["widgets_values_named"]["value"] = True
-                    elif nid == 92 and ntype == "SaveVideo":
-                        n["title"] = "④ 有声视频预览与自动保存 (请打开播放器音量!)"
-                        vid_prefix = "video/MiniMax_H3_首尾帧有声" if is_dual_frame else "video/MiniMax_H3_图生有声"
-                        n["widgets_values"] = [vid_prefix, "auto", "auto"]
-                        n["widgets_values_named"] = {
-                            "filename_prefix": vid_prefix,
-                            "format": "auto",
-                            "codec": "auto",
-                        }
-                    nodes_out.append(n)
-
-                links_out = [lk for lk in d_h3.get("links", []) if lk[0] != 228]
-                if is_dual_frame:
-                    end_node_id = 201
-                    new_link_id = 250
-                    nodes_out.append({
-                        "id": end_node_id,
-                        "type": "LoadImage",
-                        "pos": [-1320, 5240],
-                        "size": [315, 314],
-                        "flags": {},
-                        "order": 1,
-                        "mode": 0,
-                        "inputs": [],
-                        "outputs": [{"name": "IMAGE", "type": "IMAGE", "links": [new_link_id]}, {"name": "MASK", "type": "MASK", "links": None}],
-                        "title": "② 点击上传结束尾帧图片 (Last Frame)",
-                        "properties": {"Node name for S&R": "LoadImage"},
-                        "widgets_values": ["easycolab_sample_end.png", "image"],
-                        "widgets_values_named": {"image": "easycolab_sample_end.png", "upload": "image"},
-                    })
-                    for n in nodes_out:
-                        if n.get("id") == 105:
-                            for inp in n.get("inputs", []):
-                                if inp.get("name") == "last_frame":
-                                    inp["link"] = new_link_id
-                    links_out.append([new_link_id, end_node_id, 0, 105, 1, "IMAGE"])
-                    d_h3["last_link_id"] = max(int(d_h3.get("last_link_id") or 230), new_link_id + 1)
-
-                nodes_out.append(_make_zh_guide_note(
-                    503,
-                    [-1800, 4820],
-                    "【EasyColab 三步出片指南 · MiniMax-H3 原生有声视频】",
-                    "## 画面 + 立体声音效/配乐一次生成！\n\n"
-                    + (
-                        "1. **传首尾两张图**：在 **「① 起始首帧」** 与 **「② 结束尾帧」** 上传起止图片。\n"
-                        "2. **写画面 + 声音**：在中间 **「③ 过渡动作 + 音效配乐描述」** 写清画面变化，并在 `Audio:` 后写想要的环境音/台词/音乐。\n"
-                        "3. **点运行**：已默认开启 **8 步 Turbo 加速**，生成后记得打开右侧播放器喇叭图标听立体声！"
-                        if is_dual_frame
-                        else "1. **传首帧图**：在 **「① 起始首帧」** 点击上传你的参考图。\n"
-                             "2. **写画面 + 声音**：在中间 **「② 画面动作 + 音效配乐描述」** 描述动作，并在 `Audio:` 后写音效与配乐风格。\n"
-                             "3. **点运行**：已默认开启 **8 步 Turbo 加速**，生成后打开右侧视频喇叭即可试听同步立体声！"
-                    ),
-                ))
-                d_h3["nodes"] = nodes_out
-                d_h3["links"] = links_out
-                d_h3["last_node_id"] = max(int(d_h3.get("last_node_id") or 210), 505)
-                d_h3.setdefault("extra", {})["ds"] = {"scale": 0.68, "offset": [1860, -4740]}
-                _prune_workflow_dangling_links(d_h3)
-                return d_h3
-
-            out_3 = os.path.join(wf_dir, "03_MiniMax-H3_极速图生有声视频(单图带立体声).json")
-            with open(out_3, "w", encoding="utf-8") as wf:
-                json.dump(_customize_h3(is_dual_frame=False), wf, ensure_ascii=False, indent=2)
-            installed_files.append(os.path.basename(out_3))
-
-            out_4 = os.path.join(wf_dir, "04_MiniMax-H3_首尾帧有声过渡(双图带立体声).json")
-            with open(out_4, "w", encoding="utf-8") as wf:
-                json.dump(_customize_h3(is_dual_frame=True), wf, ensure_ascii=False, indent=2)
-            installed_files.append(os.path.basename(out_4))
-        except Exception as e:
-            print(f"[ComfyUI 工作流生成] MiniMax-H3 模板处理异常: {e}")
-
-    # 3. LTX-2.3 22B Distilled (首尾帧电影运镜 + 音轨)
-    if "ltx23_flf2v" in target_set:
-        try:
-            d_ltx = _fetch_official_comfy_template("video_ltx2_3_flf2v.json")
-            ltx_nodes = []
-            for n in d_ltx.get("nodes", []):
-                nid = n.get("id")
-                ntype = n.get("type")
-                if ntype == "MarkdownNote":
-                    continue
-                if nid == 31 and ntype == "LoadImage":
-                    n["title"] = "① 点击上传起始首帧图片 (First Frame)"
-                    n["widgets_values"] = ["easycolab_sample_start.png", "image"]
-                    n.pop("widgets_values_named", None)
-                elif nid == 39 and ntype == "LoadImage":
-                    n["title"] = "② 点击上传结束尾帧图片 (Last Frame)"
-                    n["widgets_values"] = ["easycolab_sample_end.png", "image"]
-                    n.pop("widgets_values_named", None)
-                elif nid == 129:
-                    n["title"] = "③ 首尾帧电影运镜与音轨参数 (LTX-2.3 22B Distilled)"
-                elif nid == 68 and ntype == "SaveVideo":
-                    n["title"] = "④ 电影运镜成片预览与自动保存"
-                    n["widgets_values"] = ["video/LTX2.3_首尾帧运镜", "auto", "auto"]
-                    n.pop("widgets_values_named", None)
-                ltx_nodes.append(n)
-
-            ltx_nodes.append(_make_zh_guide_note(
-                504,
-                [-490, 2250],
-                "【EasyColab 三步傻瓜出片指南 · LTX-2.3 首尾帧运镜】",
-                "## 电影级大幅度推拉摇移运镜（自带音效配乐）\n\n"
-                "1. **传首尾帧**：在右侧 **「① 起始首帧」** 与 **「② 结束尾帧」** 上传两张不同机位或状态的画面。\n"
-                "2. **写运镜轨迹**：在中间 **「③ 首尾帧电影运镜与音轨参数」** 文本框描述镜头怎么移动（建议英文描述运镜 + `Music:` 描述音乐）。\n"
-                "3. **点运行**：采用 Distilled 极速蒸馏权重，一键直出高帧率带音轨视频！",
-            ))
-            d_ltx["nodes"] = ltx_nodes
-            d_ltx["last_node_id"] = max(int(d_ltx.get("last_node_id") or 200), 506)
-            d_ltx.setdefault("extra", {})["ds"] = {"scale": 0.66, "offset": [560, -2160]}
-            _prune_workflow_dangling_links(d_ltx)
-            out_5 = os.path.join(wf_dir, "05_LTX-2.3_首尾帧电影运镜(双图极速带音效).json")
-            with open(out_5, "w", encoding="utf-8") as wf:
-                json.dump(d_ltx, wf, ensure_ascii=False, indent=2)
-            installed_files.append(os.path.basename(out_5))
-        except Exception as e:
-            print(f"[ComfyUI 工作流生成] LTX-2.3 FLF2V 模板处理异常: {e}")
-
-    # 4. 混元 HunyuanVideo 1.5 (单图 720P -> 1080P 自动潜空间超分)
-    if "hunyuan15_i2v_1080p" in target_set:
-        try:
-            d_hy = _fetch_official_comfy_template("video_hunyuan_video_1.5_720p_i2v.json")
-            sr_enable_ids = {108, 111, 109, 113, 114, 117, 118, 131, 132, 133, 134, 135, 137, 138, 139, 140, 141}
-            drop_ids = {104, 120, 112, 121, 122, 123, 124, 136}
-            hy_nodes = []
-            for n in d_hy.get("nodes", []):
-                nid = n.get("id")
-                if nid in drop_ids:
-                    continue
-                if nid in sr_enable_ids:
-                    n["mode"] = 0
-                if nid == 80 and n.get("type") == "LoadImage":
-                    n["title"] = "① 点击上传起始首帧图片 (720P → 1080P 超分)"
-                    n["widgets_values"] = ["easycolab_sample_start.png", "image"]
-                    n.pop("widgets_values_named", None)
-                elif nid == 44 and n.get("type") == "CLIPTextEncode":
-                    n["title"] = "② 输入画面动作与光影描述 (中英文皆可)"
-                    n["widgets_values"] = [
-                        "清晨阳光洒在壮阔的海岸山脉上，镜头平稳向前推进，海面波光粼粼，云雾在山谷间缓慢流动，极致写实电影摄影质感。"
-                    ]
-                    n.pop("widgets_values_named", None)
-                elif nid in (127, 131) and n.get("type") == "RandomNoise":
-                    wv = list(n.get("widgets_values") or [42, "randomize"])
-                    if len(wv) >= 2:
-                        wv[1] = "randomize"
-                    n["widgets_values"] = wv
-                    n.pop("widgets_values_named", None)
-                elif nid == 102 and n.get("type") == "SaveVideo":
-                    n["title"] = "③ 720P 基础成片预览"
-                elif nid == 118 and n.get("type") == "SaveVideo":
-                    n["title"] = "④ 1920×1080 超高清成片预览与保存"
-                hy_nodes.append(n)
-
-            hy_nodes.append(_make_zh_guide_note(
-                506,
-                [-1120, 480],
-                "【EasyColab 三步傻瓜出片指南 · 混元 1.5 直出 1080P】",
-                "## 单图直出 1920×1080 超高清视频（超分管线已激活）\n\n"
-                "1. **传图片**：在右侧 **「① 点击上传起始首帧图片」** 选择你的原图。\n"
-                "2. **改提示词**：在上方 **「② 输入画面动作与光影描述」** 输入动态描述。\n"
-                "3. **点运行**：无需按 `Ctrl+B`，工作流会先生成 720P 动态原片，再自动接力潜空间超分输出 **1920×1080** 超清成片！",
-            ))
-            d_hy["nodes"] = hy_nodes
-            d_hy["links"] = [
-                lk for lk in d_hy.get("links", [])
-                if lk[1] not in drop_ids and lk[3] not in drop_ids
-            ]
-            for g in d_hy.get("groups", []):
-                if g.get("id") == 3:
-                    g["title"] = "第一步：上传起始图片"
-                elif g.get("id") == 2:
-                    g["title"] = "第二步：输入画面动作描述"
-                elif g.get("id") == 8:
-                    g["title"] = "1080P 超高清潜空间放大管线 (已默认激活)"
-            d_hy["last_node_id"] = max(int(d_hy.get("last_node_id") or 200), 508)
-            d_hy.setdefault("extra", {})["ds"] = {"scale": 0.56, "offset": [1180, 120]}
-            _prune_workflow_dangling_links(d_hy)
-            out_6 = os.path.join(wf_dir, "06_Hunyuan1.5_单图直出1080P超清视频.json")
-            with open(out_6, "w", encoding="utf-8") as wf:
-                json.dump(d_hy, wf, ensure_ascii=False, indent=2)
-            installed_files.append(os.path.basename(out_6))
-        except Exception as e:
-            print(f"[ComfyUI 工作流生成] Hunyuan 1.5 模板处理异常: {e}")
 
     # 5. TenStrip/10Eros-Max (无限制 · 多图参考 + 首尾帧 8步极速)
     if "minimax_h3_10eros_max" in target_set:
@@ -8627,16 +10339,6 @@ def _build_and_install_comfy_preset_workflows(
         except Exception as e:
             print(f"[ComfyUI 工作流生成] Ref2VA TARA 模板处理异常: {e}")
 
-    # 8. SeedVR2 7B FP16 电影级视频超分修复
-    if "seedvr2_upscaler" in target_set:
-        try:
-            out_12 = os.path.join(wf_dir, "12_SeedVR2_7B_FP16_视频4K超分修复.json")
-            with open(out_12, "w", encoding="utf-8") as wf:
-                json.dump(_build_seedvr2_upscaler_workflow(), wf, ensure_ascii=False, indent=2)
-            installed_files.append(os.path.basename(out_12))
-        except Exception as e:
-            print(f"[ComfyUI 工作流生成] SeedVR2 超分模板处理异常: {e}")
-
     # 9. ReCaVSR Wan2.2-5B 极速流式视频超分
     if "recavsr_upscaler" in target_set:
         try:
@@ -8646,6 +10348,96 @@ def _build_and_install_comfy_preset_workflows(
             installed_files.append(os.path.basename(out_13))
         except Exception as e:
             print(f"[ComfyUI 工作流生成] ReCaVSR 超分模板处理异常: {e}")
+
+    # 10. MOSS-Image 无限制 · 文生图 & 指令修图
+    if "moss_image_edit" in target_set:
+        try:
+            out_14 = os.path.join(wf_dir, "14_MOSS-Image_无限制文生图(Heretic+NSFW).json")
+            with open(out_14, "w", encoding="utf-8") as wf:
+                json.dump(_build_moss_image_workflow(edit_mode=False), wf, ensure_ascii=False, indent=2)
+            installed_files.append(os.path.basename(out_14))
+
+            out_15 = os.path.join(wf_dir, "15_MOSS-Image_无限制指令修图(OstrisEdit+armV5).json")
+            with open(out_15, "w", encoding="utf-8") as wf:
+                json.dump(_build_moss_image_workflow(edit_mode=True), wf, ensure_ascii=False, indent=2)
+            installed_files.append(os.path.basename(out_15))
+        except Exception as e:
+            print(f"[ComfyUI 工作流生成] MOSS-Image 无限制修图模板处理异常: {e}")
+
+    # 11. Wan2.2-Remix 无限制 · 14B NSFW v3.0 (单图 I2V + 首尾帧 8步)
+    if "wan22_remix_nsfw" in target_set:
+        try:
+            out_16 = os.path.join(wf_dir, "16_Wan2.2-Remix_无限制单图生视频(v3.0_8步极速).json")
+            with open(out_16, "w", encoding="utf-8") as wf:
+                json.dump(_build_wan22_remix_workflow(is_flf2v=False), wf, ensure_ascii=False, indent=2)
+            installed_files.append(os.path.basename(out_16))
+
+            out_17 = os.path.join(wf_dir, "17_Wan2.2-Remix_无限制首尾帧过渡(v3.0_8步极速).json")
+            with open(out_17, "w", encoding="utf-8") as wf:
+                json.dump(_build_wan22_remix_workflow(is_flf2v=True), wf, ensure_ascii=False, indent=2)
+            installed_files.append(os.path.basename(out_17))
+        except Exception as e:
+            print(f"[ComfyUI 工作流生成] Wan2.2-Remix 模板处理异常: {e}")
+
+    # 12. MiniMax-H3 短剧导演时间线（角色声纹多镜头 + 分镜表成片）
+    if "minimax_h3_drama_director" in target_set:
+        try:
+            out_18 = os.path.join(wf_dir, "18_MiniMax-H3_短剧导演_角色声纹多镜头(10Eros-Max_8步).json")
+            with open(out_18, "w", encoding="utf-8") as wf:
+                json.dump(_build_h3_drama_director_workflow(with_storyboard=False), wf, ensure_ascii=False, indent=2)
+            installed_files.append(os.path.basename(out_18))
+
+            out_19 = os.path.join(wf_dir, "19_MiniMax-H3_短剧导演_双角色分镜表成片(10Eros-Max_8步).json")
+            with open(out_19, "w", encoding="utf-8") as wf:
+                json.dump(_build_h3_drama_director_workflow(with_storyboard=True), wf, ensure_ascii=False, indent=2)
+            installed_files.append(os.path.basename(out_19))
+        except Exception as e:
+            print(f"[ComfyUI 工作流生成] MiniMax-H3 短剧导演模板处理异常: {e}")
+
+    # 13. Qwen3-TTS 1.7B · 自然语言声音设计 + 声纹克隆情感配音
+    if "qwen3_tts_voice_design" in target_set:
+        try:
+            out_20 = os.path.join(wf_dir, "20_Qwen3-TTS_自然语言声音设计(VoiceDesign_1.7B).json")
+            with open(out_20, "w", encoding="utf-8") as wf:
+                json.dump(_build_qwen3_tts_workflow(clone_mode=False), wf, ensure_ascii=False, indent=2)
+            installed_files.append(os.path.basename(out_20))
+
+            out_21 = os.path.join(wf_dir, "21_Qwen3-TTS_声纹克隆与情感配音(Base_1.7B).json")
+            with open(out_21, "w", encoding="utf-8") as wf:
+                json.dump(_build_qwen3_tts_workflow(clone_mode=True), wf, ensure_ascii=False, indent=2)
+            installed_files.append(os.path.basename(out_21))
+        except Exception as e:
+            print(f"[ComfyUI 工作流生成] Qwen3-TTS 模板处理异常: {e}")
+
+    # 14. Fish Audio Drama 3 · 35B MoE 戏剧情感配音与多角色飙戏
+    if "drama3_tts" in target_set:
+        try:
+            out_22 = os.path.join(wf_dir, "22_Drama3_35B情感配音与音色克隆(自动ASR转录).json")
+            with open(out_22, "w", encoding="utf-8") as wf:
+                json.dump(_build_drama3_tts_workflow(multi_speaker=False), wf, ensure_ascii=False, indent=2)
+            installed_files.append(os.path.basename(out_22))
+
+            out_23 = os.path.join(wf_dir, "23_Drama3_35B多角色情感飙戏与舞台指令.json")
+            with open(out_23, "w", encoding="utf-8") as wf:
+                json.dump(_build_drama3_tts_workflow(multi_speaker=True), wf, ensure_ascii=False, indent=2)
+            installed_files.append(os.path.basename(out_23))
+        except Exception as e:
+            print(f"[ComfyUI 工作流生成] Drama 3 TTS 模板处理异常: {e}")
+
+    # 15. Qwen-Image-Edit-2511 · 多图融合 & 96视角旋转
+    if "qwen_image_edit_2511" in target_set:
+        try:
+            out_24 = os.path.join(wf_dir, "24_Qwen-Image-Edit-2511_多图角色场景合成(4步极速).json")
+            with open(out_24, "w", encoding="utf-8") as wf:
+                json.dump(_build_qwen_image_edit_2511_workflow(multi_angle=False), wf, ensure_ascii=False, indent=2)
+            installed_files.append(os.path.basename(out_24))
+
+            out_25 = os.path.join(wf_dir, "25_Qwen-Image-Edit-2511_96视角旋转与分镜改图(MultiAngles).json")
+            with open(out_25, "w", encoding="utf-8") as wf:
+                json.dump(_build_qwen_image_edit_2511_workflow(multi_angle=True), wf, ensure_ascii=False, indent=2)
+            installed_files.append(os.path.basename(out_25))
+        except Exception as e:
+            print(f"[ComfyUI 工作流生成] Qwen-Image-Edit-2511 模板处理异常: {e}")
 
     if installed_files:
         try:
@@ -8668,11 +10460,19 @@ def _get_comfy_preset_packs_status(persist_root: str) -> List[Dict[str, Any]]:
     nvme_models_root = _get_comfy_nvme_models_root(mode)
     results: List[Dict[str, Any]] = []
     for pack in COMFY_PRESET_WORKFLOW_PACKS:
-        models = pack["models"]
+        models = pack.get("models") or []
+        snapshots = pack.get("hf_snapshots") or []
         installed_m = 0
         for sub, fname, _, _, _ in models:
             p = os.path.join(persist_root, "models", sub, fname)
             nvme_p = os.path.join(nvme_models_root, sub, fname) if nvme_models_root else ""
+            if (os.path.isfile(p) and os.path.getsize(p) > 1024 * 1024) or (
+                nvme_p and os.path.isfile(nvme_p) and os.path.getsize(nvme_p) > 1024 * 1024
+            ):
+                installed_m += 1
+        for sub, dirname, _, sentinel, _ in snapshots:
+            p = os.path.join(persist_root, "models", sub, dirname, sentinel)
+            nvme_p = os.path.join(nvme_models_root, sub, dirname, sentinel) if nvme_models_root else ""
             if (os.path.isfile(p) and os.path.getsize(p) > 1024 * 1024) or (
                 nvme_p and os.path.isfile(nvme_p) and os.path.getsize(nvme_p) > 1024 * 1024
             ):
@@ -8694,7 +10494,8 @@ def _get_comfy_preset_packs_status(persist_root: str) -> List[Dict[str, Any]]:
                 break
         wfs = pack["workflows"]
         installed_wf = sum(1 for w in wfs if os.path.isfile(os.path.join(wf_dir, w)))
-        ready = (installed_m == len(models)) and (installed_wf == len(wfs)) and nodes_ok
+        total_items = len(models) + len(snapshots)
+        ready = (installed_m == total_items) and (installed_wf == len(wfs)) and nodes_ok
         results.append({
             "id": pack["id"],
             "title": pack["title"],
@@ -8703,7 +10504,7 @@ def _get_comfy_preset_packs_status(persist_root: str) -> List[Dict[str, Any]]:
             "approx_size_gb": pack["approx_size_gb"],
             "workflows": wfs,
             "installed_models": installed_m,
-            "total_models": len(models),
+            "total_models": total_items,
             "workflows_installed": installed_wf == len(wfs),
             "ready": ready,
         })
@@ -8854,7 +10655,7 @@ def _wire_comfyui_hybrid_models_dir(
                     if fn.startswith(".") or fn.endswith((".part", ".tmp", ".staging", ".syncing")):
                         continue
                     cand = os.path.join(src_dir, fn)
-                    if os.path.isfile(cand) and os.path.getsize(cand) > 0:
+                    if (os.path.isfile(cand) and os.path.getsize(cand) > 0) or os.path.isdir(cand):
                         preferred[fn] = cand
             except Exception:
                 pass
@@ -9185,7 +10986,7 @@ def _scan_comfyui_counts_and_outputs() -> Tuple[Tuple[int, int, int], List[Dict[
     out_dir = os.path.join(comfy_root, "output")
     if not os.path.isdir(out_dir):
         out_dir = os.path.join(persist_root, "output")
-    valid_media = {".mp4", ".webm", ".mov", ".webp", ".gif", ".png", ".jpg", ".jpeg"}
+    valid_media = {".mp4", ".webm", ".mov", ".webp", ".gif", ".png", ".jpg", ".jpeg", ".flac", ".wav", ".mp3", ".opus", ".ogg", ".m4a"}
     if os.path.isdir(out_dir):
         collected = []
         try:
@@ -9202,7 +11003,10 @@ def _scan_comfyui_counts_and_outputs() -> Tuple[Tuple[int, int, int], List[Dict[
                         if st.st_size < 512:
                             continue
                         rel_p = os.path.relpath(full_p, out_dir).replace("\\", "/")
-                        mtype = "video" if ext in {".mp4", ".webm", ".mov"} else "image"
+                        mtype = (
+                            "audio" if ext in {".flac", ".wav", ".mp3", ".opus", ".ogg", ".m4a"}
+                            else ("video" if ext in {".mp4", ".webm", ".mov"} else "image")
+                        )
                         collected.append((st.st_mtime, {
                             "rel_path": rel_p,
                             "filename": fn,
@@ -9269,12 +11073,12 @@ def _extract_comfy_prompt_metadata(prompt_graph: Dict[str, Any]) -> Dict[str, st
         all_classes.append(low_ct)
         inputs = node.get("inputs") if isinstance(node.get("inputs"), dict) else {}
 
-        for wk in ("unet_name", "transformer", "model", "lora_name", "ckpt_name"):
+        for wk in ("unet_name", "transformer", "model", "model_name", "codec_name", "lora_name", "ckpt_name"):
             wv = inputs.get(wk)
             if isinstance(wv, str) and wv.strip():
                 all_weights.append(wv.strip().lower())
 
-        for pk in ("prompt", "text", "positive_prompt"):
+        for pk in ("prompt", "text", "target_text", "instruct", "positive_prompt", "shots", "idea"):
             pv = inputs.get(pk)
             if isinstance(pv, str):
                 clean_p = pv.strip()
@@ -9282,21 +11086,28 @@ def _extract_comfy_prompt_metadata(prompt_graph: Dict[str, Any]) -> Dict[str, st
                     if not (low_ct == "cliptextencode" and any(neg in clean_p.lower() for neg in ("lowres", "watermark", "worst quality"))):
                         prompts.append(clean_p)
 
-        if any(k in low_ct for k in ("savevideo", "videocombine", "saveimage")):
+        if any(k in low_ct for k in ("savevideo", "videocombine", "saveimage", "saveaudio")):
             fp = inputs.get("filename_prefix")
             if isinstance(fp, str) and fp.strip():
                 prefixes.append(fp.strip())
 
     joined_cls = " ".join(all_classes)
     joined_wts = " ".join(all_weights)
-    model_id = "minimax_h3"
-    model_name = "MiniMax-H3 (33B)"
-    task_mode = "t2va"
+    model_id = "comfyui_studio"
+    model_name = "ComfyUI 节点工作台"
+    task_mode = "comfy_canvas"
 
-    if "recavsr" in joined_cls or "recavsr" in joined_wts or "flashdecoder" in joined_wts:
+    if "drama3" in joined_cls or "drama3" in joined_wts:
+        model_id, model_name = "drama3_tts", "Fish Audio Drama 3 · 35B 戏剧情感配音"
+        task_mode = "drama_tts_clone" if ("drama3encodevoice" in joined_cls or "drama3loadreferenceaudio" in joined_cls) else "drama_tts_free"
+    elif "fb_qwen3tts" in joined_cls or "qwen3tts" in joined_cls:
+        model_id, model_name = "qwen3_tts_voice_design", "Qwen3-TTS 1.7B · 声音设计与情感克隆"
+        task_mode = "voice_clone" if "voiceclone" in joined_cls else "voice_design"
+    elif "ngh3director" in joined_cls or "ngprojectrender" in joined_cls:
+        model_id, model_name = "minimax_h3_drama_director", "MiniMax-H3 短剧导演 · 多镜头连拍"
+        task_mode = "drama_storyboard" if "ngstoryboard" in joined_cls else "drama_multishot"
+    elif "recavsr" in joined_cls or "recavsr" in joined_wts or "flashdecoder" in joined_wts:
         model_id, model_name, task_mode = "recavsr_upscaler", "ReCaVSR · 极速流式超分", "video_upscale"
-    elif "seedvr2" in joined_cls or "seedvr2" in joined_wts:
-        model_id, model_name, task_mode = "seedvr2_upscaler", "SeedVR2 7B · 视频超分", "video_upscale"
     elif "bfsminimax" in joined_cls or "ref2va" in joined_wts or "tara" in joined_wts:
         model_id, model_name, task_mode = "minimax_h3_ref2va_tara", "Ref2VA · TARA 动作复刻", "motion_transfer"
     elif "corrector" in joined_cls or "s3.safetensors" in joined_wts or "sulphur" in joined_wts:
@@ -9305,11 +11116,19 @@ def _extract_comfy_prompt_metadata(prompt_graph: Dict[str, Any]) -> Dict[str, st
     elif "10eros" in joined_wts or "minimaxh3referencetovideo" in joined_cls:
         model_id, model_name = "minimax_h3_10eros_max", "10Eros-Max (H3 无限制)"
         task_mode = "multiref" if "minimaxh3referencetovideo" in joined_cls else "fl2va"
+    elif "textencodeqwenimageedit" in joined_cls or "qwen_image_edit" in joined_wts:
+        model_id, model_name, task_mode = "qwen_image_edit_2511", "Qwen-Image-Edit-2511 · 多图融合与96视角", "i2i_edit"
+    elif "mossimageostrisedit" in joined_cls or "moss_image_sft" in joined_wts or "moss_edit_armv5" in joined_wts or "moss_te_heretic" in joined_wts:
+        model_id, model_name = "moss_image_edit", "MOSS-Image 无限制 · 修图"
+        task_mode = "i2i_edit" if ("mossimageostriseditmodelpatch" in joined_cls or "moss_edit_armv5" in joined_wts) else "t2i"
+    elif "wan2.2_remix" in joined_wts or "wanimagetovideo" in joined_cls or "wanfirstlastframetovideo" in joined_cls:
+        model_id, model_name = "wan22_remix_nsfw", "Wan2.2-Remix 无限制 · 14B"
+        task_mode = "fl2va" if "wanfirstlastframetovideo" in joined_cls else "i2v"
     elif "minimaxh3imagetovideo" in joined_cls:
         task_mode = "fl2va"
 
     prompt_text = max(prompts, key=len) if prompts else ""
-    if not prompt_text and model_id in ("recavsr_upscaler", "seedvr2_upscaler"):
+    if not prompt_text and model_id == "recavsr_upscaler":
         prompt_text = f"{model_name} ({prefixes[-1]})" if prefixes else model_name
     return {
         "prompt_text": prompt_text,
@@ -10150,6 +11969,8 @@ def _install_persisted_custom_node_requirements(comfy_root: str):
                 line = raw_line.split("#", 1)[0].strip()
                 if not line or line.startswith("-"):
                     continue
+                if re.match(r"^\s*onnxruntime-(?:openvino|gpu)($|[<>=!~;\s\[])", line, re.IGNORECASE):
+                    line = "onnxruntime"
                 if _COMFY_PROTECTED_PIP_PKGS.match(line):
                     continue
                 if line not in collected_reqs:
@@ -10169,6 +11990,14 @@ def _install_persisted_custom_node_requirements(comfy_root: str):
             pass
 
     print(f"[ComfyUI] 正在为已持久化的自定义节点自动恢复 {len(collected_reqs)} 项 Python 依赖...")
+    if any(re.match(r"^sox($|[<>=!~;\s\[])", r, re.IGNORECASE) for r in collected_reqs) and shutil.which("sox") is None:
+        try:
+            subprocess.run(
+                ["bash", "-lc", "apt-get update -qq && apt-get install -y -qq sox libsox-fmt-all"],
+                check=False,
+            )
+        except Exception:
+            pass
     tmp_req = "/tmp/easycolab_comfy_merged_reqs.txt"
     with open(tmp_req, "w", encoding="utf-8") as wf:
         wf.write("\n".join(collected_reqs) + "\n")
@@ -10609,6 +12438,19 @@ def download_comfyui_model_core(
         touch_activity()
 
 
+def _async_backup_dir_to_drive(src_dir: str, persist_parent_dir: str, dirname: str):
+    """在后台线程中将本地 NVMe 下载的完整目录（如 Qwen3-TTS snapshot）拷贝持久化到 Google Drive"""
+    if not _refresh_drive_mount_state():
+        return
+    try:
+        dst_dir = os.path.join(persist_parent_dir, dirname)
+        os.makedirs(persist_parent_dir, exist_ok=True)
+        shutil.copytree(src_dir, dst_dir, dirs_exist_ok=True)
+        print(f"[后台云盘目录同步完成] {dirname} 已持久化保存至 Google Drive")
+    except Exception as e:
+        print(f"[后台云盘目录同步跳过] {dirname}: {e}")
+
+
 def install_comfyui_preset_pack_core(
     pack_id: str,
     auto_start: bool = True,
@@ -10624,8 +12466,9 @@ def install_comfyui_preset_pack_core(
 
     comfy_root, persist_root, mode, label, _ = _resolve_comfyui_persistence_paths()
     nvme_models_root = _get_comfy_nvme_models_root(mode)
-    models_list = target_pack["models"]
-    total_m = len(models_list)
+    models_list = target_pack.get("models") or []
+    snapshots_list = target_pack.get("hf_snapshots") or []
+    total_m = len(models_list) + len(snapshots_list)
     need_restart_running = False
     wf_names_str = "、".join(target_pack["workflows"])
 
@@ -10656,12 +12499,13 @@ def install_comfyui_preset_pack_core(
                 pf.write("1")
 
         _ensure_comfyui_beginner_assets(comfy_root, persist_root)
+        all_extra_subdirs = [sub for sub, _, _, _, _ in models_list] + [sub for sub, _, _, _, _ in snapshots_list]
         if os.path.isdir(comfy_root):
             _wire_comfyui_hybrid_models_dir(
                 comfy_root,
                 persist_root,
                 nvme_models_root,
-                extra_subdirs=[sub for sub, _, _, _, _ in models_list],
+                extra_subdirs=all_extra_subdirs,
             )
 
         for idx, (sub, fname, repo_id, repo_rel_path, approx_gb) in enumerate(models_list, start=1):
@@ -10733,6 +12577,66 @@ def install_comfyui_preset_pack_core(
                     daemon=True,
                 ).start()
 
+        for s_off, (sub, dirname, repo_id, sentinel, approx_gb) in enumerate(snapshots_list, start=1):
+            idx = len(models_list) + s_off
+            touch_activity()
+            persist_sub_dir = os.path.join(persist_root, "models", sub)
+            os.makedirs(persist_sub_dir, exist_ok=True)
+            persist_dir_target = os.path.join(persist_sub_dir, dirname)
+            persist_sentinel = os.path.join(persist_dir_target, sentinel)
+            nvme_sub_dir = os.path.join(nvme_models_root, sub) if nvme_models_root else ""
+            nvme_dir_target = os.path.join(nvme_sub_dir, dirname) if nvme_sub_dir else ""
+            nvme_sentinel = os.path.join(nvme_dir_target, sentinel) if nvme_dir_target else ""
+
+            base_prog = 0.05 + 0.78 * ((idx - 1) / float(max(1, total_m)))
+            COMFYUI_STATE["progress"] = round(base_prog, 3)
+
+            if nvme_sentinel and os.path.isfile(nvme_sentinel) and os.path.getsize(nvme_sentinel) > 1024 * 1024:
+                print(f"[ComfyUI 预置包] ({idx}/{total_m}) 本地 NVMe 仓库快照已就绪跳过: models/{sub}/{dirname}")
+                continue
+            if os.path.isfile(persist_sentinel) and os.path.getsize(persist_sentinel) > 1024 * 1024:
+                if nvme_dir_target:
+                    COMFYUI_STATE["status_message"] = f"[{idx}/{total_m}] 正在将云盘快照 {dirname} 预热至本地 NVMe SSD..."
+                    try:
+                        free_nvme_gb = shutil.disk_usage(nvme_models_root).free / (1024 ** 3)
+                        if free_nvme_gb > float(approx_gb) + 22.0:
+                            shutil.copytree(persist_dir_target, nvme_dir_target, dirs_exist_ok=True)
+                    except Exception:
+                        pass
+                else:
+                    print(f"[ComfyUI 预置包] ({idx}/{total_m}) 仓库快照已存在跳过: models/{sub}/{dirname}")
+                continue
+
+            dl_to_nvme = False
+            local_target_dir = persist_dir_target
+            if nvme_models_root:
+                try:
+                    os.makedirs(nvme_sub_dir, exist_ok=True)
+                    free_nvme_gb = shutil.disk_usage(nvme_models_root).free / (1024 ** 3)
+                    if free_nvme_gb > float(approx_gb) + 22.0:
+                        dl_to_nvme = True
+                        local_target_dir = nvme_dir_target
+                except Exception:
+                    dl_to_nvme = False
+
+            os.makedirs(local_target_dir, exist_ok=True)
+            COMFYUI_STATE["status_message"] = (
+                f"[{idx}/{total_m}] 正在高速拉取 {dirname} 完整权重目录 (约 {approx_gb:.1f} GB)..."
+            )
+            print(f"[ComfyUI 预置包] ({idx}/{total_m}) 开始拉取快照 {repo_id} -> models/{sub}/{dirname}")
+            from huggingface_hub import snapshot_download
+            snapshot_download(
+                repo_id=repo_id,
+                local_dir=local_target_dir,
+                token=token or None,
+            )
+            if dl_to_nvme:
+                threading.Thread(
+                    target=_async_backup_dir_to_drive,
+                    args=(local_target_dir, persist_sub_dir, dirname),
+                    daemon=True,
+                ).start()
+
         installed_new_nodes = False
         req_custom_nodes = target_pack.get("custom_nodes") or []
         if req_custom_nodes:
@@ -10755,7 +12659,7 @@ def install_comfyui_preset_pack_core(
                 comfy_root,
                 persist_root,
                 nvme_models_root,
-                extra_subdirs=[sub for sub, _, _, _, _ in models_list],
+                extra_subdirs=all_extra_subdirs,
             )
             _safe_symlink_dir(os.path.join(persist_root, "user"), os.path.join(comfy_root, "user"))
             _safe_symlink_dir(os.path.join(persist_root, "output"), os.path.join(comfy_root, "output"))
@@ -10850,7 +12754,7 @@ def disconnect_colab_runtime() -> str:
 # 供 macOS 原生客户端调用的异步 REST API 接口 (/minimax_api/* · 多模型通用)
 # ==============================================================================
 class SelectModelRequest(BaseModel):
-    model_id: str = "minimax_h3"
+    model_id: str = "minimax_h3_10eros_max"
     repo_id: str = ""
     include_pattern: str = ""
     custom_name: str = ""
@@ -10965,6 +12869,30 @@ class GenerateVideoRequest(BaseModel):
     recavsr_color_fix: str = "none"
     recavsr_kernels: str = "fast"
     recavsr_encoder: str = "auto"
+    moss_edit_lora_strength: float = 1.0
+    moss_nsfw_lora_enabled: bool = True
+    moss_nsfw_lora_strength: float = 0.65
+    moss_cfg: float = 3.0
+    moss_kv_cache: bool = True
+    moss_match_input_size: bool = True
+    wan22_shift: float = 8.0
+    wan22_split_step: int = 4
+    wan22_cfg: float = 1.0
+    drama_project_seconds: float = 20.0
+    drama_chunk_seconds: float = 0.0
+    drama_continuity: str = "video_audio"
+    drama_pin_frames: str = "22"
+    drama_style: str = "Cinematic"
+    drama_character_names: Optional[List[str]] = None
+    drama_idea: str = ""
+    tts_instruct: str = ""
+    tts_language: str = "Auto"
+    tts_ref_text: str = ""
+    tts_x_vector_only: bool = False
+    drama3_experts: str = "in RAM"
+    drama3_speakers_mode: str = "one take per line"
+    drama3_voice_guidance: float = 0.0
+    drama3_shorten_pauses: bool = True
 
 
 def decode_base64_image(b64_str: Optional[str]) -> Optional[Image.Image]:
@@ -11008,19 +12936,21 @@ def _get_qwen_llm_bundle(preferred_model_id: Optional[str] = None) -> Optional[D
                 continue
             if low == str(mspec.get("repo_id") or "").lower() or low == str(mspec.get("name") or "").lower():
                 candidates.append(mid)
-        if preferred_model_id in ("qwen38_27b", "qwen38_27b_gguf") and preferred_model_id not in candidates:
+        if preferred_model_id in ("qwen38_27b", "qwen38_27b_gguf", "qwen38_27b_uncensored_gguf") and preferred_model_id not in candidates:
             candidates.append(preferred_model_id)
-        elif ("gguf" in low or "q4_k" in low or "unsloth" in low) and "qwen38_27b_gguf" not in candidates:
-            candidates.append("qwen38_27b_gguf")
+        elif ("uncensored" in low or "jonathancoletti" in low) and "qwen38_27b_uncensored_gguf" not in candidates:
+            candidates.append("qwen38_27b_uncensored_gguf")
+        elif ("gguf" in low or "q4_k" in low or "unsloth" in low) and "qwen38_27b_uncensored_gguf" not in candidates:
+            candidates.append("qwen38_27b_uncensored_gguf")
         elif ("qwen3.8" in low or "qwen38" in low):
-            for qid in ("qwen38_27b_gguf", "qwen38_27b"):
+            for qid in ("qwen38_27b_uncensored_gguf", "qwen38_27b_gguf", "qwen38_27b"):
                 if qid not in candidates:
                     candidates.append(qid)
 
     if _is_llm_model_id(SELECTED_MODEL_ID) and SELECTED_MODEL_ID not in candidates:
         candidates.append(SELECTED_MODEL_ID)
 
-    for fallback_id in list(LOADED_RUNTIMES.keys()) + ["qwen38_27b_gguf", "qwen38_27b"]:
+    for fallback_id in list(LOADED_RUNTIMES.keys()) + ["qwen38_27b_uncensored_gguf", "qwen38_27b_gguf", "qwen38_27b"]:
         if _is_llm_model_id(fallback_id) and fallback_id not in candidates:
             candidates.append(fallback_id)
 
@@ -11397,6 +13327,13 @@ def _snap_h3_frames(num_frames: int) -> int:
     n = max(22, int(num_frames or 124))
     k = max(1, round((n - 5) / 17.0))
     return 17 * k + 5
+
+
+def _snap_wan_frames(num_frames: int) -> int:
+    """将 Wan2.2 视频总帧数吸附至合法的 4k + 1 网格（最低 17 帧，推荐 81 帧≈5 秒 @16fps）"""
+    n = max(17, int(num_frames or 81))
+    k = max(4, round((n - 1) / 4.0))
+    return 4 * k + 1
 
 
 def _snap_seedvr2_batch_size(batch_size: int) -> int:
@@ -11871,6 +13808,761 @@ def _build_recavsr_api_prompt_for_request(
     }
 
 
+def _build_moss_image_api_prompt_for_request(
+    req: GenerateVideoRequest,
+    seed: int,
+    ref_image_filenames: Optional[List[str]] = None,
+    save_prefix: str = "image/EasyColab_MOSS",
+) -> Dict[str, Any]:
+    """构建可直接提交至 ComfyUI /prompt 接口的 MOSS-Image 无限制文生图 / 指令修图节点图"""
+    refs = [str(x).strip() for x in (ref_image_filenames or []) if str(x).strip()][:3]
+    is_edit = (getattr(req, "task_mode", "i2i_edit") == "i2i_edit") or bool(refs)
+
+    w = max(512, min(2048, ((int(getattr(req, "width", 1024) or 1024) + 8) // 16) * 16))
+    h = max(512, min(2048, ((int(getattr(req, "height", 1024) or 1024) + 8) // 16) * 16))
+    steps = max(4, min(80, int(getattr(req, "num_inference_steps", 30) or 30)))
+    try:
+        cfg_val = max(1.0, min(10.0, float(getattr(req, "moss_cfg", 3.0) or 3.0)))
+    except Exception:
+        cfg_val = 3.0
+    try:
+        edit_lora_str = max(0.0, min(2.0, float(getattr(req, "moss_edit_lora_strength", 1.0) if getattr(req, "moss_edit_lora_strength", None) is not None else 1.0)))
+    except Exception:
+        edit_lora_str = 1.0
+    nsfw_enabled = bool(getattr(req, "moss_nsfw_lora_enabled", True))
+    try:
+        nsfw_lora_str = max(0.0, min(2.0, float(getattr(req, "moss_nsfw_lora_strength", 0.65) if getattr(req, "moss_nsfw_lora_strength", None) is not None else 0.65)))
+    except Exception:
+        nsfw_lora_str = 0.65
+    kv_cache = bool(getattr(req, "moss_kv_cache", True))
+    match_input_size = bool(getattr(req, "moss_match_input_size", True))
+
+    pos_text = (getattr(req, "visual_prompt", "") or "").strip()
+    neg_text = (getattr(req, "negative_prompt", "") or "").strip()
+
+    graph: Dict[str, Any] = {
+        "1": {
+            "class_type": "UNETLoader",
+            "inputs": {"unet_name": "moss_image_sft_bf16.safetensors", "weight_dtype": "default"},
+        },
+        "2": {
+            "class_type": "CLIPLoader",
+            "inputs": {
+                "clip_name": "moss_te_heretic_full_int8_convrot.safetensors",
+                "type": "moss_image",
+                "device": "default",
+            },
+        },
+        "3": {
+            "class_type": "VAELoader",
+            "inputs": {"vae_name": "flux2-vae.safetensors"},
+        },
+    }
+
+    cur_model_ref = ["1", 0]
+    scaled_refs: List[List[Any]] = []
+    if is_edit:
+        if edit_lora_str > 0:
+            graph["5"] = {
+                "class_type": "LoraLoaderModelOnly",
+                "inputs": {
+                    "model": cur_model_ref,
+                    "lora_name": "moss_edit_armV5.safetensors",
+                    "strength_model": edit_lora_str,
+                },
+            }
+            cur_model_ref = ["5", 0]
+
+        for idx, img_fn in enumerate(refs[:3]):
+            load_id = str(20 + idx)
+            scale_id = str(23 + idx)
+            graph[load_id] = {"class_type": "LoadImage", "inputs": {"image": img_fn}}
+            graph[scale_id] = {"class_type": "FluxKontextImageScale", "inputs": {"image": [load_id, 0]}}
+            scaled_refs.append([scale_id, 0])
+
+    if nsfw_enabled and nsfw_lora_str > 0:
+        graph["6"] = {
+            "class_type": "LoraLoaderModelOnly",
+            "inputs": {
+                "model": cur_model_ref,
+                "lora_name": "MOSS-Image-NSFW-Uncensored-LoRA-ComfyUI.safetensors",
+                "strength_model": nsfw_lora_str,
+            },
+        }
+        cur_model_ref = ["6", 0]
+
+    graph["7"] = {
+        "class_type": "SkipLayerGuidanceDiTSimple",
+        "inputs": {
+            "model": cur_model_ref,
+            "double_layers": "",
+            "single_layers": "22",
+            "start_percent": 0.0,
+            "end_percent": 1.0,
+        },
+    }
+
+    if is_edit:
+        edit_fmt = "ai-toolkit" if kv_cache else "ai-toolkit (kv_cache off)"
+        pos_inputs: Dict[str, Any] = {
+            "clip": ["2", 0],
+            "vae": ["3", 0],
+            "prompt": pos_text,
+            "edit_format": edit_fmt,
+            "image_strength": 1.0,
+        }
+        neg_inputs: Dict[str, Any] = {
+            "clip": ["2", 0],
+            "vae": ["3", 0],
+            "prompt": neg_text,
+            "edit_format": edit_fmt,
+            "image_strength": 1.0,
+        }
+        for i, ref_node in enumerate(scaled_refs[:3]):
+            key = f"images.image_{i}"
+            pos_inputs[key] = ref_node
+            neg_inputs[key] = ref_node
+        graph["8"] = {"class_type": "TextEncodeMOSSImageEdit", "inputs": pos_inputs}
+        graph["9"] = {"class_type": "TextEncodeMOSSImageEdit", "inputs": neg_inputs}
+    else:
+        graph["8"] = {"class_type": "CLIPTextEncode", "inputs": {"clip": ["2", 0], "text": pos_text}}
+        graph["9"] = {"class_type": "CLIPTextEncode", "inputs": {"clip": ["2", 0], "text": neg_text}}
+
+    if is_edit and match_input_size and scaled_refs:
+        graph["26"] = {"class_type": "GetImageSize", "inputs": {"image": scaled_refs[0]}}
+        graph["12"] = {
+            "class_type": "EmptyLatentImage",
+            "inputs": {"width": ["26", 0], "height": ["26", 1], "batch_size": 1},
+        }
+    else:
+        graph["12"] = {
+            "class_type": "EmptyLatentImage",
+            "inputs": {"width": w, "height": h, "batch_size": 1},
+        }
+
+    graph["10"] = {
+        "class_type": "KSampler",
+        "inputs": {
+            "model": ["7", 0],
+            "positive": ["8", 0],
+            "negative": ["9", 0],
+            "latent_image": ["12", 0],
+            "seed": int(seed) % (2**32 - 1),
+            "steps": steps,
+            "cfg": cfg_val,
+            "sampler_name": "euler",
+            "scheduler": "simple",
+            "denoise": 1.0,
+        },
+    }
+    graph["11"] = {
+        "class_type": "VAEDecode",
+        "inputs": {"samples": ["10", 0], "vae": ["3", 0]},
+    }
+    graph["13"] = {
+        "class_type": "SaveImage",
+        "inputs": {"images": ["11", 0], "filename_prefix": save_prefix},
+    }
+    return graph
+
+
+def _build_qwen_image_edit_2511_api_prompt_for_request(
+    req: GenerateVideoRequest,
+    seed: int,
+    ref_image_filenames: Optional[List[str]] = None,
+    save_prefix: str = "image/EasyColab_QwenEdit2511",
+) -> Dict[str, Any]:
+    """构建可直接提交至 ComfyUI /prompt 接口的 Qwen-Image-Edit-2511 原生多图融合/视角旋转节点图"""
+    refs = [str(x).strip() for x in (ref_image_filenames or []) if str(x).strip()][:3]
+    w = max(512, min(2048, ((int(getattr(req, "width", 1280) or 1280) + 8) // 16) * 16))
+    h = max(512, min(2048, ((int(getattr(req, "height", 704) or 704) + 8) // 16) * 16))
+    steps = max(2, min(60, int(getattr(req, "num_inference_steps", 4) or 4)))
+    try:
+        raw_cfg = getattr(req, "moss_cfg", None)
+        cfg_val = max(1.0, min(12.0, float(raw_cfg if raw_cfg is not None else (1.0 if steps <= 8 else 4.0))))
+    except Exception:
+        cfg_val = 1.0 if steps <= 8 else 4.0
+    try:
+        light_raw = getattr(req, "qwen_edit_lightning_strength", None)
+        lightning_str = max(0.0, min(2.0, float(light_raw if light_raw is not None else (1.0 if steps <= 8 else 0.0))))
+    except Exception:
+        lightning_str = 1.0 if steps <= 8 else 0.0
+    try:
+        ang_raw = getattr(req, "qwen_edit_angle_strength", None)
+        angle_str = max(0.0, min(2.0, float(ang_raw if ang_raw is not None else 0.0)))
+    except Exception:
+        angle_str = 0.0
+
+    pos_text = (getattr(req, "visual_prompt", "") or "").strip()
+    neg_text = (getattr(req, "negative_prompt", "") or "").strip()
+
+    graph: Dict[str, Any] = {
+        "1": {"class_type": "UNETLoader", "inputs": {"unet_name": "qwen_image_edit_2511_fp8mixed.safetensors", "weight_dtype": "default"}},
+        "2": {"class_type": "CLIPLoader", "inputs": {"clip_name": "qwen_2.5_vl_7b_fp8_scaled.safetensors", "type": "qwen_image", "device": "default"}},
+        "3": {"class_type": "VAELoader", "inputs": {"vae_name": "qwen_image_vae.safetensors"}},
+    }
+    cur_model_ref: List[Any] = ["1", 0]
+    if lightning_str > 0:
+        graph["4"] = {
+            "class_type": "LoraLoaderModelOnly",
+            "inputs": {
+                "model": cur_model_ref,
+                "lora_name": "Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors",
+                "strength_model": lightning_str,
+            },
+        }
+        cur_model_ref = ["4", 0]
+    if angle_str > 0:
+        graph["5"] = {
+            "class_type": "LoraLoaderModelOnly",
+            "inputs": {
+                "model": cur_model_ref,
+                "lora_name": "qwen-image-edit-2511-multiple-angles-lora.safetensors",
+                "strength_model": angle_str,
+            },
+        }
+        cur_model_ref = ["5", 0]
+
+    graph["6"] = {
+        "class_type": "ModelSamplingAuraFlow",
+        "inputs": {"model": cur_model_ref, "shift": 3.1, "sampling": "flow"},
+    }
+    graph["7"] = {
+        "class_type": "CFGNorm",
+        "inputs": {"model": ["6", 0], "strength": 1.0, "pre_cfg": False},
+    }
+
+    pos_in: Dict[str, Any] = {"clip": ["2", 0], "vae": ["3", 0], "prompt": pos_text}
+    neg_in: Dict[str, Any] = {"clip": ["2", 0], "vae": ["3", 0], "prompt": neg_text}
+    for idx, img_fn in enumerate(refs[:3]):
+        lid = str(20 + idx)
+        sid = str(23 + idx)
+        graph[lid] = {"class_type": "LoadImage", "inputs": {"image": img_fn}}
+        graph[sid] = {
+            "class_type": "ImageScaleToTotalPixels",
+            "inputs": {"image": [lid, 0], "upscale_method": "lanczos", "megapixels": 1.0, "resolution_steps": 1},
+        }
+        pos_in[f"image{idx + 1}"] = [sid, 0]
+        neg_in[f"image{idx + 1}"] = [sid, 0]
+
+    graph["8"] = {"class_type": "TextEncodeQwenImageEditPlus", "inputs": pos_in}
+    graph["9"] = {"class_type": "TextEncodeQwenImageEditPlus", "inputs": neg_in}
+    graph["10"] = {
+        "class_type": "FluxKontextMultiReferenceLatentMethod",
+        "inputs": {"conditioning": ["8", 0], "reference_latents_method": "index_timestep_zero"},
+    }
+    graph["11"] = {
+        "class_type": "FluxKontextMultiReferenceLatentMethod",
+        "inputs": {"conditioning": ["9", 0], "reference_latents_method": "index_timestep_zero"},
+    }
+    graph["12"] = {
+        "class_type": "EmptySD3LatentImage",
+        "inputs": {"width": w, "height": h, "batch_size": 1},
+    }
+    graph["13"] = {
+        "class_type": "KSampler",
+        "inputs": {
+            "model": ["7", 0],
+            "positive": ["10", 0],
+            "negative": ["11", 0],
+            "latent_image": ["12", 0],
+            "seed": int(seed) % (2**32 - 1),
+            "steps": steps,
+            "cfg": cfg_val,
+            "sampler_name": "euler",
+            "scheduler": "simple",
+            "denoise": 1.0,
+        },
+    }
+    graph["14"] = {
+        "class_type": "VAEDecode",
+        "inputs": {"samples": ["13", 0], "vae": ["3", 0]},
+    }
+    graph["15"] = {
+        "class_type": "SaveImage",
+        "inputs": {"images": ["14", 0], "filename_prefix": save_prefix},
+    }
+    return graph
+
+
+def _build_wan22_remix_api_prompt_for_request(
+    req: GenerateVideoRequest,
+    seed: int,
+    first_frame_filename: str,
+    last_frame_filename: Optional[str] = None,
+    save_prefix: str = "video/EasyColab_Wan22Remix",
+) -> Dict[str, Any]:
+    """构建可直接提交至 ComfyUI /prompt 接口的 Wan2.2-Remix NSFW v3.0 (I2V / 首尾帧 8步) 节点图"""
+    w = max(480, min(1920, ((int(getattr(req, "width", 1280) or 1280) + 8) // 16) * 16))
+    h = max(480, min(1920, ((int(getattr(req, "height", 720) or 720) + 8) // 16) * 16))
+    length = _snap_wan_frames(int(getattr(req, "num_frames", 81) or 81))
+    steps = max(4, min(40, int(getattr(req, "num_inference_steps", 8) or 8)))
+    try:
+        shift_val = max(1.0, min(15.0, float(getattr(req, "wan22_shift", 8.0) or 8.0)))
+    except Exception:
+        shift_val = 8.0
+    try:
+        split_step = max(1, min(steps - 1, int(getattr(req, "wan22_split_step", 4) or 4)))
+    except Exception:
+        split_step = max(1, steps // 2)
+    try:
+        cfg_val = max(1.0, min(8.0, float(getattr(req, "wan22_cfg", 1.0) or 1.0)))
+    except Exception:
+        cfg_val = 1.0
+
+    pos_text = (getattr(req, "visual_prompt", "") or "").strip()
+    neg_text = (getattr(req, "negative_prompt", "") or "").strip()
+    if not neg_text:
+        neg_text = (
+            "色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，"
+            "最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，畸形手部，畸形脸部，低画质，模糊"
+        )
+
+    is_flf2v = (getattr(req, "task_mode", "i2v") == "fl2va") and bool(last_frame_filename)
+    graph: Dict[str, Any] = {
+        "1": {
+            "class_type": "UNETLoader",
+            "inputs": {
+                "unet_name": "Wan2.2_Remix_NSFW_i2v_14b_high_lighting_fp8_e4m3fn_v3.0.safetensors",
+                "weight_dtype": "fp8_e4m3fn",
+            },
+        },
+        "2": {
+            "class_type": "UNETLoader",
+            "inputs": {
+                "unet_name": "Wan2.2_Remix_NSFW_i2v_14b_low_lighting_fp8_e4m3fn_v3.0.safetensors",
+                "weight_dtype": "fp8_e4m3fn",
+            },
+        },
+        "3": {"class_type": "ModelSamplingSD3", "inputs": {"model": ["1", 0], "shift": shift_val}},
+        "4": {"class_type": "ModelSamplingSD3", "inputs": {"model": ["2", 0], "shift": shift_val}},
+        "5": {
+            "class_type": "CLIPLoader",
+            "inputs": {
+                "clip_name": "nsfw_wan_umt5-xxl_fp8_scaled.safetensors",
+                "type": "wan",
+                "device": "default",
+            },
+        },
+        "6": {"class_type": "VAELoader", "inputs": {"vae_name": "wan_2.1_vae.safetensors"}},
+        "7": {"class_type": "CLIPTextEncode", "inputs": {"clip": ["5", 0], "text": pos_text}},
+        "8": {"class_type": "CLIPTextEncode", "inputs": {"clip": ["5", 0], "text": neg_text}},
+        "9": {"class_type": "LoadImage", "inputs": {"image": first_frame_filename}},
+    }
+
+    wan_inputs: Dict[str, Any] = {
+        "positive": ["7", 0],
+        "negative": ["8", 0],
+        "vae": ["6", 0],
+        "width": w,
+        "height": h,
+        "length": length,
+        "batch_size": 1,
+        "start_image": ["9", 0],
+    }
+    if is_flf2v and last_frame_filename:
+        graph["10"] = {"class_type": "LoadImage", "inputs": {"image": last_frame_filename}}
+        wan_inputs["end_image"] = ["10", 0]
+        graph["11"] = {"class_type": "WanFirstLastFrameToVideo", "inputs": wan_inputs}
+    else:
+        graph["11"] = {"class_type": "WanImageToVideo", "inputs": wan_inputs}
+
+    graph["12"] = {
+        "class_type": "KSamplerAdvanced",
+        "inputs": {
+            "model": ["3", 0],
+            "add_noise": "enable",
+            "noise_seed": int(seed) % (2**32 - 1),
+            "steps": steps,
+            "cfg": cfg_val,
+            "sampler_name": "euler",
+            "scheduler": "simple",
+            "positive": ["11", 0],
+            "negative": ["11", 1],
+            "latent_image": ["11", 2],
+            "start_at_step": 0,
+            "end_at_step": split_step,
+            "return_with_leftover_noise": "enable",
+        },
+    }
+    graph["13"] = {
+        "class_type": "KSamplerAdvanced",
+        "inputs": {
+            "model": ["4", 0],
+            "add_noise": "disable",
+            "noise_seed": 0,
+            "steps": steps,
+            "cfg": cfg_val,
+            "sampler_name": "euler",
+            "scheduler": "simple",
+            "positive": ["11", 0],
+            "negative": ["11", 1],
+            "latent_image": ["12", 0],
+            "start_at_step": split_step,
+            "end_at_step": 10000,
+            "return_with_leftover_noise": "disable",
+        },
+    }
+    graph["14"] = {"class_type": "VAEDecode", "inputs": {"samples": ["13", 0], "vae": ["6", 0]}}
+    graph["15"] = {"class_type": "CreateVideo", "inputs": {"images": ["14", 0], "fps": 16.0}}
+    graph["16"] = {
+        "class_type": "SaveVideo",
+        "inputs": {
+            "video": ["15", 0],
+            "filename_prefix": save_prefix,
+            "format": "auto",
+            "codec": "auto",
+        },
+    }
+    return graph
+
+
+def _build_h3_drama_director_api_prompt_for_request(
+    req: GenerateVideoRequest,
+    seed: int,
+    ref_image_filenames: Optional[List[str]] = None,
+    ref_audio_filename: Optional[str] = None,
+    save_prefix: str = "video/EasyColab_H3Drama",
+) -> Dict[str, Any]:
+    """构建可直接提交至 ComfyUI /prompt 接口的 MiniMax-H3 短剧导演时间线 (ComfyUI-MiniMaxH3-Director + 10Eros-Max 8步) 节点图"""
+    w = max(480, min(1920, ((int(getattr(req, "width", 1280) or 1280) + 16) // 32) * 32))
+    h = max(480, min(1920, ((int(getattr(req, "height", 704) or 704) + 16) // 32) * 32))
+    try:
+        proj_sec = max(5.0, min(180.0, float(getattr(req, "drama_project_seconds", 20.0) or 20.0)))
+    except Exception:
+        proj_sec = 20.0
+    try:
+        chunk_sec = max(0.0, min(15.0, float(getattr(req, "drama_chunk_seconds", 0.0) or 0.0)))
+    except Exception:
+        chunk_sec = 0.0
+    steps = max(4, min(40, int(getattr(req, "num_inference_steps", 8) or 8)))
+
+    raw_cont = str(getattr(req, "drama_continuity", "video_audio") or "video_audio").strip().lower()
+    continuity = raw_cont if raw_cont in {"video_audio", "video", "none"} else "video_audio"
+
+    raw_pin = str(getattr(req, "drama_pin_frames", "22") or "22").strip()
+    pin_frames = raw_pin if raw_pin in {"22", "5", "39", "56"} else "22"
+
+    raw_style = str(getattr(req, "drama_style", "Cinematic") or "Cinematic").strip()
+    allowed_styles = {"None", "Cinematic", "Anime", "Documentary", "Photorealistic"}
+    style = raw_style if raw_style in allowed_styles else "Cinematic"
+
+    shots_text = (getattr(req, "visual_prompt", "") or "").strip()
+    idea_text = (getattr(req, "drama_idea", "") or "").strip() or (shots_text.splitlines()[0][:240] if shots_text else "Short drama sequence")
+    soundscape_text = (getattr(req, "soundscape_prompt", "") or "").strip() or "Clear footsteps, subtle room ambience"
+    music_text = (getattr(req, "music_prompt", "") or "").strip()
+    ref_size = "max" if str(getattr(req, "ref_image_size", "match") or "match").strip().lower() == "max" else "match"
+
+    refs = [str(x).strip() for x in (ref_image_filenames or []) if str(x).strip()][:6]
+    char_names_raw = [str(x).strip().lstrip("@") for x in (getattr(req, "drama_character_names", None) or []) if str(x).strip()]
+    default_char_names = ["Hero", "Partner", "Role3", "Role4", "Role5", "Role6"]
+
+    graph: Dict[str, Any] = {
+        "1": {
+            "class_type": "UNETLoader",
+            "inputs": {"unet_name": "10Eros_Max_8stepTurbo_v1.0_hybrid-int8_HQ.safetensors", "weight_dtype": "default"},
+        },
+        "2": {
+            "class_type": "CLIPLoader",
+            "inputs": {"clip_name": "qwen3vl_32b_heretic_minimax_h3_nvfp4.safetensors", "type": "minimax", "device": "default"},
+        },
+        "3": {
+            "class_type": "VAELoader",
+            "inputs": {"vae_name": "minimax_h3_video_vae_int8_convrot.safetensors"},
+        },
+        "4": {
+            "class_type": "VAELoader",
+            "inputs": {"vae_name": "minimax_h3_audio_vae_fp32.safetensors"},
+        },
+    }
+
+    connector_inputs: Dict[str, Any] = {
+        "model_fl2va": ["1", 0],
+        "model_ref2va": ["1", 0],
+        "clip": ["2", 0],
+        "vae": ["3", 0],
+        "audio_vae": ["4", 0],
+    }
+
+    first_ctx_id = "ctx_hero"
+    first_char_name = char_names_raw[0] if char_names_raw else default_char_names[0]
+    for idx, img_fn in enumerate(refs):
+        cname = char_names_raw[idx] if idx < len(char_names_raw) and char_names_raw[idx] else default_char_names[idx]
+        slug = "".join(c if ("a" <= c <= "z" or "0" <= c <= "9" or c == "_") else "_" for c in cname.lower()).strip("_") or f"char{idx + 1}"
+        cid = f"ctx_{slug}_{idx}" if idx > 0 else f"ctx_{slug}"
+        if idx == 0:
+            first_ctx_id = cid
+            first_char_name = cname
+        nid = str(20 + idx)
+        is_loc = os.path.basename(img_fn).lower().startswith("loc_") or cname.lower() in {
+            "study", "scene", "location", "palace", "room", "corridor", "background", "env", "environment"
+        }
+        graph[nid] = {
+            "class_type": "NGContextImage",
+            "inputs": {
+                "image": img_fn,
+                "name": cname,
+                "description": (
+                    f"Location and environment backdrop reference for @{cname}"
+                    if is_loc else f"Character or scene visual anchor for @{cname}"
+                ),
+                "content": "location" if is_loc else "character",
+                "usage": "reference",
+                "preserve": "high",
+                "context_id": cid,
+            },
+        }
+        connector_inputs[f"context_image.image_{idx}"] = [nid, 0]
+
+    has_audio_ref = bool(ref_audio_filename and str(ref_audio_filename).strip())
+    if has_audio_ref:
+        graph["30"] = {
+            "class_type": "NGContextAudio",
+            "inputs": {
+                "audio": str(ref_audio_filename).strip(),
+                "name": f"{first_char_name} voice",
+                "description": f"Locked character voice for @{first_char_name}",
+                "content": "voice",
+                "usage": "voice",
+                "preserve": "high",
+                "speaker": first_ctx_id if refs else "",
+                "context_id": f"{first_ctx_id}_voice",
+            },
+        }
+        connector_inputs["context_audio.audio_0"] = ["30", 0]
+
+    graph["5"] = {"class_type": "NGContextConnector", "inputs": connector_inputs}
+    graph["6"] = {
+        "class_type": "NGH3Director",
+        "inputs": {
+            "context": ["5", 0],
+            "idea": idea_text,
+            "shots": shots_text,
+            "project_seconds": float(proj_sec),
+            "chunk_seconds": float(chunk_sec),
+            "width": w,
+            "height": h,
+            "mode": "ref2va" if (refs or has_audio_ref) else "auto",
+            "continuity": continuity,
+            "pin_frames": pin_frames,
+            "soundscape": soundscape_text,
+            "music": music_text,
+            "style": style,
+            "seed": int(seed) % (2**31 - 1),
+            "steps": steps,
+            "sampler_name": "lcm",
+            "scheduler": "simple",
+            "shift_video": 12.0,
+            "shift_audio": 3.0,
+            "turbo": False,
+            "turbo_lora_fl2va": "none",
+            "turbo_lora_ref2va": "none",
+            "resize_method": "crop",
+            "ref_image_size": ref_size,
+            "resume": True,
+            "resume_delete_done": True,
+            "output": "video",
+            "spectrum": False,
+        },
+    }
+    graph["7"] = {"class_type": "NGProjectRender", "inputs": {"sequence": ["6", 0]}}
+    graph["8"] = {
+        "class_type": "SaveVideo",
+        "inputs": {
+            "video": ["7", 0],
+            "filename_prefix": save_prefix,
+            "format": "auto",
+            "codec": "auto",
+        },
+    }
+    return graph
+
+
+def _build_qwen3_tts_api_prompt_for_request(
+    req: GenerateVideoRequest,
+    seed: int,
+    ref_audio_filename: Optional[str] = None,
+    save_prefix: str = "audio/EasyColab_Qwen3TTS",
+) -> Dict[str, Any]:
+    """构建可直接提交至 ComfyUI /prompt 接口的 Qwen3-TTS 1.7B (声音设计 VoiceDesign / 声纹克隆与情感 Base) 节点图"""
+    text_val = (getattr(req, "visual_prompt", "") or "").strip() or "你好，这是测试语音。"
+    instruct_val = (
+        getattr(req, "tts_instruct", "") or getattr(req, "soundscape_prompt", "") or ""
+    ).strip()
+    lang = (getattr(req, "tts_language", "") or "Auto").strip() or "Auto"
+    temp = float(getattr(req, "temperature", None) if getattr(req, "temperature", None) is not None else 0.9)
+    top_p = float(getattr(req, "top_p", None) if getattr(req, "top_p", None) is not None else 1.0)
+    top_k = int(getattr(req, "top_k", 50) if getattr(req, "top_k", None) is not None else 50)
+    seed_i = int(seed) % (2**31 - 1)
+    task_mode = (getattr(req, "task_mode", "voice_design") or "voice_design").strip().lower()
+
+    graph: Dict[str, Any] = {}
+    if task_mode == "voice_clone" and ref_audio_filename:
+        graph["1"] = {
+            "class_type": "LoadAudio",
+            "inputs": {"audio": str(ref_audio_filename).strip()},
+        }
+        graph["2"] = {
+            "class_type": "FB_Qwen3TTSVoiceClone",
+            "inputs": {
+                "target_text": text_val,
+                "model_choice": "1.7B",
+                "device": "auto",
+                "precision": "bf16",
+                "language": lang,
+                "ref_audio": ["1", 0],
+                "ref_text": (getattr(req, "tts_ref_text", "") or "").strip(),
+                "seed": seed_i,
+                "max_new_tokens": 2048,
+                "top_p": top_p,
+                "top_k": top_k,
+                "temperature": temp,
+                "repetition_penalty": 1.05,
+                "x_vector_only": bool(getattr(req, "tts_x_vector_only", False)),
+                "instruct": instruct_val,
+                "attention": "auto",
+                "unload_model_after_generate": False,
+            },
+        }
+    else:
+        graph["2"] = {
+            "class_type": "FB_Qwen3TTSVoiceDesign",
+            "inputs": {
+                "text": text_val,
+                "instruct": instruct_val or "28岁成熟有感染力的剧场配音音色，吐字清晰自然",
+                "model_choice": "1.7B",
+                "device": "auto",
+                "precision": "bf16",
+                "language": lang,
+                "seed": seed_i,
+                "max_new_tokens": 2048,
+                "top_p": top_p,
+                "top_k": top_k,
+                "temperature": temp,
+                "repetition_penalty": 1.05,
+                "attention": "auto",
+                "unload_model_after_generate": False,
+            },
+        }
+    graph["3"] = {
+        "class_type": "SaveAudio",
+        "inputs": {"audio": ["2", 0], "filename_prefix": save_prefix},
+    }
+    return graph
+
+
+def _build_drama3_tts_api_prompt_for_request(
+    req: GenerateVideoRequest,
+    seed: int,
+    ref_audio_filename: Optional[str] = None,
+    save_prefix: str = "audio/EasyColab_Drama3",
+) -> Dict[str, Any]:
+    """构建可直接提交至 ComfyUI /prompt 接口的 Fish Audio Drama 3 (35B MoE + Qwen3-ASR) 情感配音节点图"""
+    text_val = (getattr(req, "visual_prompt", "") or "").strip() or "[sighs] 一切就从今晚开始。"
+    experts = "in VRAM" if str(getattr(req, "drama3_experts", "in RAM") or "").strip().lower() == "in vram" else "in RAM"
+    allowed_speakers = {
+        "one take per line",
+        "one take per line, hearing the line before",
+        "one take per speaker",
+        "together",
+    }
+    raw_spk = str(getattr(req, "drama3_speakers_mode", "one take per line") or "one take per line").strip()
+    speakers_mode = raw_spk if raw_spk in allowed_speakers else "one take per line"
+    voice_guidance = max(0.0, min(3.0, float(getattr(req, "drama3_voice_guidance", 0.0) or 0.0)))
+    temp = float(getattr(req, "temperature", None) if getattr(req, "temperature", None) is not None else 1.0)
+    top_p = float(getattr(req, "top_p", None) if getattr(req, "top_p", None) is not None else 0.9)
+    raw_tk = getattr(req, "top_k", 0)
+    top_k = 0 if (raw_tk is None or int(raw_tk) == 20) else max(0, min(4096, int(raw_tk)))
+    seed_i = int(seed) % (2**31 - 1)
+    shorten_pauses = bool(getattr(req, "drama3_shorten_pauses", True))
+    task_mode = (getattr(req, "task_mode", "drama_tts_clone") or "drama_tts_clone").strip().lower()
+
+    graph: Dict[str, Any] = {
+        "1": {
+            "class_type": "Drama3Loader",
+            "inputs": {
+                "model_name": "drama3_fp8experts_bf16.safetensors",
+                "experts": experts,
+                "expert_cache_gb": 0.0,
+                "second_gpu": "none",
+                "split_layer": 0,
+                "pin_experts": True,
+            },
+        },
+        "2": {
+            "class_type": "Drama3CodecLoader",
+            "inputs": {"codec_name": "drama3_codec.safetensors"},
+        },
+        "6": {
+            "class_type": "Drama3Generate",
+            "inputs": {
+                "model": ["1", 0],
+                "text": text_val,
+                "seed": seed_i,
+                "temperature": temp,
+                "top_p": top_p,
+                "top_k": top_k,
+                "max_frames": 0,
+                "split_long_text": True,
+                "speakers": speakers_mode,
+                "voice_guidance": voice_guidance,
+            },
+        },
+        "7": {
+            "class_type": "Drama3Decode",
+            "inputs": {
+                "codec": ["2", 0],
+                "codes": ["6", 0],
+                "shorten_long_pauses": shorten_pauses,
+            },
+        },
+        "8": {
+            "class_type": "SaveAudio",
+            "inputs": {"audio": ["7", 0], "filename_prefix": save_prefix},
+        },
+    }
+
+    if ref_audio_filename and str(ref_audio_filename).strip() and task_mode != "drama_tts_free":
+        graph["3"] = {
+            "class_type": "Drama3LoadReferenceAudio",
+            "inputs": {
+                "audio": str(ref_audio_filename).strip(),
+                "trim": True,
+                "length": "20 s",
+            },
+        }
+        ref_txt = (getattr(req, "tts_ref_text", "") or "").strip()
+        if ref_txt:
+            transcript_input: Any = ref_txt
+        else:
+            graph["4"] = {
+                "class_type": "Qwen3ASRLoader",
+                "inputs": {"model_name": "qwen3_asr_1.7b_bf16.safetensors"},
+            }
+            graph["41"] = {
+                "class_type": "Qwen3ASRTranscribe",
+                "inputs": {
+                    "model": ["4", 0],
+                    "audio": ["3", 0],
+                    "language": "auto",
+                    "context": "",
+                    "max_new_tokens": 4096,
+                },
+            }
+            transcript_input = ["41", 0]
+        graph["5"] = {
+            "class_type": "Drama3EncodeVoice",
+            "inputs": {
+                "codec": ["2", 0],
+                "audio": ["3", 0],
+                "transcript": transcript_input,
+            },
+        }
+        graph["6"]["inputs"]["voices.voice0"] = ["5", 0]
+
+    return graph
+
+
 def _save_b64_to_comfy_input(b64_str: str, dest_name: str, input_dir: str) -> str:
     os.makedirs(input_dir, exist_ok=True)
     raw_b64 = b64_str.split(",", 1)[1] if "," in b64_str else b64_str
@@ -11906,8 +14598,9 @@ def _execute_comfy_h3_api_job(
     os.makedirs(input_dir, exist_ok=True)
 
     ref_image_filenames: List[str] = []
-    if req.task_mode == "multiref":
-        for idx, b64_item in enumerate(raw_ref_imgs[:9]):
+    if req.task_mode in ("multiref", "drama_multishot", "drama_storyboard") or (pipeline_arch in ("comfy_moss_image_edit", "comfy_qwen_image_edit_2511", "comfy_h3_drama_director") and req.task_mode == "i2i_edit"):
+        max_refs = 3 if pipeline_arch in ("comfy_moss_image_edit", "comfy_qwen_image_edit_2511") else (6 if pipeline_arch == "comfy_h3_drama_director" else 9)
+        for idx, b64_item in enumerate(raw_ref_imgs[:max_refs]):
             img_obj = decode_base64_image(b64_item)
             if img_obj is not None:
                 fn = f"easycolab_{job_id}_ref_{idx}.png"
@@ -11944,7 +14637,7 @@ def _execute_comfy_h3_api_job(
 
     first_fn: Optional[str] = None
     last_fn: Optional[str] = None
-    if req.task_mode == "fl2va":
+    if req.task_mode in ("fl2va", "i2v"):
         if first_img is not None:
             first_fn = f"easycolab_{job_id}_first.png"
             first_img.save(os.path.join(input_dir, first_fn))
@@ -11952,7 +14645,16 @@ def _execute_comfy_h3_api_job(
             last_fn = f"easycolab_{job_id}_last.png"
             last_img.save(os.path.join(input_dir, last_fn))
 
-    save_prefix = f"video/{pipeline_arch}_{job_id}_{seed}"
+    is_audio_arch = pipeline_arch in ("comfy_qwen3_tts", "comfy_drama3_tts")
+    save_prefix = (
+        f"audio/{pipeline_arch}_{job_id}_{seed}"
+        if is_audio_arch
+        else (
+            f"image/{pipeline_arch}_{job_id}_{seed}"
+            if pipeline_arch in ("comfy_moss_image_edit", "comfy_qwen_image_edit_2511")
+            else f"video/{pipeline_arch}_{job_id}_{seed}"
+        )
+    )
     if pipeline_arch == "comfy_seedvr2_upscaler":
         if not ref_video_filename:
             raise RuntimeError("视频超分模式下请先上传待超分的原视频 (<Video 1>)")
@@ -11969,6 +14671,52 @@ def _execute_comfy_h3_api_job(
             req=req,
             seed=seed,
             ref_video_filename=ref_video_filename,
+            save_prefix=save_prefix,
+        )
+    elif pipeline_arch == "comfy_moss_image_edit":
+        api_prompt = _build_moss_image_api_prompt_for_request(
+            req=req,
+            seed=seed,
+            ref_image_filenames=ref_image_filenames,
+            save_prefix=save_prefix,
+        )
+    elif pipeline_arch == "comfy_qwen_image_edit_2511":
+        api_prompt = _build_qwen_image_edit_2511_api_prompt_for_request(
+            req=req,
+            seed=seed,
+            ref_image_filenames=ref_image_filenames,
+            save_prefix=save_prefix,
+        )
+    elif pipeline_arch == "comfy_wan22_remix":
+        if not first_fn:
+            raise RuntimeError("Wan2.2-Remix 无限制图生/首尾帧模式下请先上传起始首帧图片")
+        api_prompt = _build_wan22_remix_api_prompt_for_request(
+            req=req,
+            seed=seed,
+            first_frame_filename=first_fn,
+            last_frame_filename=last_fn,
+            save_prefix=save_prefix,
+        )
+    elif pipeline_arch == "comfy_h3_drama_director":
+        api_prompt = _build_h3_drama_director_api_prompt_for_request(
+            req=req,
+            seed=seed,
+            ref_image_filenames=ref_image_filenames,
+            ref_audio_filename=ref_audio_filename,
+            save_prefix=save_prefix,
+        )
+    elif pipeline_arch == "comfy_qwen3_tts":
+        api_prompt = _build_qwen3_tts_api_prompt_for_request(
+            req=req,
+            seed=seed,
+            ref_audio_filename=ref_audio_filename,
+            save_prefix=save_prefix,
+        )
+    elif pipeline_arch == "comfy_drama3_tts":
+        api_prompt = _build_drama3_tts_api_prompt_for_request(
+            req=req,
+            seed=seed,
+            ref_audio_filename=ref_audio_filename,
             save_prefix=save_prefix,
         )
     else:
@@ -12030,10 +14778,19 @@ def _execute_comfy_h3_api_job(
             for node_out in outputs.values():
                 if not isinstance(node_out, dict):
                     continue
-                for media_key in ("videos", "images", "gifs"):
+                valid_exts = (
+                    (".flac", ".wav", ".mp3", ".opus", ".ogg", ".m4a")
+                    if is_audio_arch
+                    else (
+                        (".png", ".jpg", ".jpeg", ".webp")
+                        if pipeline_arch in ("comfy_moss_image_edit", "comfy_qwen_image_edit_2511")
+                        else (".mp4", ".webm", ".mov", ".mkv")
+                    )
+                )
+                for media_key in ("audio", "videos", "images", "gifs"):
                     for item in node_out.get(media_key, []) or []:
                         fn = str(item.get("filename") or "")
-                        if fn.lower().endswith((".mp4", ".webm", ".mov", ".mkv")):
+                        if fn.lower().endswith(valid_exts):
                             saved_file_info = item
                             break
                     if saved_file_info:
@@ -12052,15 +14809,55 @@ def _execute_comfy_h3_api_job(
             JOBS[job_id]["message"] = f"{prefix}{live_summary}" if live_summary else f"{prefix}{model_name} {int(round(live_frac * 100))}% ({elapsed_run:.0f}s)"
         else:
             est_total = (
-                45.0 if pipeline_arch in ("comfy_h3_10eros_max", "comfy_recavsr_upscaler")
-                else (90.0 if pipeline_arch == "comfy_seedvr2_upscaler" else 135.0)
+                25.0 if pipeline_arch == "comfy_qwen3_tts"
+                else (
+                    45.0 if pipeline_arch == "comfy_drama3_tts"
+                    else (
+                        max(90.0, float(getattr(req, "drama_project_seconds", 20.0) or 20.0) * 6.0)
+                        if pipeline_arch == "comfy_h3_drama_director"
+                        else (
+                            12.0 if pipeline_arch == "comfy_qwen_image_edit_2511"
+                            else (
+                                35.0 if pipeline_arch == "comfy_moss_image_edit"
+                                else (
+                                    45.0 if pipeline_arch in ("comfy_h3_10eros_max", "comfy_recavsr_upscaler")
+                                    else (90.0 if pipeline_arch == "comfy_seedvr2_upscaler" else 135.0)
+                                )
+                            )
+                        )
+                    )
+                )
             )
             local_frac = min(0.88, 0.14 + 0.74 * ((time.time() - t_wait_start) / est_total))
             JOBS[job_id]["progress"] = round(base_prog + local_frac * span_prog, 3)
             phase_hint = (
-                "ReCaVSR 流式超分与 FlashDecoder 实时封装中"
-                if pipeline_arch == "comfy_recavsr_upscaler"
-                else ("一步扩散视频超分修复中" if pipeline_arch == "comfy_seedvr2_upscaler" else "联合音视频扩散采样中")
+                "Qwen3-TTS 1.7B 声音设计与情感声学合成中"
+                if pipeline_arch == "comfy_qwen3_tts"
+                else (
+                    "Drama 3 35B MoE 戏剧情感配音与声纹解码中"
+                    if pipeline_arch == "comfy_drama3_tts"
+                    else (
+                        "ReCaVSR 流式超分与 FlashDecoder 实时封装中"
+                        if pipeline_arch == "comfy_recavsr_upscaler"
+                        else (
+                            "Qwen-Image-Edit-2511 多图锁脸/96视角推理中"
+                            if pipeline_arch == "comfy_qwen_image_edit_2511"
+                            else (
+                                "MOSS-Image 无限制图像扩散采样中"
+                                if pipeline_arch == "comfy_moss_image_edit"
+                                else (
+                                    "Wan2.2-Remix 无限制双阶段扩散采样中"
+                                    if pipeline_arch == "comfy_wan22_remix"
+                                    else (
+                                        "MiniMax-H3 短剧导演多镜头分段渲染与音画拼接中"
+                                        if pipeline_arch == "comfy_h3_drama_director"
+                                        else ("一步扩散视频超分修复中" if pipeline_arch == "comfy_seedvr2_upscaler" else "联合音视频扩散采样中")
+                                    )
+                                )
+                            )
+                        )
+                    )
+                )
             )
             pct_est = int(round(local_frac * 100))
             bar_est = _format_ascii_progress_bar(local_frac)
@@ -12068,7 +14865,15 @@ def _execute_comfy_h3_api_job(
         touch_activity()
 
     if not saved_file_info:
-        raise RuntimeError("ComfyUI 已完成但未在 outputs 中找到生成的有声视频文件")
+        raise RuntimeError(
+            "ComfyUI 已完成但未在 outputs 中找到生成的音频文件"
+            if is_audio_arch
+            else (
+                "ComfyUI 已完成但未在 outputs 中找到生成的图像文件"
+                if pipeline_arch in ("comfy_moss_image_edit", "comfy_qwen_image_edit_2511")
+                else "ComfyUI 已完成但未在 outputs 中找到生成的有声视频文件"
+            )
+        )
 
     sub = str(saved_file_info.get("subfolder") or "").strip("/")
     src_fn = str(saved_file_info["filename"])
@@ -12080,7 +14885,7 @@ def _execute_comfy_h3_api_job(
     if not src_path:
         raise RuntimeError(f"未在 ComfyUI output 目录找到输出文件: {src_candidates[0]}")
 
-    out_ext = os.path.splitext(src_fn)[1] or ".mp4"
+    out_ext = os.path.splitext(src_fn)[1] or (".flac" if is_audio_arch else (".png" if pipeline_arch in ("comfy_moss_image_edit", "comfy_qwen_image_edit_2511") else ".mp4"))
     filename = f"{pipeline_arch}_{req.task_mode}_{timestamp}_seed{seed}{out_ext}"
     output_path = os.path.join(DEFAULT_OUTPUT_DIR, filename)
     shutil.copy2(src_path, output_path)
@@ -12125,10 +14930,10 @@ def _run_async_generation_job(job_id: str, req: GenerateVideoRequest):
             JOBS[job_id]["message"] = f"{req_name} 尚未加载到 GPU 显存！请先在左侧点击「加载到显存」（显存充裕时可与现有模型同时常驻）。"
             return
 
-        spec = MODEL_CATALOG.get(active_model_id, MODEL_CATALOG["minimax_h3"])
+        spec = MODEL_CATALOG.get(active_model_id) or MODEL_CATALOG.get(DEFAULT_MODEL_ID) or next(iter(MODEL_CATALOG.values()))
         pipeline_arch = spec.get("pipeline_arch") or active_model_id
         modality = spec["modality"]
-        media_type = "image" if modality == "image" else "video"
+        media_type = "audio" if modality == "audio" else ("image" if modality == "image" else "video")
         JOBS[job_id]["media_type"] = media_type
         JOBS[job_id]["progress"] = 0.02
         JOBS[job_id]["message"] = (
@@ -12174,7 +14979,17 @@ def _run_async_generation_job(job_id: str, req: GenerateVideoRequest):
                 JOBS[job_id]["status"] = "failed"
                 JOBS[job_id]["message"] = "多图参考模式下请至少提供 1 张参考图 (<Picture 1>) 或声纹参考音频 (<Audio 1>)"
                 return
-        elif modality == "image" and req.task_mode == "i2i_edit" and first_img is None and last_img is None:
+        elif pipeline_arch == "comfy_wan22_remix":
+            if first_img is None:
+                JOBS[job_id]["status"] = "failed"
+                JOBS[job_id]["message"] = "Wan2.2-Remix 无限制图生/首尾帧模式下请先上传起始首帧图片"
+                return
+        elif (pipeline_arch == "comfy_qwen3_tts" and req.task_mode == "voice_clone") or (pipeline_arch == "comfy_drama3_tts" and req.task_mode == "drama_tts_clone"):
+            if not getattr(req, "ref_audio_base64", None):
+                JOBS[job_id]["status"] = "failed"
+                JOBS[job_id]["message"] = "声纹克隆配音模式下请先上传参考音频 (<Audio 1>)"
+                return
+        elif modality == "image" and req.task_mode == "i2i_edit" and first_img is None and last_img is None and not (pipeline_arch in ("comfy_moss_image_edit", "comfy_qwen_image_edit_2511") and raw_ref_imgs):
             JOBS[job_id]["status"] = "failed"
             JOBS[job_id]["message"] = "图像编辑/重绘模式下请至少拖入一张输入图片"
             return
@@ -12229,7 +15044,7 @@ def _run_async_generation_job(job_id: str, req: GenerateVideoRequest):
 
                 _guard_ctx = (
                     contextlib.nullcontext()
-                    if pipeline_arch in ("comfy_h3_10eros_max", "comfy_h3_sulphur3", "comfy_h3_ref2va_tara", "comfy_seedvr2_upscaler", "comfy_recavsr_upscaler")
+                    if pipeline_arch in ("comfy_h3_10eros_max", "comfy_h3_sulphur3", "comfy_h3_ref2va_tara", "comfy_seedvr2_upscaler", "comfy_recavsr_upscaler", "comfy_moss_image_edit", "comfy_qwen_image_edit_2511", "comfy_wan22_remix", "comfy_h3_drama_director", "comfy_qwen3_tts", "comfy_drama3_tts")
                     else _pipeline_job_execution_guard(
                         pipe=active_pipe,
                         job_id=job_id,
@@ -12243,7 +15058,7 @@ def _run_async_generation_job(job_id: str, req: GenerateVideoRequest):
                     )
                 )
                 with _guard_ctx as step_progress_bar:
-                    if pipeline_arch in ("comfy_h3_10eros_max", "comfy_h3_sulphur3", "comfy_h3_ref2va_tara", "comfy_seedvr2_upscaler", "comfy_recavsr_upscaler"):
+                    if pipeline_arch in ("comfy_h3_10eros_max", "comfy_h3_sulphur3", "comfy_h3_ref2va_tara", "comfy_seedvr2_upscaler", "comfy_recavsr_upscaler", "comfy_moss_image_edit", "comfy_qwen_image_edit_2511", "comfy_wan22_remix", "comfy_h3_drama_director", "comfy_qwen3_tts", "comfy_drama3_tts"):
                         filename, output_path = _execute_comfy_h3_api_job(
                             job_id=job_id,
                             pipeline_arch=pipeline_arch,
@@ -12406,7 +15221,7 @@ def _run_async_generation_job(job_id: str, req: GenerateVideoRequest):
 
             sub_elapsed = round(time.time() - sub_start, 1)
             last_filename = filename
-            kind_cn = "图像" if media_type == "image" else "视频"
+            kind_cn = "音频" if media_type == "audio" else ("图像" if media_type == "image" else "视频")
             print(f"[{spec['name']}] {kind_cn}生成完成 | 耗时 {sub_elapsed}s | Seed: {current_seed} | 已保存: {output_path}")
             media_item = {
                 "index": batch_idx + 1,
@@ -13391,8 +16206,14 @@ def attach_macos_api_routes(app: FastAPI):
             return auth_err
         touch_activity()
         now_ts = int(time.time())
-        any_qwen_loaded = ("qwen38_27b" in LOADED_RUNTIMES) or ("qwen38_27b_gguf" in LOADED_RUNTIMES)
+        any_qwen_loaded = (
+            ("qwen38_27b_uncensored_gguf" in LOADED_RUNTIMES)
+            or ("qwen38_27b_gguf" in LOADED_RUNTIMES)
+            or ("qwen38_27b" in LOADED_RUNTIMES)
+        )
         models_data = [
+            {"id": "JonathanColetti/Qwen3.8-27B-Uncensored-GGUF", "object": "model", "created": now_ts, "owned_by": "jonathancoletti", "loaded": "qwen38_27b_uncensored_gguf" in LOADED_RUNTIMES},
+            {"id": "Qwen3.8-27B-Uncensored-Q4_K_M", "object": "model", "created": now_ts, "owned_by": "jonathancoletti", "loaded": "qwen38_27b_uncensored_gguf" in LOADED_RUNTIMES},
             {"id": "unsloth/Qwen3.8-27B-GGUF", "object": "model", "created": now_ts, "owned_by": "unsloth", "loaded": "qwen38_27b_gguf" in LOADED_RUNTIMES},
             {"id": "Qwen3.8-27B-UD-Q4_K_M", "object": "model", "created": now_ts, "owned_by": "unsloth", "loaded": "qwen38_27b_gguf" in LOADED_RUNTIMES},
             {"id": "Qwen/Qwen3.8-27B", "object": "model", "created": now_ts, "owned_by": "qwen", "loaded": any_qwen_loaded},
@@ -14179,7 +17000,9 @@ def attach_macos_api_routes(app: FastAPI):
             "filename": None,
             "video_url": None,
             "media_type": "text" if is_llm_req else (
-                "image" if MODEL_CATALOG.get(target_model_id, {}).get("modality") == "image" else "video"
+                "audio" if MODEL_CATALOG.get(target_model_id, {}).get("modality") == "audio" else (
+                    "image" if MODEL_CATALOG.get(target_model_id, {}).get("modality") == "image" else "video"
+                )
             ),
             "text_output": "",
             "thinking_output": "",
@@ -14228,6 +17051,11 @@ def attach_macos_api_routes(app: FastAPI):
             "image/png" if ext == ".png"
             else "image/jpeg" if ext in (".jpg", ".jpeg")
             else "image/webp" if ext == ".webp"
+            else "audio/flac" if ext == ".flac"
+            else "audio/wav" if ext == ".wav"
+            else "audio/mpeg" if ext == ".mp3"
+            else "audio/ogg" if ext in (".ogg", ".opus")
+            else "audio/mp4" if ext == ".m4a"
             else "video/mp4"
         )
         return FileResponse(file_path, media_type=mime, filename=safe_name)
@@ -14319,6 +17147,11 @@ def attach_macos_api_routes(app: FastAPI):
                     else "image/jpeg" if ext in (".jpg", ".jpeg")
                     else "image/webp" if ext == ".webp"
                     else "image/gif" if ext == ".gif"
+                    else "audio/flac" if ext == ".flac"
+                    else "audio/wav" if ext == ".wav"
+                    else "audio/mpeg" if ext == ".mp3"
+                    else "audio/ogg" if ext in (".ogg", ".opus")
+                    else "audio/mp4" if ext == ".m4a"
                     else "video/webm" if ext == ".webm"
                     else "video/mp4"
                 )
