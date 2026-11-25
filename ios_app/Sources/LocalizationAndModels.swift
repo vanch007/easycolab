@@ -321,6 +321,7 @@ enum ModelModality: String, Codable {
     case videoAudio = "video_audio"
     case video = "video"
     case image = "image"
+    case audio = "audio"
     case llmVLM = "llm_vlm"
     case comfyUI = "comfyui"
 }
@@ -396,6 +397,7 @@ struct OpenModelSpec: Identifiable, Hashable {
         switch dto.modality {
         case "video_audio": mod = .videoAudio
         case "image": mod = .image
+        case "audio": mod = .audio
         default: mod = .llmVLM
         }
         let sizeGB = dto.approx_size_gb ?? 0.0
@@ -422,6 +424,13 @@ struct OpenModelSpec: Identifiable, Hashable {
             modes = [
                 TaskModeItem(id: "t2i", titleZh: "高清文生图", titleEn: "Text-to-Image", subtitleZh: "自定义 HuggingFace 图像生成管线", subtitleEn: "Custom HuggingFace image generation", icon: "photo.artframe"),
                 TaskModeItem(id: "i2i_edit", titleZh: "图生图重绘", titleEn: "Image Restyle", subtitleZh: "从相册选参考图重绘", subtitleEn: "Pick reference photo to restyle", icon: "wand.and.rays")
+            ]
+        case .audio:
+            iconName = "waveform.badge.mic"
+            defSteps = 1
+            modes = [
+                TaskModeItem(id: "voice_design", titleZh: "自然语言声音设计", titleEn: "Voice Design", subtitleZh: "无需参考音频，用自然语言描述捏造声线", subtitleEn: "Create a character voice from natural language", icon: "waveform"),
+                TaskModeItem(id: "voice_clone", titleZh: "声纹克隆与情感配音", titleEn: "Voice Clone + Emotion", subtitleZh: "上传参考人声并附加情绪指令合成", subtitleEn: "Clone a voice clip with emotion directives", icon: "mic")
             ]
         case .llmVLM, .comfyUI:
             iconName = "shippingbox.fill"
@@ -457,44 +466,104 @@ struct OpenModelSpec: Identifiable, Hashable {
 
 let OPEN_MODEL_CATALOG: [OpenModelSpec] = [
     OpenModelSpec(
-        id: "minimax_h3",
-        nameZh: "MiniMax-H3 (33B)",
-        nameEn: "MiniMax-H3 (33B)",
-        shortTitleZh: "MiniMax 有声视频",
-        shortTitleEn: "MiniMax-H3",
-        repoId: "MiniMaxAI/MiniMax-H3",
-        badgeZh: "BF16 原生 · 134 GB",
-        badgeEn: "Native BF16 · 134 GB",
-        summaryZh: "全模态 BF16 原生满血精度同步生成高清视频与 32kHz 立体声音效、人声对白及配乐",
-        summaryEn: "Full-modality native BF16 generation of HD video with synchronized 32kHz stereo SFX, dialogue & music",
-        approxSizeGB: 134.1,
+        id: "minimax_h3_drama_director",
+        nameZh: "MiniMax-H3 短剧导演 · 多镜头连拍",
+        nameEn: "MiniMax-H3 Drama Director · Multi-Shot",
+        shortTitleZh: "H3 短剧导演",
+        shortTitleEn: "H3 Drama",
+        repoId: "seesee75-commits/ComfyUI-MiniMaxH3-Director",
+        badgeZh: "短剧时间线 · 复用 10Eros-Max",
+        badgeEn: "Drama Timeline · 10Eros-Max",
+        summaryZh: "集成 ComfyUI-MiniMaxH3-Director + 10Eros-Max 8步底座，支持角色定妆卡、声纹锁定与音画无缝长视频续拍",
+        summaryEn: "ComfyUI-MiniMaxH3-Director on uncensored 10Eros-Max 8-step with character/voice cards & seamless AV continuity",
+        approxSizeGB: 39.13,
         icon: "film.stack",
-        modality: .videoAudio,
-        defaultSteps: 35,
+        modality: .video,
+        defaultSteps: 8,
         modes: [
-            TaskModeItem(
-                id: "t2va",
-                titleZh: "文生音视频",
-                titleEn: "Text to Video+Audio",
-                subtitleZh: "输入镜头与声音描述，同步生成 24fps 视频与 32kHz 立体声音轨",
-                subtitleEn: "Generate 24fps HD video and synchronized 32kHz stereo audio",
-                icon: "film"
-            ),
-            TaskModeItem(
-                id: "fl2va",
-                titleZh: "首尾帧生视频",
-                titleEn: "Keyframes to Video",
-                subtitleZh: "从相册选首帧/尾帧参考图，精准锁定起止构图与运镜过渡",
-                subtitleEn: "Pick start/end keyframes from Photos to control camera transitions",
-                icon: "photo.on.rectangle.angled"
-            )
+            TaskModeItem(id: "drama_multishot", titleZh: "多镜头短剧连拍", titleEn: "Multi-Shot Drama", subtitleZh: "按时间线渲染多镜头短剧，自动音画无缝续拍", subtitleEn: "Render multi-shot short dramas with seamless AV chunk chaining", icon: "film"),
+            TaskModeItem(id: "drama_storyboard", titleZh: "角色声纹分镜表", titleEn: "Storyboard + Voice", subtitleZh: "搭配角色图卡、声纹参考与分镜画板成片", subtitleEn: "Pair character refs, voice card & storyboard panels into a cohesive short", icon: "rectangle.grid.2x2")
         ],
-        defaultFiles: (1...13).map { ModelFileItem(name: String(format: "FL2VA/transformer/model-%05d-of-00013.safetensors", $0), desc: "DiT 音视频主干 BF16 \($0)/13", exists: false, size_gb: 0) }
-            + (1...14).map { ModelFileItem(name: String(format: "FL2VA/text_encoder/model-%05d-of-00014.safetensors", $0), desc: "多模态编码器 BF16 \($0)/14", exists: false, size_gb: 0) }
-            + [
-                ModelFileItem(name: "FL2VA/video_vae/source/model.safetensors", desc: "3D 视频 VAE BF16 (9.7 GB)", exists: false, size_gb: 0),
-                ModelFileItem(name: "FL2VA/audio_vae/model.safetensors", desc: "32kHz 立体声 VAE BF16 (0.6 GB)", exists: false, size_gb: 0)
-            ]
+        defaultFiles: [
+            ModelFileItem(name: "diffusion_models/10Eros_Max_8stepTurbo_v1.0_hybrid-int8_HQ.safetensors", desc: "10Eros-Max 8步主干 (21.32 GB · 共享)", exists: false, size_gb: 0),
+            ModelFileItem(name: "vae_approx/taeh3.safetensors", desc: "MiniMax-H3 预览 TAE (0.02 GB)", exists: false, size_gb: 0)
+        ]
+    ),
+    OpenModelSpec(
+        id: "qwen3_tts_voice_design",
+        nameZh: "Qwen3-TTS 1.7B · 声音设计",
+        nameEn: "Qwen3-TTS 1.7B · Voice Design",
+        shortTitleZh: "Qwen3-TTS 音色",
+        shortTitleEn: "Qwen3-TTS",
+        repoId: "Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign",
+        badgeZh: "文字捏声线 + 情感克隆 · 9.7 GB",
+        badgeEn: "Voice Design + Clone · 9.7 GB",
+        summaryZh: "Apache-2.0 开源自然语言声音设计 (VoiceDesign 1.7B) + 零样本情感克隆 (Base 1.7B)",
+        summaryEn: "Apache-2.0 natural Voice Design (1.7B) + zero-shot emotional cloning (Base 1.7B)",
+        approxSizeGB: 9.74,
+        icon: "waveform.badge.mic",
+        modality: .audio,
+        defaultSteps: 1,
+        modes: [
+            TaskModeItem(id: "voice_design", titleZh: "自然语言声音设计", titleEn: "Voice Design", subtitleZh: "零音频描述音色与情绪捏造角色声纹", subtitleEn: "Describe voice & emotion from text without ref audio", icon: "waveform"),
+            TaskModeItem(id: "voice_clone", titleZh: "声纹克隆情感配音", titleEn: "Voice Clone", subtitleZh: "上传参考音频并附加情感指令合成", subtitleEn: "Clone speech with emotion instructions", icon: "mic")
+        ],
+        defaultFiles: [
+            ModelFileItem(name: "qwen-tts/Qwen3-TTS-12Hz-1.7B-VoiceDesign/model.safetensors", desc: "Qwen3-TTS 1.7B 声音设计 (4.52 GB)", exists: false, size_gb: 0),
+            ModelFileItem(name: "qwen-tts/Qwen3-TTS-12Hz-1.7B-Base/model.safetensors", desc: "Qwen3-TTS 1.7B 声纹克隆 (4.54 GB)", exists: false, size_gb: 0),
+            ModelFileItem(name: "qwen-tts/Qwen3-TTS-Tokenizer-12Hz/model.safetensors", desc: "Qwen3-TTS 12Hz Tokenizer (0.68 GB)", exists: false, size_gb: 0)
+        ]
+    ),
+    OpenModelSpec(
+        id: "drama3_tts",
+        nameZh: "Drama 3 · 35B 戏剧情感配音",
+        nameEn: "Fish Audio Drama 3 · 35B TTS",
+        shortTitleZh: "Drama 3 配音",
+        shortTitleEn: "Drama 3 TTS",
+        repoId: "PedroMarinhoDev/Drama-3-ComfyUI",
+        badgeZh: "35B MoE · 舞台指令 + 多角色",
+        badgeEn: "35B MoE · Stage Cues + Dialogue",
+        summaryZh: "Fish Audio Drama 3 35B MoE (FP8) + Codec + Qwen3-ASR 1.7B，支持 [sighs]/[whispers]/[laughs] 舞台指示与多角色飙戏",
+        summaryEn: "Fish Audio Drama 3 35B MoE (FP8) + Codec + Qwen3-ASR 1.7B with [sighs]/[whispers]/[laughs] cues & dialogue",
+        approxSizeGB: 44.23,
+        icon: "theatermasks.fill",
+        modality: .audio,
+        defaultSteps: 1,
+        modes: [
+            TaskModeItem(id: "drama_tts_clone", titleZh: "声纹戏剧配音 (ASR)", titleEn: "Acting Clone (ASR)", subtitleZh: "上传参考声纹，ASR 自动转录并支持舞台指示", subtitleEn: "Upload voice clip with auto Qwen3-ASR & stage cues", icon: "theatermasks"),
+            TaskModeItem(id: "drama_tts_free", titleZh: "无参考多角色配音", titleEn: "Multi-Speaker Script", subtitleZh: "使用 <|speaker:0|>/<|speaker:1|> 生成戏剧对白", subtitleEn: "Synthesize multi-speaker dialogue with inline cues", icon: "waveform")
+        ],
+        defaultFiles: [
+            ModelFileItem(name: "diffusion_models/drama3_fp8experts_bf16.safetensors", desc: "Drama 3 35B FP8 权重 (38.58 GB)", exists: false, size_gb: 0),
+            ModelFileItem(name: "vae/drama3_codec.safetensors", desc: "Drama 3 Codec (1.57 GB)", exists: false, size_gb: 0),
+            ModelFileItem(name: "asr/qwen3_asr_1.7b_bf16.safetensors", desc: "Qwen3-ASR 1.7B (4.08 GB)", exists: false, size_gb: 0)
+        ]
+    ),
+    OpenModelSpec(
+        id: "qwen38_27b_uncensored_gguf",
+        nameZh: "Qwen3.8-27B 无限制 · GGUF",
+        nameEn: "Qwen3.8-27B Uncensored · GGUF",
+        shortTitleZh: "Qwen3.8 无限制",
+        shortTitleEn: "Qwen3.8 Uncensored",
+        repoId: "JonathanColetti/Qwen3.8-27B-Uncensored-GGUF",
+        badgeZh: "Heretic 去审查 + MTP · 17.8 GB",
+        badgeEn: "Heretic Uncensored + MTP · 17.8 GB",
+        summaryZh: "Heretic 去审查 Qwen3.8-27B Q4_K_M + F16 视觉投影器 + MTP 投机解码，支持 256K 上下文、看图反推与 API 网关",
+        summaryEn: "Heretic abliterated Qwen3.8-27B Q4_K_M + F16 vision mmproj + MTP draft head for uncensored chat, vision & API gateway",
+        approxSizeGB: 17.83,
+        icon: "cpu.fill",
+        modality: .llmVLM,
+        defaultSteps: 20,
+        modes: [
+            TaskModeItem(id: "chat", titleZh: "无限制推理对话", titleEn: "Uncensored Chat", subtitleZh: "Heretic 去审查 + MTP 投机解码，支持长思维链与短剧剧本创作", subtitleEn: "Heretic uncensored + MTP speculative decoding for scripts & reasoning", icon: "bubble.left.and.bubble.right"),
+            TaskModeItem(id: "vlm", titleZh: "无限制看图反推", titleEn: "Uncensored Vision", subtitleZh: "传照片无拒答解析构图、姿态与反推生图/生视频 Prompt", subtitleEn: "Analyze photos & reverse-engineer prompts without refusals", icon: "eye"),
+            TaskModeItem(id: "api", titleZh: "API 协议网关", titleEn: "API Gateway", subtitleZh: "OpenAI (/v1) 与 Anthropic (/v1/messages) 接口", subtitleEn: "OpenAI (/v1) & Anthropic (/v1/messages) endpoints", icon: "network")
+        ],
+        defaultFiles: [
+            ModelFileItem(name: "Qwen3.8-27B-Uncensored-noMTP-Q4_K_M.gguf", desc: "Heretic 去审查 Q4_K_M 主模型 (15.41 GB)", exists: false, size_gb: 0),
+            ModelFileItem(name: "mmproj-Qwen3.8-27B-Uncensored-F16.gguf", desc: "F16 视觉投影器 mmproj (0.86 GB)", exists: false, size_gb: 0),
+            ModelFileItem(name: "Qwen3.8-27B-Uncensored-draft-Q4_0.gguf", desc: "MTP 投机解码草稿头 Q4_0 (1.56 GB)", exists: false, size_gb: 0)
+        ]
     ),
     OpenModelSpec(
         id: "comfyui_studio",
@@ -516,128 +585,6 @@ let OPEN_MODEL_CATALOG: [OpenModelSpec] = [
             TaskModeItem(id: "comfy_assets", titleZh: "下权重与拉取成片", titleEn: "Weights & Outputs", subtitleZh: "8 线程极速下模型至云盘，并将 ComfyUI 成片一键拉回手机", subtitleEn: "8-thread cloud weight download & 1-tap pull outputs to phone", icon: "arrow.down.doc")
         ],
         defaultFiles: []
-    ),
-    OpenModelSpec(
-        id: "qwen38_27b_gguf",
-        nameZh: "Qwen3.8-27B-GGUF",
-        nameEn: "Qwen3.8-27B-GGUF",
-        shortTitleZh: "Qwen3.8 极速对话",
-        shortTitleEn: "Qwen3.8 GGUF",
-        repoId: "unsloth/Qwen3.8-27B-GGUF",
-        badgeZh: "100 tok/s · 18.7 GB",
-        badgeEn: "100 tok/s · 18.7 GB",
-        summaryZh: "UD-Q4_K_M + MTP 投机解码极速推理，支持最高 256K 上下文、看图反推与 API 网关 (Apache-2.0)",
-        summaryEn: "UD-Q4_K_M + MTP speculative decoding (~100 tok/s), 256K context, vision & API gateway (Apache-2.0)",
-        approxSizeGB: 18.7,
-        icon: "cpu",
-        modality: .llmVLM,
-        defaultSteps: 20,
-        modes: [
-            TaskModeItem(id: "chat", titleZh: "深度推理对话", titleEn: "Reasoning Chat", subtitleZh: "长思维链推理、代码与分镜创作", subtitleEn: "CoT reasoning, coding & storyboards", icon: "bubble.left.and.bubble.right"),
-            TaskModeItem(id: "vlm", titleZh: "看图反推/视觉", titleEn: "Vision & Prompt", subtitleZh: "传照片解析构图、OCR 或反推生视频提示词", subtitleEn: "Analyze photos, OCR & reverse-engineer prompts", icon: "eye"),
-            TaskModeItem(id: "api", titleZh: "API 协议网关", titleEn: "API Gateway", subtitleZh: "OpenAI (/v1) 与 Anthropic (/v1/messages) 接口", subtitleEn: "OpenAI (/v1) & Anthropic (/v1/messages) endpoints", icon: "network")
-        ],
-        defaultFiles: [
-            ModelFileItem(name: "Qwen3.8-27B-UD-Q4_K_M.gguf", desc: "Unsloth UD-Q4_K_M 主模型 (16.5 GB)", exists: false, size_gb: 0),
-            ModelFileItem(name: "mmproj-F16.gguf", desc: "多模态视觉投影器 (0.93 GB)", exists: false, size_gb: 0),
-            ModelFileItem(name: "MTP/mtp-Qwen3.8-27B-Q4_0.gguf", desc: "Unsloth MTP 多词元投机解码头 (1.31 GB)", exists: false, size_gb: 0)
-        ]
-    ),
-    OpenModelSpec(
-        id: "qwen38_27b",
-        nameZh: "Qwen3.8-27B (BF16)",
-        nameEn: "Qwen3.8-27B (BF16)",
-        shortTitleZh: "Qwen3.8 满血版",
-        shortTitleEn: "Qwen3.8 BF16",
-        repoId: "Qwen/Qwen3.8-27B",
-        badgeZh: "BF16 原生 · 51.8 GB",
-        badgeEn: "Native BF16 · 51.8 GB",
-        summaryZh: "原生 BF16 满血精度多模态大模型，支持最高 256K 上下文与视觉理解 (Apache-2.0)",
-        summaryEn: "Full native BF16 multimodal LLM, up to 256K context & vision understanding (Apache-2.0)",
-        approxSizeGB: 51.8,
-        icon: "brain",
-        modality: .llmVLM,
-        defaultSteps: 20,
-        modes: [
-            TaskModeItem(id: "chat", titleZh: "深度推理对话", titleEn: "Reasoning Chat", subtitleZh: "BF16 满血长思维链对话与创作", subtitleEn: "Full BF16 CoT reasoning & scripting", icon: "bubble.left.and.bubble.right"),
-            TaskModeItem(id: "vlm", titleZh: "看图反推/视觉", titleEn: "Vision & Prompt", subtitleZh: "传照片进行高精度视觉理解与提示词反推", subtitleEn: "High-precision photo analysis & prompt generation", icon: "eye"),
-            TaskModeItem(id: "api", titleZh: "API 协议网关", titleEn: "API Gateway", subtitleZh: "OpenAI (/v1) 与 Anthropic (/v1/messages) 接口", subtitleEn: "OpenAI (/v1) & Anthropic (/v1/messages) endpoints", icon: "network")
-        ],
-        defaultFiles: (1...18).map { ModelFileItem(name: String(format: "model-%05d-of-00018.safetensors", $0), desc: "权重分片 \($0)/18", exists: false, size_gb: 0) }
-    ),
-    OpenModelSpec(
-        id: "qwen_image_21",
-        nameZh: "Qwen-Image-2.1",
-        nameEn: "Qwen-Image-2.1",
-        shortTitleZh: "Qwen 海报修图",
-        shortTitleEn: "Qwen-Image 2.1",
-        repoId: "Qwen/Qwen-Image-2.1",
-        badgeZh: "生图与修图 · 30.9 GB",
-        badgeEn: "Poster & Edit · 30.9 GB",
-        summaryZh: "通义千问旗舰图像生成与自然语言多图指令修图模型，支持精准中英文排版",
-        summaryEn: "Qwen flagship poster generation & natural-language multi-image instruction editing model",
-        approxSizeGB: 30.9,
-        icon: "paintbrush.pointed",
-        modality: .image,
-        defaultSteps: 40,
-        modes: [
-            TaskModeItem(
-                id: "t2i",
-                titleZh: "高清文生图",
-                titleEn: "HD Text-to-Image",
-                subtitleZh: "复杂构图、精准中英文排版与高质感摄影/插画生成",
-                subtitleEn: "Complex composition, bilingual typography & photography",
-                icon: "photo.artframe"
-            ),
-            TaskModeItem(
-                id: "i2i_edit",
-                titleZh: "多图指令修图",
-                titleEn: "Multi-Image Edit",
-                subtitleZh: "从相册选 1~2 张原图，用自然语言改局部、换背景或融合主体",
-                subtitleEn: "Pick 1–2 source photos to edit regions or fuse subjects via natural language",
-                icon: "wand.and.rays"
-            )
-        ],
-        defaultFiles: (1...2).map { ModelFileItem(name: String(format: "transformer/diffusion_pytorch_model-%05d-of-00002.safetensors", $0), desc: "DiT \($0)/2", exists: false, size_gb: 0) }
-            + (1...4).map { ModelFileItem(name: String(format: "text_encoder/model-%05d-of-00004.safetensors", $0), desc: "编码器 \($0)/4", exists: false, size_gb: 0) }
-            + [ModelFileItem(name: "vae/diffusion_pytorch_model.safetensors", desc: "图像 VAE", exists: false, size_gb: 0)]
-    ),
-    OpenModelSpec(
-        id: "z_image_turbo",
-        nameZh: "Z-Image-Turbo",
-        nameEn: "Z-Image-Turbo",
-        shortTitleZh: "Z-Image 8步生图",
-        shortTitleEn: "Z-Image Turbo",
-        repoId: "Tongyi-MAI/Z-Image-Turbo",
-        badgeZh: "8步极速 · 30.6 GB",
-        badgeEn: "8-Step Turbo · 30.6 GB",
-        summaryZh: "8 步蒸馏极速写实摄影与中英文排版海报生图模型 (Apache-2.0)",
-        summaryEn: "8-step distilled photorealism & bilingual poster design model (Apache-2.0)",
-        approxSizeGB: 30.6,
-        icon: "bolt.square",
-        modality: .image,
-        defaultSteps: 8,
-        modes: [
-            TaskModeItem(
-                id: "t2i",
-                titleZh: "8 步极速文生图",
-                titleEn: "8-Step Text-to-Image",
-                subtitleZh: "秒级输出商业级写实摄影与中英文排版海报",
-                subtitleEn: "Seconds-fast commercial portrait & poster typography",
-                icon: "bolt"
-            ),
-            TaskModeItem(
-                id: "i2i_edit",
-                titleZh: "图生图风格重绘",
-                titleEn: "Image Restyle",
-                subtitleZh: "从手机相册选参考图并调节重绘幅度生成新细节",
-                subtitleEn: "Pick a photo and adjust denoising strength to restyle",
-                icon: "square.on.square"
-            )
-        ],
-        defaultFiles: (1...3).map { ModelFileItem(name: String(format: "transformer/diffusion_pytorch_model-%05d-of-00003.safetensors", $0), desc: "DiT \($0)/3", exists: false, size_gb: 0) }
-            + (1...3).map { ModelFileItem(name: String(format: "text_encoder/model-%05d-of-00003.safetensors", $0), desc: "编码器 \($0)/3", exists: false, size_gb: 0) }
-            + [ModelFileItem(name: "vae/diffusion_pytorch_model.safetensors", desc: "图像 VAE", exists: false, size_gb: 0)]
     )
 ]
 
@@ -794,12 +741,13 @@ struct ComfyPresetPackItem: Codable, Identifiable, Hashable {
     var localizedTitle: String {
         guard LanguageManager.shared.isEN else { return title }
         switch id {
-        case "wan22_i2v_flf2v": return "Wan2.2 14B · I2V + First/Last Frame"
-        case "minimax_h3_i2v_flf2v": return "MiniMax-H3 Turbo · I2VA + Keyframes"
-        case "ltx23_flf2v": return "LTX-2.3 (22B) · Cinematic Camera + Audio"
-        case "hunyuan15_i2v_1080p": return "HunyuanVideo 1.5 · Direct 1080P Super-Res"
         case "minimax_h3_10eros_max": return "10Eros-Max (Uncensored H3) · Multi-Ref + FLF2V"
         case "minimax_h3_sulphur3": return "Sulphur-3 (Uncensored H3) · Backbone + Corrector"
+        case "moss_image_edit": return "MOSS-Image (Uncensored) · T2I + Instruction Edit"
+        case "wan22_remix_nsfw": return "Wan2.2-Remix (Uncensored 14B) · I2V + FLF2V"
+        case "minimax_h3_drama_director": return "MiniMax-H3 Drama Director · Multi-Shot + Storyboard"
+        case "qwen3_tts_voice_design": return "Qwen3-TTS 1.7B · Natural Voice Design + Clone"
+        case "drama3_tts": return "Fish Audio Drama 3 · 35B MoE Dramatic TTS"
         default: return localizeServerText(title)
         }
     }
@@ -807,12 +755,13 @@ struct ComfyPresetPackItem: Codable, Identifiable, Hashable {
     var localizedBadge: String {
         guard LanguageManager.shared.isEN else { return badge }
         switch id {
-        case "wan22_i2v_flf2v": return "Beginner Pick · 4-Step"
-        case "minimax_h3_i2v_flf2v": return "Stereo Audio · 8-Step"
-        case "ltx23_flf2v": return "Camera Motion · 2 Weights"
-        case "hunyuan15_i2v_1080p": return "720P + 1080P Dual"
         case "minimax_h3_10eros_max": return "Uncensored · Multi-Ref 8-Step"
         case "minimax_h3_sulphur3": return "Uncensored · With Corrector"
+        case "moss_image_edit": return "Uncensored · 3-Ref Edit"
+        case "wan22_remix_nsfw": return "Uncensored · 8-Step Realism"
+        case "minimax_h3_drama_director": return "Drama Timeline · Seamless AV"
+        case "qwen3_tts_voice_design": return "Voice Design · Emotional Clone"
+        case "drama3_tts": return "35B MoE · Stage Cues"
         default: return localizeServerText(badge)
         }
     }
@@ -820,54 +769,19 @@ struct ComfyPresetPackItem: Codable, Identifiable, Hashable {
     var localizedScenario: String {
         guard LanguageManager.shared.isEN else { return scenario }
         switch id {
-        case "wan22_i2v_flf2v": return "Includes Single-Image I2V & First/Last-Frame templates (~25s on G4, 100% built-in nodes)"
-        case "minimax_h3_i2v_flf2v": return "HD dynamic video + synchronized stereo SFX, speech & music in one pass"
-        case "ltx23_flf2v": return "Optimized for sweeping camera motion between start & end keyframes with audio"
-        case "hunyuan15_i2v_1080p": return "Upload 1 image to render both 720P base video and 1920×1080 Full HD output"
         case "minimax_h3_10eros_max": return "TenStrip/10Eros-Max v1.0 + uncensored Heretic encoder for <Picture 1>/<Picture 2> multi-ref & FLF2V in 8 steps"
         case "minimax_h3_sulphur3": return "Full Sulphur-3 backbone + uncensored Heretic encoder + s3_corrector residual network for higher fidelity"
+        case "moss_image_edit": return "MOSS-Image SFT BF16 + Heretic decensored Qwen3.5-9B + Ostris Edit (armV5) + NSFW LoRA for unrestricted T2I & editing"
+        case "wan22_remix_nsfw": return "FX-FeiHou/wan2.2-Remix NSFW I2V v3.0 (High+Low FP8) + NSFW-Wan-UMT5-XXL encoder in 8 steps"
+        case "minimax_h3_drama_director": return "ComfyUI-MiniMaxH3-Director (NGH3Director + NGStoryboard) on uncensored 10Eros-Max 8-step with character/voice cards"
+        case "qwen3_tts_voice_design": return "Design new character voices from text (VoiceDesign 1.7B) or clone 3–15s speech with emotion cues (Base 1.7B)"
+        case "drama3_tts": return "Zero-pip ComfyUI-Drama3 (2026-10-29 FP8) + Qwen3-ASR 1.7B, [sighs]/[whispers]/[laughs] stage cues & multi-speaker acting"
         default: return localizeServerText(scenario)
         }
     }
 }
 
 let DEFAULT_COMFY_PRESET_PACKS: [ComfyPresetPackItem] = [
-    ComfyPresetPackItem(
-        id: "wan22_i2v_flf2v",
-        title: "万相 Wan2.2 14B · 图生视频 + 首尾帧双工作流",
-        badge: "新手首选 · 4步极速",
-        scenario: "含「单图动起来」与「首尾双图丝滑过渡」2 套中文画布，G4 约 25 秒出片",
-        approx_size_gb: 35.4,
-        workflows: ["01_Wan2.2_极速单图生视频(4步傻瓜版).json", "02_Wan2.2_首尾帧丝滑过渡(双图4步极速).json"],
-        installed_models: 0, total_models: 6, workflows_installed: false, ready: false
-    ),
-    ComfyPresetPackItem(
-        id: "minimax_h3_i2v_flf2v",
-        title: "MiniMax-H3 Turbo · 图生有声视频 + 首尾帧",
-        badge: "立体声音效 · 8步加速",
-        scenario: "一次生成高清动态画面 + 同步环境音效/配乐/对白",
-        approx_size_gb: 39.1,
-        workflows: ["03_MiniMax-H3_有声单图生视频(8步加速).json", "04_MiniMax-H3_有声首尾帧过渡(双图带音效).json"],
-        installed_models: 0, total_models: 5, workflows_installed: false, ready: false
-    ),
-    ComfyPresetPackItem(
-        id: "ltx23_flf2v",
-        title: "LTX-2.3 (22B) · 首尾帧电影级运镜有声工作流",
-        badge: "电影推拉摇移 · 仅 2 权重",
-        scenario: "专为首尾关键帧大幅度镜头运动优化 + 自动合成配乐音轨",
-        approx_size_gb: 36.3,
-        workflows: ["05_LTX-2.3_首尾帧电影运镜(双图极速带音效).json"],
-        installed_models: 0, total_models: 2, workflows_installed: false, ready: false
-    ),
-    ComfyPresetPackItem(
-        id: "hunyuan15_i2v_1080p",
-        title: "混元 HunyuanVideo 1.5 · 单图直出 1080P 超分",
-        badge: "720P + 1080P 双路超清",
-        scenario: "默认激活潜空间超分管线，传 1 张图自动渲染 720P 与 1080P 成片",
-        approx_size_gb: 43.5,
-        workflows: ["06_Hunyuan1.5_单图直出1080P超清视频.json"],
-        installed_models: 0, total_models: 7, workflows_installed: false, ready: false
-    ),
     ComfyPresetPackItem(
         id: "minimax_h3_10eros_max",
         title: "10Eros-Max (MiniMax-H3 无限制) · 多图参考 + 首尾帧 8步极速",
@@ -885,6 +799,51 @@ let DEFAULT_COMFY_PRESET_PACKS: [ComfyPresetPackItem] = [
         approx_size_gb: 62.7,
         workflows: ["09_Sulphur-3_无限制文生有声视频(含H3修正器).json", "10_Sulphur-3_无限制图生首尾帧有声视频(含H3修正器).json"],
         installed_models: 0, total_models: 5, workflows_installed: false, ready: false
+    ),
+    ComfyPresetPackItem(
+        id: "moss_image_edit",
+        title: "MOSS-Image 无限制 · 文生图 & 指令修图 (Heretic + armV5 + NSFW LoRA)",
+        badge: "无限制 · 3图指令修图",
+        scenario: "内置 MOSS-Image SFT BF16 + Heretic 无审核 Qwen3.5-9B + Ostris Edit (armV5) + NSFW LoRA",
+        approx_size_gb: 19.4,
+        workflows: ["14_MOSS-Image_无限制文生图(Heretic+NSFW).json", "15_MOSS-Image_无限制指令修图(OstrisEdit+armV5).json"],
+        installed_models: 0, total_models: 5, workflows_installed: false, ready: false
+    ),
+    ComfyPresetPackItem(
+        id: "wan22_remix_nsfw",
+        title: "Wan2.2-Remix 无限制 · 14B NSFW 图生/首尾帧 (v3.0 8步)",
+        badge: "无内容限制 · 极致写实动态",
+        scenario: "基于 FX-FeiHou/wan2.2-Remix NSFW I2V v3.0 (High+Low FP8) + NSFW-Wan-UMT5-XXL，纯内置节点 8 步高写实生成",
+        approx_size_gb: 33.13,
+        workflows: ["16_Wan2.2-Remix_无限制单图生视频(v3.0_8步极速).json", "17_Wan2.2-Remix_无限制首尾帧过渡(v3.0_8步极速).json"],
+        installed_models: 0, total_models: 4, workflows_installed: false, ready: false
+    ),
+    ComfyPresetPackItem(
+        id: "minimax_h3_drama_director",
+        title: "MiniMax-H3 短剧导演 · 角色声纹多镜头 + 分镜表成片 (10Eros-Max 8步)",
+        badge: "短剧时间线 · 音画无缝续拍",
+        scenario: "集成 ComfyUI-MiniMaxH3-Director 并复用 10Eros-Max 8步无限制底座，支持角色图卡、声纹卡与长视频续拍",
+        approx_size_gb: 39.13,
+        workflows: ["18_MiniMax-H3_短剧导演_角色声纹多镜头(10Eros-Max_8步).json", "19_MiniMax-H3_短剧导演_双角色分镜表成片(10Eros-Max_8步).json"],
+        installed_models: 0, total_models: 5, workflows_installed: false, ready: false
+    ),
+    ComfyPresetPackItem(
+        id: "qwen3_tts_voice_design",
+        title: "Qwen3-TTS 1.7B · 自然语言声音设计 + 情感声纹克隆 (Apache-2.0)",
+        badge: "声音设计 · 情感配音",
+        scenario: "支持零音频用中文/英文自然语言捏造角色声线 (VoiceDesign)，并支持 3~15s 声纹克隆与情绪指令 (Base)",
+        approx_size_gb: 9.74,
+        workflows: ["20_Qwen3-TTS_自然语言声音设计(VoiceDesign_1.7B).json", "21_Qwen3-TTS_声纹克隆与情感配音(Base_1.7B).json"],
+        installed_models: 0, total_models: 3, workflows_installed: false, ready: false
+    ),
+    ComfyPresetPackItem(
+        id: "drama3_tts",
+        title: "Fish Audio Drama 3 · 35B 戏剧级情感配音与 16 角色飙戏 (含 Qwen3-ASR)",
+        badge: "35B MoE · 舞台指令",
+        scenario: "集成 PedroMarinhoDev/ComfyUI-Drama3（零 pip 依赖），支持 Qwen3-ASR 自动转录、[sighs]/[whispers]/[laughs] 舞台指示与多角色飙戏",
+        approx_size_gb: 44.23,
+        workflows: ["22_Drama3_35B情感配音与音色克隆(自动ASR转录).json", "23_Drama3_35B多角色情感飙戏与舞台指令.json"],
+        installed_models: 0, total_models: 3, workflows_installed: false, ready: false
     )
 ]
 

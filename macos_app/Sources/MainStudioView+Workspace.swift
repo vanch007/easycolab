@@ -26,8 +26,8 @@ extension MainStudioView {
                         // API 协议网关专属面板（OpenAI + Anthropic 双协议配置与一键复制）
                         apiGatewaySection(palette: palette)
                     } else {
-                        // 2. 参考图、参考视频与声纹参考上传区（在动作复刻、视频超分、多图参考、首尾帧、图生视频、指令修图、视觉理解模式下自动展开）
-                        if ["video_upscale", "motion_transfer", "multiref", "fl2va", "i2v", "i2i_edit", "vlm"].contains(vm.taskModeId) {
+                        // 2. 参考图、参考视频与声纹参考上传区（在动作复刻、视频超分、多图参考、首尾帧、图生视频、指令修图、视觉理解、声纹克隆模式下自动展开）
+                        if ["video_upscale", "motion_transfer", "multiref", "drama_multishot", "drama_storyboard", "fl2va", "i2v", "i2i_edit", "vlm", "voice_clone", "drama_tts_clone"].contains(vm.taskModeId) {
                             referenceImageSection
                         }
 
@@ -36,15 +36,23 @@ extension MainStudioView {
                             promptComposerSection(palette: palette)
                         }
 
-                        // 3.5 Sulphur-3 s3_corrector、Ref2VA TARA、SeedVR2 或 ReCaVSR 视频超分控制面板
+                        // 3.5 Sulphur-3 s3_corrector、Ref2VA TARA、ReCaVSR、MOSS-Image、Wan2.2-Remix、H3 短剧导演或 TTS 控制面板
                         if vm.selectedModelId == "minimax_h3_sulphur3" {
                             h3CorrectorSection(palette: palette)
                         } else if vm.selectedModelId == "minimax_h3_ref2va_tara" && vm.taskModeId == "motion_transfer" {
                             h3TaraControlSection(palette: palette)
-                        } else if vm.selectedModelId == "recavsr_upscaler" {
+                        } else if vm.selectedModelId == "recavsr_upscaler" || vm.taskModeId == "video_upscale" {
                             recavsrControlSection(palette: palette)
-                        } else if vm.selectedModelId == "seedvr2_upscaler" || vm.taskModeId == "video_upscale" {
-                            seedvr2ControlSection(palette: palette)
+                        } else if vm.selectedModelId == "moss_image_edit" {
+                            mossImageControlSection(palette: palette)
+                        } else if vm.selectedModelId == "wan22_remix_nsfw" {
+                            wan22RemixControlSection(palette: palette)
+                        } else if vm.selectedModelId == "minimax_h3_drama_director" {
+                            h3DramaDirectorControlSection(palette: palette)
+                        } else if vm.selectedModelId == "qwen3_tts_voice_design" {
+                            qwen3TTSControlSection(palette: palette)
+                        } else if vm.selectedModelId == "drama3_tts" {
+                            drama3TTSControlSection(palette: palette)
                         }
 
                         // 4. 生成主按钮与状态条
@@ -96,6 +104,8 @@ extension MainStudioView {
             ("h3_correctors", L("h3_correctors (Sulphur-3 效果修正器)", "h3_correctors (Sulphur-3 Correctors)")),
             ("SEEDVR2", L("SEEDVR2 (SeedVR2 7B/3B 视频超分)", "SEEDVR2 (SeedVR2 7B/3B Video Upscaler)")),
             ("recavsr", L("recavsr (ReCaVSR 极速流式超分)", "recavsr (ReCaVSR Streaming Upscaler)")),
+            ("asr", L("asr (Qwen3-ASR 语音识别转录)", "asr (Qwen3-ASR Transcription)")),
+            ("qwen-tts", L("qwen-tts (Qwen3-TTS 声音设计)", "qwen-tts (Qwen3-TTS VoiceDesign/Base)")),
             ("gguf", L("gguf (量化视频/图像主干)", "gguf (Quantized Video / Image Backbones)"))
         ]
 
@@ -447,7 +457,7 @@ extension MainStudioView {
                         VStack(spacing: 6) {
                             ForEach(vm.comfyRecentOutputs) { item in
                                 HStack(spacing: 8) {
-                                    Image(systemName: item.media_type == "video" ? "film" : "photo")
+                                    Image(systemName: item.media_type == "audio" ? "waveform" : (item.media_type == "video" ? "film" : "photo"))
                                         .font(.system(size: 12, weight: .semibold))
                                         .foregroundStyle(Color.accentColor)
                                         .frame(width: 20)
@@ -456,7 +466,7 @@ extension MainStudioView {
                                             .font(.system(size: 11.5, weight: .medium))
                                             .lineLimit(1)
                                             .truncationMode(.middle)
-                                        Text("\(fmt(item.size_mb ?? 0, 1)) MB · \(item.media_type == "video" ? L("视频", "Video") : L("图像", "Image"))")
+                                        Text("\(fmt(item.size_mb ?? 0, 1)) MB · \(item.media_type == "audio" ? L("音频", "Audio") : (item.media_type == "video" ? L("视频", "Video") : L("图像", "Image")))")
                                             .font(.system(size: 10))
                                             .foregroundStyle(.secondary)
                                     }
@@ -550,7 +560,7 @@ extension MainStudioView {
     func comfyPresetPackRow(_ pack: ComfyPresetPackItem, palette: StudioPalette) -> some View {
         let isInstallingThis = vm.comfyInstallingPackId == pack.id
         let isAnyBusy = vm.comfyDownloadingWeight || !vm.comfyInstallingPackId.isEmpty || vm.comfyStarting
-        let isPrimaryRecommended = pack.id == "wan22_i2v_flf2v"
+        let isPrimaryRecommended = pack.id == "minimax_h3_10eros_max"
 
         return VStack(alignment: .leading, spacing: 9) {
             HStack(alignment: .top, spacing: 12) {
@@ -720,14 +730,19 @@ extension MainStudioView {
         let anthropicBase = baseHost
         let displayKey = vm.apiKeyEnabled ? vm.apiAccessKey : "sk-no-key-required"
         let activeLLMRepo: String = {
+            if vm.selectedModelId == "qwen38_27b_uncensored_gguf" || vm.loadedModelIds.contains("qwen38_27b_uncensored_gguf") {
+                return "JonathanColetti/Qwen3.8-27B-Uncensored-GGUF"
+            }
             if vm.selectedModelId == "qwen38_27b_gguf" { return "unsloth/Qwen3.8-27B-GGUF" }
             if vm.selectedModelId == "qwen38_27b" { return "Qwen/Qwen3.8-27B" }
             if vm.loadedModelIds.contains("qwen38_27b_gguf") && !vm.loadedModelIds.contains("qwen38_27b") {
                 return "unsloth/Qwen3.8-27B-GGUF"
             }
-            return "Qwen/Qwen3.8-27B"
+            return "JonathanColetti/Qwen3.8-27B-Uncensored-GGUF"
         }()
-        let activeLLMDisplayName = activeLLMRepo.contains("GGUF") ? "Qwen3.8-27B-GGUF" : "Qwen3.8-27B"
+        let activeLLMDisplayName = activeLLMRepo.contains("Uncensored")
+            ? "Qwen3.8-27B-Uncensored-GGUF"
+            : (activeLLMRepo.contains("GGUF") ? "Qwen3.8-27B-GGUF" : "Qwen3.8-27B")
 
         let samplePrompt1 = L("用三句话解释量子纠缠，并展示思考过程", "Explain quantum entanglement in 3 sentences with reasoning")
         let samplePrompt2 = L("帮我设计一个高并发网关架构", "Design a high-concurrency API gateway architecture")
@@ -1474,7 +1489,7 @@ extension MainStudioView {
                     return true
                 }
             }
-        case "multiref":
+        case "multiref", "drama_multishot", "drama_storyboard":
             WorkspaceCard(
                 title: L("多图参考 (<Picture 1..9>) 与声纹克隆 (<Audio 1>)", "Multi-Image Refs (<Picture 1..9>) & Voice Clone (<Audio 1>)"),
                 subtitle: L(
@@ -1534,14 +1549,16 @@ extension MainStudioView {
             }
         case "i2i_edit":
             WorkspaceCard(
-                title: (vm.selectedModelId == "qwen_image_21" || vm.isMiniMaxH3ImageModel)
+                title: (vm.selectedModelId == "qwen_image_21" || vm.isMiniMaxH3ImageModel || vm.selectedModelId == "moss_image_edit")
                     ? L("指令修图参考原图", "Instruction Image-Editing References")
                     : L("图生图重绘参考底图", "Image-to-Image Reference"),
                 subtitle: vm.isMiniMaxH3ImageModel
                     ? L("支持上传 1~2 张参考图（可在提示词中用 <Picture 1> / <Picture 2> 指代）进行精准修图或融合", "Upload 1–2 reference images (refer via <Picture 1> / <Picture 2> in prompt) for editing or fusion")
-                    : (vm.selectedModelId == "qwen_image_21"
-                        ? L("支持上传 1~2 张参考图进行局部编辑、换背景或多主体融合", "Upload 1–2 reference images for local edits, background swaps, or multi-subject fusion")
-                        : L("上传参考原图并在左侧调节重绘幅度", "Upload a reference image and tune Denoising Strength in the left sidebar")),
+                    : (vm.selectedModelId == "moss_image_edit"
+                        ? L("上传 1~2 张参考原图交由 MOSS-Image Ostris Edit (armV5) 执行无限制换装、换景、局部修改", "Upload 1–2 reference images for MOSS-Image Ostris Edit (armV5) uncensored instruction editing")
+                        : (vm.selectedModelId == "qwen_image_21"
+                            ? L("支持上传 1~2 张参考图进行局部编辑、换背景或多主体融合", "Upload 1–2 reference images for local edits, background swaps, or multi-subject fusion")
+                            : L("上传参考原图并在左侧调节重绘幅度", "Upload a reference image and tune Denoising Strength in the left sidebar"))),
                 icon: "wand.and.rays"
             ) {
                 HStack(spacing: 12) {
@@ -1550,7 +1567,7 @@ extension MainStudioView {
                         subtitle: L("拖入待编辑原图", "Drop source image to edit"),
                         image: $vm.firstFrameImage
                     )
-                    if vm.selectedModelId == "qwen_image_21" || vm.isMiniMaxH3ImageModel {
+                    if vm.selectedModelId == "qwen_image_21" || vm.isMiniMaxH3ImageModel || vm.selectedModelId == "moss_image_edit" {
                         FrameDropWell(
                             title: L("融合参考图 2 (可选)", "Fusion Reference 2 (Optional)"),
                             subtitle: L("用于多图主体融合编辑", "For multi-image subject fusion"),
@@ -1581,6 +1598,56 @@ extension MainStudioView {
                     )
                 }
             }
+        case "voice_clone", "drama_tts_clone":
+            WorkspaceCard(
+                title: L("角色参考声纹 (<Audio 1>)", "Character Voice Reference (<Audio 1>)"),
+                subtitle: vm.taskModeId == "drama_tts_clone"
+                    ? L("上传 3~20 秒干净人声，Qwen3-ASR 自动转录并支持 Drama 3 高张力情绪复刻", "Upload 3–20s clean speech; Qwen3-ASR auto-transcribes for Drama 3 emotional cloning")
+                    : L("上传 3~15 秒干净人声（可先用 VoiceDesign 捏出），注入情绪指令合成台词", "Upload 3–15s clean speech (e.g. from VoiceDesign) to clone with emotion directives"),
+                icon: "waveform.circle.fill"
+            ) {
+                HStack(spacing: 10) {
+                    Image(systemName: "waveform.circle.fill")
+                        .font(.title2)
+                        .foregroundStyle(vm.refAudioBase64 != nil ? Color.accentColor : .secondary)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(vm.refAudioFileName != nil
+                             ? L("已加载参考音：\(vm.refAudioFileName!)", "Loaded Reference: \(vm.refAudioFileName!)")
+                             : L("支持 .wav / .flac / .mp3 / .m4a 干净人声", "Supports clean .wav / .flac / .mp3 / .m4a speech"))
+                            .font(.callout.weight(.medium))
+                        Text(L("也可在右侧预览生成声纹后点击「设为声纹参考」一键导入。", "You can also click 'Use as Voice Ref' on any generated audio preview."))
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button {
+                        let panel = NSOpenPanel()
+                        panel.allowsMultipleSelection = false
+                        panel.canChooseDirectories = false
+                        panel.allowedContentTypes = [.audio, .wav, .mp3, .mpeg4Audio]
+                        if panel.runModal() == .OK, let url = panel.url {
+                            vm.setReferenceAudio(from: url)
+                        }
+                    } label: {
+                        Label(
+                            vm.refAudioFileName == nil ? L("选择参考音频", "Select Audio") : L("更换音频", "Replace Audio"),
+                            systemImage: "music.note"
+                        )
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+
+                    if vm.refAudioBase64 != nil {
+                        Button(role: .destructive) {
+                            vm.clearReferenceAudio()
+                        } label: {
+                            Image(systemName: "xmark.circle")
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                    }
+                }
+            }
         default:
             EmptyView()
         }
@@ -1596,6 +1663,10 @@ extension MainStudioView {
                 return vm.taskModeId == "i2i_edit"
                     ? L("修图指令与画面描述", "Editing Instruction & Scene Prompt")
                     : L("图像画面提示词", "Image Prompt")
+            case .audio:
+                return vm.selectedModelId == "drama3_tts"
+                    ? L("戏剧台词脚本与舞台指令 ([sighs]/[whispers]/<|speaker:0|>)", "Dramatic Script & Stage Cues ([sighs]/[whispers]/<|speaker:0|>)")
+                    : L("合成台词与念白文本", "Speech Synthesis Script")
             case .videoAudio, .video, .comfyUI:
                 return L("镜头与多模态提示词", "Camera & Multimodal Prompts")
             }
@@ -1609,6 +1680,10 @@ extension MainStudioView {
                 return vm.taskModeId == "i2i_edit"
                     ? L("描述你想修改的细节（例如：把背景换成夕阳海滩，保留人物光影）...", "Describe your edit (e.g. replace background with a sunset beach while preserving lighting)...")
                     : L("描述主体、构图、镜头景别、光影色调与文字排版...", "Describe subject, composition, lighting, lens style, and typography...")
+            case .audio:
+                return vm.selectedModelId == "drama3_tts"
+                    ? L("输入台词，支持 [sighs]、[laughs]、[whispers] 等舞台情绪标签及 <|speaker:0|> 多角色切换...", "Write lines with inline stage cues ([sighs], [laughs], [whispers]) and <|speaker:0|> speaker tags...")
+                    : L("输入想要角色说出的台词文本（建议 8~15 秒内容便于导出为短剧声纹种子）...", "Enter dialogue text to synthesize (8–15s works great as a voice seed for H3 Director)...")
             case .videoAudio, .video, .comfyUI:
                 return L("描述画面主体运动、镜头推拉摇移、光影氛围与电影质感...", "Describe subject motion, camera movement, lighting, and cinematic style...")
             }
@@ -1618,9 +1693,11 @@ extension MainStudioView {
             promptEditor(
                 title: mod == .llmVLM
                     ? L("对话内容 / 视觉提问", "Chat Message / Vision Question")
-                    : (vm.taskModeId == "i2i_edit"
-                       ? L("编辑指令或目标画面描述", "Edit Instruction or Target Scene")
-                       : L("主体、构图、光影与风格描述", "Subject, Composition, Lighting & Style")),
+                    : (mod == .audio
+                       ? L("台词脚本正文", "Spoken Script")
+                       : (vm.taskModeId == "i2i_edit"
+                          ? L("编辑指令或目标画面描述", "Edit Instruction or Target Scene")
+                          : L("主体、构图、光影与风格描述", "Subject, Composition, Lighting & Style"))),
                 placeholder: primaryPlaceholder,
                 text: $vm.visualPrompt,
                 height: mod == .llmVLM ? 84 : 92,
@@ -1738,6 +1815,10 @@ extension MainStudioView {
             return vm.batchCount > 1
                 ? L("生成 \(vm.batchCount) 张高清图像", "Generate \(vm.batchCount) HD Images")
                 : L("开始生成图像", "Generate Image")
+        case .audio:
+            return vm.batchCount > 1
+                ? L("连续生成 \(vm.batchCount) 段角色配音", "Generate \(vm.batchCount) Voice Clips")
+                : L("开始生成角色配音", "Synthesize Voice Audio")
         case .videoAudio:
             return vm.batchCount > 1
                 ? L("连续生成 \(vm.batchCount) 条全模态音视频", "Generate \(vm.batchCount) Videos with Audio")
@@ -2224,6 +2305,480 @@ extension MainStudioView {
         }
     }
 
+    @ViewBuilder
+    func mossImageControlSection(palette: StudioPalette) -> some View {
+        WorkspaceCard(
+            title: L("MOSS-Image 无限制与指令修图控制 (Heretic + armV5 + NSFW LoRA)", "MOSS-Image Uncensored & Edit Controls (Heretic + armV5 + NSFW LoRA)"),
+            subtitle: L(
+                "已挂载 Heretic 去审查 Qwen3.5-9B 编码器；修图模式启用 Ostris Edit (armV5) RoPE 参考潜空间注入",
+                "Uses Heretic decensored Qwen3.5-9B encoder; Edit mode attaches Ostris Edit (armV5) RoPE reference latent conditioning"
+            ),
+            icon: "wand.and.stars.inverse"
+        ) {
+            VStack(alignment: .leading, spacing: 12) {
+                if vm.taskModeId == "i2i_edit" {
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack {
+                            Text(L("指令修图 LoRA 强度 (armV5)", "Edit LoRA Strength (armV5)"))
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                            Text(String(format: "%.2f", vm.mossEditLoraStrength))
+                                .font(.caption.weight(.semibold))
+                                .monospacedDigit()
+                        }
+                        Slider(value: $vm.mossEditLoraStrength, in: 0.0...1.5, step: 0.05)
+                    }
+
+                    HStack(spacing: 18) {
+                        Toggle(isOn: $vm.mossKvCache) {
+                            Text(L("开启参考 K/V 缓存加速 (约 2×)", "Ref KV Cache (2× faster)"))
+                                .font(.callout)
+                        }
+                        .toggleStyle(.switch)
+
+                        Toggle(isOn: $vm.mossMatchInputSize) {
+                            Text(L("自动对齐参考图分辨率", "Match Reference Resolution"))
+                                .font(.callout)
+                        }
+                        .toggleStyle(.switch)
+                    }
+                }
+
+                HStack(spacing: 14) {
+                    Toggle(isOn: $vm.mossNsfwLoraEnabled) {
+                        Text(L("叠加无限制增强 LoRA", "Enable NSFW Uncensored LoRA"))
+                            .font(.callout.weight(.medium))
+                    }
+                    .toggleStyle(.switch)
+
+                    if vm.mossNsfwLoraEnabled {
+                        VStack(alignment: .leading, spacing: 2) {
+                            HStack {
+                                Text(L("无限制 LoRA 强度", "Uncensored Strength"))
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                Spacer()
+                                Text(String(format: "%.2f", vm.mossNsfwLoraStrength))
+                                    .font(.caption.weight(.semibold))
+                                    .monospacedDigit()
+                            }
+                            Slider(value: $vm.mossNsfwLoraStrength, in: 0.0...1.2, step: 0.05)
+                        }
+                    }
+                }
+
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack {
+                        Text(L("引导系数 (CFG)", "Guidance Scale (CFG)"))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Text(String(format: "%.1f", vm.mossCfg))
+                            .font(.caption.weight(.semibold))
+                            .monospacedDigit()
+                    }
+                    Slider(value: $vm.mossCfg, in: 1.0...7.0, step: 0.5)
+                }
+
+                HStack {
+                    Text(L("提示：触发词可选 moss_xvstyle；修图与无限制双 LoRA 叠加建议将无限制强度设为 0.50~0.70 以保人脸一致性。",
+                           "Tip: Optional trigger 'moss_xvstyle'; keep Uncensored strength at 0.50–0.70 when stacking with Edit LoRA for best identity preservation."))
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button(L("恢复推荐", "Defaults")) {
+                        vm.mossEditLoraStrength = 1.0
+                        vm.mossNsfwLoraEnabled = true
+                        vm.mossNsfwLoraStrength = 0.65
+                        vm.mossCfg = 3.0
+                        vm.mossKvCache = true
+                        vm.mossMatchInputSize = true
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                }
+            }
+            .padding(4)
+        }
+    }
+
+    @ViewBuilder
+    func wan22RemixControlSection(palette: StudioPalette) -> some View {
+        WorkspaceCard(
+            title: L("Wan2.2-Remix 无限制双阶段采样控制 (v3.0 High+Low FP8 Lightning)", "Wan2.2-Remix Uncensored Two-Stage Controls (v3.0 High+Low FP8 Lightning)"),
+            subtitle: L(
+                "已内置 NSFW-Wan-UMT5-XXL 编码器与 8 步 Lightning 融合主干；16fps 电影写实输出（无音轨）",
+                "Uses NSFW-Wan-UMT5-XXL encoder & 8-step baked Lightning High+Low UNETs; 16fps lifelike video output"
+            ),
+            icon: "figure.stand.line.dotted.figure.stand"
+        ) {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(spacing: 16) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack {
+                            Text(L("SD3 流匹配 Shift", "ModelSampling Shift"))
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                            Text(String(format: "%.1f", vm.wan22Shift))
+                                .font(.caption.weight(.semibold))
+                                .monospacedDigit()
+                        }
+                        Slider(value: $vm.wan22Shift, in: 3.0...12.0, step: 0.5)
+                    }
+
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack {
+                            Text(L("引导系数 (CFG)", "CFG Scale"))
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                            Text(String(format: "%.1f", vm.wan22Cfg))
+                                .font(.caption.weight(.semibold))
+                                .monospacedDigit()
+                        }
+                        Slider(value: $vm.wan22Cfg, in: 1.0...6.0, step: 0.5)
+                    }
+                }
+
+                HStack {
+                    Stepper(
+                        L("高低噪切换步数 (Split Step): \(vm.wan22SplitStep) / \(Int(vm.inferenceSteps))",
+                          "High→Low Split Step: \(vm.wan22SplitStep) / \(Int(vm.inferenceSteps))"),
+                        value: $vm.wan22SplitStep,
+                        in: 1...12
+                    )
+                    .font(.callout)
+                    Spacer()
+                }
+
+                HStack {
+                    Text(L("提示：v3.0 推荐 8 步总采样（高噪 0→4，低噪 4→8）、shift=8.0、CFG=1.0；可与 MOSS-Image 首帧图联动。",
+                           "Tip: v3.0 works best at 8 steps (High 0→4, Low 4→8), shift=8.0, CFG=1.0; pairs well with MOSS-Image keyframes."))
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button(L("恢复推荐", "Defaults")) {
+                        vm.wan22Shift = 8.0
+                        vm.wan22SplitStep = 4
+                        vm.wan22Cfg = 1.0
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                }
+            }
+            .padding(4)
+        }
+    }
+
+    @ViewBuilder
+    func h3DramaDirectorControlSection(palette: StudioPalette) -> some View {
+        WorkspaceCard(
+            title: L("MiniMax-H3 短剧导演时间线控制 (ComfyUI-MiniMaxH3-Director)", "MiniMax-H3 Drama Director Timeline Controls"),
+            subtitle: L(
+                "复用 10Eros-Max 8步无限制底座与 Heretic 编码器；支持多镜头分段、音画无缝续拍与角色 @名称 绑定",
+                "Runs on uncensored 10Eros-Max 8-step + Heretic encoder for multi-shot beat chaining, locked voices & score"
+            ),
+            icon: "film.stack"
+        ) {
+            VStack(alignment: .leading, spacing: 12) {
+                VStack(alignment: .leading, spacing: 5) {
+                    HStack {
+                        Text(L("短剧总时长 (秒)", "Total Drama Duration (s)"))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Text("\(Int(vm.dramaProjectSeconds.rounded()))s")
+                            .font(.caption.weight(.semibold))
+                            .monospacedDigit()
+                    }
+                    HStack(spacing: 8) {
+                        ForEach([15.0, 20.0, 30.0, 45.0, 60.0], id: \.self) { secVal in
+                            let isSel = abs(vm.dramaProjectSeconds - secVal) < 0.5
+                            Button {
+                                vm.dramaProjectSeconds = secVal
+                            } label: {
+                                Text("\(Int(secVal))s")
+                                    .font(.system(size: 11.5, weight: isSel ? .semibold : .medium, design: .rounded))
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 5)
+                                    .background(
+                                        RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                            .fill(isSel ? Color.accentColor.opacity(0.18) : palette.inputFill)
+                                    )
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                            .strokeBorder(isSel ? Color.accentColor.opacity(0.6) : palette.cardBorder, lineWidth: 1)
+                                    )
+                                    .foregroundStyle(isSel ? Color.accentColor : Color.primary)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+
+                HStack(spacing: 12) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(L("分镜续拍模式", "Continuity Mode"))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Picker(L("续拍模式", "Continuity"), selection: $vm.dramaContinuity) {
+                            Text(L("音画无缝续拍 (video_audio · 推荐)", "Seamless Video+Audio (Recommended)")).tag("video_audio")
+                            Text(L("仅画面续拍 (video)", "Video Continuity Only")).tag("video")
+                            Text(L("独立镜头直拼 (none)", "Independent Clips")).tag("none")
+                        }
+                        .labelsHidden()
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(L("视觉风格", "Visual Style"))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Picker(L("风格", "Style"), selection: $vm.dramaStyle) {
+                            Text("Cinematic").tag("Cinematic")
+                            Text("Photorealistic").tag("Photorealistic")
+                            Text("Anime").tag("Anime")
+                            Text("Documentary").tag("Documentary")
+                            Text("None").tag("None")
+                        }
+                        .labelsHidden()
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(L("尾帧锁定帧数", "Pin Frames"))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Picker(L("尾帧锁定", "Pin Frames"), selection: $vm.dramaPinFrames) {
+                            Text(L("22 帧 (默认平滑)", "22f (Smooth)")).tag("22")
+                            Text(L("5 帧 (快转场)", "5f (Fast Cut)")).tag("5")
+                            Text(L("39 帧 (强连续)", "39f (Strong)")).tag("39")
+                            Text(L("56 帧 (超稳长镜)", "56f (Long Take)")).tag("56")
+                        }
+                        .labelsHidden()
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(L("角色卡 @名称（按上传参考图顺序，逗号分隔；如 Hero, Partner）", "Character @Names (matching ref image order, comma-separated)"))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    TextField("Hero, Partner", text: $vm.dramaCharacterNamesText)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(size: 12, design: .monospaced))
+                }
+
+                HStack {
+                    Text(L("脚本格式：每行写 `0-7: @Hero ...`，台词写 `@Hero says: ...`；复杂时间线/分镜画板可点右侧打开 ComfyUI 画布。",
+                           "Syntax: `0-7: @Hero ...` and `@Hero says: ...`. Open ComfyUI canvas for interactive storyboard editing."))
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button(L("打开时间线画布", "Open Timeline")) {
+                        vm.openComfyUIInBrowser()
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    Button(L("恢复推荐", "Defaults")) {
+                        vm.dramaProjectSeconds = 20.0
+                        vm.dramaChunkSeconds = 0.0
+                        vm.dramaContinuity = "video_audio"
+                        vm.dramaPinFrames = "22"
+                        vm.dramaStyle = "Cinematic"
+                        vm.dramaCharacterNamesText = "Hero, Partner"
+                        vm.inferenceSteps = 8
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                }
+            }
+            .padding(4)
+        }
+    }
+
+    @ViewBuilder
+    func qwen3TTSControlSection(palette: StudioPalette) -> some View {
+        WorkspaceCard(
+            title: L("Qwen3-TTS 1.7B · 声音设计与情感控制", "Qwen3-TTS 1.7B · Voice Design & Emotion Controls"),
+            subtitle: vm.taskModeId == "voice_clone"
+                ? L("声纹克隆模式下可通过自然语言情感指令控制语气起伏；生成音色可一键喂给 MiniMax-H3 短剧导演", "In Clone mode, guide intonation with emotion instructions; generated voice can feed straight into H3 Drama Director")
+                : L("VoiceDesign 模式无需参考音频，直接用文字描述年龄、声线与戏剧情绪捏造全新角色音色", "VoiceDesign mode requires no reference audio — describe age, timbre & dramatic emotion directly"),
+            icon: "waveform.badge.mic"
+        ) {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(spacing: 14) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(L("目标语种 (Language)", "Target Language"))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Picker(L("语种", "Language"), selection: $vm.ttsLanguage) {
+                            ForEach(["Auto", "Chinese", "English", "Japanese", "Korean", "French", "German", "Spanish", "Portuguese", "Russian", "Italian"], id: \.self) { lang in
+                                Text(lang).tag(lang)
+                            }
+                        }
+                        .labelsHidden()
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+
+                    if vm.taskModeId == "voice_clone" {
+                        Toggle(isOn: $vm.ttsXVectorOnly) {
+                            Text(L("仅提取声纹向量 (免参考字幕)", "X-Vector Only (No Transcript)"))
+                                .font(.callout)
+                        }
+                        .toggleStyle(.switch)
+                        .padding(.top, 14)
+                    }
+                }
+
+                promptEditor(
+                    title: vm.taskModeId == "voice_clone"
+                        ? L("情感导演指令 Instruct（可选，如：用极力克制却又带着冷笑的语气说）", "Emotion Instruction (Optional, e.g. 'spoken in a cold, restrained whisper with a smirk')")
+                        : L("声线设计描述 Instruct（年龄 / 音色质感 / 语速 / 剧情感）", "Voice Design Description (Age / Timbre / Pace / Drama Emotion)"),
+                    placeholder: L("如：28岁冷艳古风女帝，声线清冽带有磁性颗粒感，语速沉稳克制...", "e.g. 28yo cold regal empress, crisp husky alto voice, calm commanding pace..."),
+                    text: $vm.ttsInstruct,
+                    height: 62,
+                    palette: palette
+                )
+
+                if vm.taskModeId == "voice_clone" && !vm.ttsXVectorOnly {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(L("参考音频文字稿 ref_text（可选，填写可提升克隆咬字稳定度）", "Reference Audio Transcript ref_text (Optional — improves articulation)"))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        TextField(L("留空自动处理，或输入参考音频原话...", "Leave empty or type the exact reference clip words..."), text: $vm.ttsRefText)
+                            .textFieldStyle(.roundedBorder)
+                            .font(.system(size: 12))
+                    }
+                }
+
+                HStack {
+                    Text(L("提示：生成完成后点下方预览区的「设为声纹参考」即可直接绑定给 MiniMax-H3 短剧导演或 Drama 3。",
+                           "Tip: Click 'Use as Voice Ref' under the audio preview to route this voice straight into MiniMax-H3 Director or Drama 3."))
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button(L("恢复推荐", "Defaults")) {
+                        vm.ttsLanguage = "Chinese"
+                        vm.ttsInstruct = "28岁冷艳古风女帝，声线清冽带有磁性颗粒感，语速沉稳克制，末尾带一丝戏谑威压与叹息感。"
+                        vm.ttsRefText = ""
+                        vm.ttsXVectorOnly = false
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                }
+            }
+            .padding(4)
+        }
+    }
+
+    @ViewBuilder
+    func drama3TTSControlSection(palette: StudioPalette) -> some View {
+        WorkspaceCard(
+            title: L("Fish Audio Drama 3 · 35B 戏剧表演与舞台控制", "Fish Audio Drama 3 · 35B Dramatic Acting Controls"),
+            subtitle: L(
+                "2026-10-29 重训 FP8 权重 + Qwen3-ASR 1.7B 自动转录；默认 top_k=0 杜绝长停顿截断静音",
+                "2026-10-29 retrained FP8 weights + Qwen3-ASR 1.7B; keeps top_k=0 by default to prevent mid-pause silence"
+            ),
+            icon: "theatermasks.fill"
+        ) {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(spacing: 14) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(L("MoE 专家驻留模式 (Experts)", "MoE Experts Residency"))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Picker(L("专家驻留", "Experts"), selection: $vm.drama3Experts) {
+                            Text(L("in RAM (G4 高速缓存推荐)", "in RAM (Recommended Cache)")).tag("in RAM")
+                            Text(L("in VRAM (全驻留显存)", "in VRAM (Full GPU)")).tag("in VRAM")
+                        }
+                        .labelsHidden()
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(L("多角色对话节奏 (Speakers Mode)", "Speakers Dialogue Mode"))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Picker(L("对话节奏", "Speakers"), selection: $vm.drama3SpeakersMode) {
+                            Text(L("逐句独立 (one take per line · 稳)", "One take per line (Clean)")).tag("one take per line")
+                            Text(L("互听接戏 (hearing line before · 飙戏)", "Hearing line before (Reactive)")).tag("one take per line, hearing the line before")
+                            Text(L("按角色连录 (one take per speaker)", "One take per speaker")).tag("one take per speaker")
+                            Text(L("整段同录 (together)", "Together (Full Context)")).tag("together")
+                        }
+                        .labelsHidden()
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+
+                HStack(spacing: 14) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack {
+                            Text(L("防串音引导 (voice_guidance)", "Voice Guidance"))
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                            Text(String(format: "%.2f", vm.drama3VoiceGuidance))
+                                .font(.caption.weight(.semibold))
+                                .monospacedDigit()
+                        }
+                        Slider(value: $vm.drama3VoiceGuidance, in: 0.0...3.0, step: 0.25)
+                    }
+
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack {
+                            Text(L("采样温度 (Temperature)", "Temperature"))
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                            Text(String(format: "%.2f", vm.drama3Temperature))
+                                .font(.caption.weight(.semibold))
+                                .monospacedDigit()
+                        }
+                        Slider(value: $vm.drama3Temperature, in: 0.5...1.5, step: 0.05)
+                    }
+                }
+
+                HStack(spacing: 14) {
+                    Toggle(isOn: $vm.drama3ShortenPauses) {
+                        Text(L("压缩过长气口停顿 (>0.75s)", "Shorten Long Pauses (>0.75s)"))
+                            .font(.callout)
+                    }
+                    .toggleStyle(.switch)
+
+                    if vm.taskModeId == "drama_tts_clone" {
+                        TextField(L("手动覆盖 ASR 参考字幕 (留空由 Qwen3-ASR 自动识别)", "Override ASR transcript (leave blank for auto Qwen3-ASR)"), text: $vm.ttsRefText)
+                            .textFieldStyle(.roundedBorder)
+                            .font(.system(size: 12))
+                    }
+                }
+
+                HStack {
+                    Text(L("舞台标签：[sighs] [laughs] [chuckles] [whispers] [gasp]；多角色写 <|speaker:0|> / <|speaker:1|>。",
+                           "Stage cues: [sighs] [laughs] [chuckles] [whispers] [gasp]; multi-speaker tags: <|speaker:0|> / <|speaker:1|>."))
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button(L("恢复推荐", "Defaults")) {
+                        vm.drama3Experts = "in RAM"
+                        vm.drama3SpeakersMode = "one take per line"
+                        vm.drama3VoiceGuidance = 0.0
+                        vm.drama3Temperature = 1.0
+                        vm.drama3TopP = 0.9
+                        vm.drama3TopK = 0
+                        vm.drama3ShortenPauses = true
+                        vm.ttsRefText = ""
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                }
+            }
+            .padding(4)
+        }
+    }
+
     var generateActionSection: some View {
         VStack(alignment: .leading, spacing: 10) {
             if vm.activeModelSpec.modality != .llmVLM {
@@ -2472,6 +3027,8 @@ extension MainStudioView {
                 RoundedRectangle(cornerRadius: 9)
                     .fill(Color(red: 0.06, green: 0.065, blue: 0.08))
 
+                let curExt = vm.currentMediaURL?.pathExtension.lowercased() ?? ""
+                let isCurAudio = ["wav", "flac", "mp3", "m4a", "opus", "ogg"].contains(curExt)
                 if let img = vm.currentPreviewImage {
                     Image(nsImage: img)
                         .resizable()
@@ -2479,16 +3036,34 @@ extension MainStudioView {
                         .clipShape(RoundedRectangle(cornerRadius: 8))
                         .padding(6)
                 } else if let player = vm.player {
-                    VideoPlayer(player: player)
-                        .clipShape(RoundedRectangle(cornerRadius: 9))
+                    if isCurAudio {
+                        VStack(spacing: 14) {
+                            Image(systemName: "waveform")
+                                .font(.system(size: 44, weight: .light))
+                                .foregroundStyle(Color.accentColor)
+                            Text(vm.currentMediaURL?.lastPathComponent ?? L("角色配音预览", "Voice Audio Preview"))
+                                .font(.callout.weight(.semibold))
+                                .foregroundStyle(.white.opacity(0.9))
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                            VideoPlayer(player: player)
+                                .frame(height: 52)
+                                .clipShape(RoundedRectangle(cornerRadius: 8))
+                                .padding(.horizontal, 18)
+                        }
+                        .padding(.vertical, 20)
+                    } else {
+                        VideoPlayer(player: player)
+                            .clipShape(RoundedRectangle(cornerRadius: 9))
+                    }
                 } else {
                     VStack(spacing: 8) {
-                        Image(systemName: vm.activeModelSpec.modality == .image ? "photo" : "film")
+                        Image(systemName: vm.activeModelSpec.modality == .image ? "photo" : (vm.activeModelSpec.modality == .audio ? "waveform" : "film"))
                             .font(.system(size: 32))
                             .foregroundStyle(.gray)
                         Text(L(
-                            "生成的视频或高清图像将自动下载并在此预览",
-                            "Generated videos or HD images will download automatically and preview here"
+                            "生成的视频、配音或高清图像将自动下载并在此预览",
+                            "Generated videos, voice audio, or HD images will download automatically and preview here"
                         ))
                             .font(.callout)
                             .foregroundStyle(.gray)
@@ -2498,8 +3073,9 @@ extension MainStudioView {
             .frame(minHeight: 330)
 
             if let url = vm.currentMediaURL {
+                let isAudioURL = ["wav", "flac", "mp3", "m4a", "opus", "ogg"].contains(url.pathExtension.lowercased())
                 HStack(spacing: 8) {
-                    Image(systemName: vm.currentPreviewImage != nil ? "photo" : "film")
+                    Image(systemName: vm.currentPreviewImage != nil ? "photo" : (isAudioURL ? "waveform" : "film"))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     Text(url.lastPathComponent)
@@ -2516,6 +3092,12 @@ extension MainStudioView {
                             .background(Capsule().fill(Color.primary.opacity(0.06)))
                     }
                     Spacer()
+                    if isAudioURL {
+                        Button(L("设为声纹参考 (供 H3 / Drama 3)", "Use as Voice Ref")) {
+                            vm.useCurrentAudioAsVoiceReference()
+                        }
+                        .controlSize(.small)
+                    }
                     if vm.player != nil {
                         Button(L("重播", "Replay")) {
                             vm.player?.seek(to: .zero)
@@ -2567,7 +3149,7 @@ extension MainStudioView {
                                 vm.selectMedia(item.url)
                             } label: {
                                 HStack(spacing: 7) {
-                                    Image(systemName: item.isImage ? "photo" : "film")
+                                    Image(systemName: item.isAudio ? "waveform" : (item.isImage ? "photo" : "film"))
                                         .font(.caption)
                                         .foregroundStyle(selected ? Color.accentColor : Color.secondary)
                                     VStack(alignment: .leading, spacing: 2) {

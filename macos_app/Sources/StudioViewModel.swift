@@ -338,7 +338,7 @@ class StudioViewModel: ObservableObject {
             UserDefaults.standard.set(liveMonitoringEnabled, forKey: "easycolabLiveMonitoringEnabled")
         }
     }
-    @Published var selectedModelId: String = "minimax_h3"
+    @Published var selectedModelId: String = "minimax_h3_10eros_max"
     @Published var customModels: [OpenModelSpec] = []
     @Published var showAddCustomModelSheet: Bool = false
     @Published var customRepoInput: String = ""
@@ -463,7 +463,7 @@ class StudioViewModel: ObservableObject {
     @Published var selectedOffload: String = "disk"
 
     // 任务模式与生成参数
-    @Published var taskModeId: String = "t2va"
+    @Published var taskModeId: String = "multiref"
     @Published var visualPrompt: String = PRESET_TEMPLATES[0].visual
     @Published var negativePrompt: String = ""
     @Published var soundscapePrompt: String = PRESET_TEMPLATES[0].soundscape
@@ -496,10 +496,38 @@ class StudioViewModel: ObservableObject {
     @Published var recavsrColorFix: String = "none"
     @Published var recavsrKernels: String = "fast"
     @Published var recavsrEncoder: String = "auto"
+    @Published var mossEditLoraStrength: Double = 1.0
+    @Published var mossNsfwLoraEnabled: Bool = true
+    @Published var mossNsfwLoraStrength: Double = 0.65
+    @Published var mossCfg: Double = 3.0
+    @Published var mossKvCache: Bool = true
+    @Published var mossMatchInputSize: Bool = true
+    @Published var wan22Shift: Double = 8.0
+    @Published var wan22SplitStep: Int = 4
+    @Published var wan22Cfg: Double = 1.0
+    @Published var dramaProjectSeconds: Double = 20.0
+    @Published var dramaChunkSeconds: Double = 0.0
+    @Published var dramaContinuity: String = "video_audio"
+    @Published var dramaPinFrames: String = "22"
+    @Published var dramaStyle: String = "Cinematic"
+    @Published var dramaCharacterNamesText: String = "Hero, Partner"
+    @Published var dramaIdea: String = ""
     @Published var h3CorrectorEnabled: Bool = true
     @Published var h3CorrectorStrength: Double = 1.0
     @Published var h3CorrectorStartStep: Int = 0
     @Published var h3CorrectorEndStep: Int = -1
+    // Qwen3-TTS 与 Fish Audio Drama 3 语音生成专属参数
+    @Published var ttsInstruct: String = "28岁冷艳古风女帝，声线清冽带有磁性颗粒感，语速沉稳克制，末尾带一丝戏谑威压与叹息感。"
+    @Published var ttsLanguage: String = "Chinese"
+    @Published var ttsRefText: String = ""
+    @Published var ttsXVectorOnly: Bool = false
+    @Published var drama3Experts: String = "in RAM"
+    @Published var drama3SpeakersMode: String = "one take per line"
+    @Published var drama3VoiceGuidance: Double = 0.0
+    @Published var drama3Temperature: Double = 1.0
+    @Published var drama3TopP: Double = 0.9
+    @Published var drama3TopK: Int = 0
+    @Published var drama3ShortenPauses: Bool = true
     @Published var autoSleepAfterGenerate: Bool = {
         if UserDefaults.standard.object(forKey: "easycolabAutoSleepAfterGenerate") == nil {
             return true
@@ -933,9 +961,10 @@ class StudioViewModel: ObservableObject {
     }
 
     var isQwenLoadedInVRAM: Bool {
-        loadedModelIds.contains("qwen38_27b")
+        loadedModelIds.contains("qwen38_27b_uncensored_gguf")
+            || loadedModelIds.contains("qwen38_27b")
             || loadedModelIds.contains("qwen38_27b_gguf")
-            || (modelLoaded && (loadedModelId == "qwen38_27b" || loadedModelId == "qwen38_27b_gguf"))
+            || (modelLoaded && (loadedModelId == "qwen38_27b_uncensored_gguf" || loadedModelId == "qwen38_27b" || loadedModelId == "qwen38_27b_gguf"))
             || customModels.contains(where: { $0.modality == .llmVLM && loadedModelIds.contains($0.id) })
     }
 
@@ -1112,10 +1141,25 @@ class StudioViewModel: ObservableObject {
         if ["minimax_h3_10eros_max", "minimax_h3_sulphur3", "minimax_h3_ref2va_tara"].contains(spec.id),
            let h3Res = VIDEO_RESOLUTIONS.first(where: { $0.id == "v_1056_608" }) {
             selectedVideoResolution = h3Res
+        } else if ["wan22_remix_nsfw", "minimax_h3_drama_director"].contains(spec.id),
+                  let wanRes = VIDEO_RESOLUTIONS.first(where: { $0.id == "v_1280_720" }) {
+            selectedVideoResolution = wanRes
         }
 
         // 自动填入匹配该模态的首条示例提示词（若当前框还是另一模态的默认模板）
         let preferredSample: PresetTemplate? = {
+            if spec.id == "qwen3_tts_voice_design",
+               let qwenTtsSample = PRESET_TEMPLATES.first(where: { $0.id == "tpl_qwen3_tts_voice_design" }) {
+                return qwenTtsSample
+            }
+            if spec.id == "drama3_tts",
+               let drama3Sample = PRESET_TEMPLATES.first(where: { $0.id == "tpl_drama3_emotional_acting" }) {
+                return drama3Sample
+            }
+            if spec.id == "minimax_h3_drama_director",
+               let dramaSample = PRESET_TEMPLATES.first(where: { $0.id == "tpl_h3_drama_rain_reunion" }) {
+                return dramaSample
+            }
             if spec.id == "minimax_h3_ref2va_tara",
                let taraSample = PRESET_TEMPLATES.first(where: { $0.id == "tpl_ref2va_tara_motion" }) {
                 return taraSample
@@ -1123,6 +1167,14 @@ class StudioViewModel: ObservableObject {
             if spec.id == "minimax_h3_10eros_max",
                let multiSample = PRESET_TEMPLATES.first(where: { $0.id == "tpl_10eros_multiref" }) {
                 return multiSample
+            }
+            if spec.id == "moss_image_edit",
+               let mossSample = PRESET_TEMPLATES.first(where: { $0.id == "tpl_moss_image_edit" }) {
+                return mossSample
+            }
+            if spec.id == "wan22_remix_nsfw",
+               let wanSample = PRESET_TEMPLATES.first(where: { $0.id == "tpl_wan22_remix_i2v" }) {
+                return wanSample
             }
             return PRESET_TEMPLATES.first(where: {
                 $0.category == spec.modality || (spec.modality == .video && $0.category == .videoAudio)
@@ -1662,6 +1714,13 @@ class StudioViewModel: ObservableObject {
             )
             return
         }
+        if ["voice_clone", "drama_tts_clone"].contains(taskModeId) && refAudioBase64 == nil {
+            statusMessage = L(
+                "在「声纹克隆配音」模式下，请先上传 3~20 秒参考人声 (<Audio 1>)。",
+                "In Voice Clone mode, please upload a 3–20s reference audio clip (<Audio 1>) first."
+            )
+            return
+        }
         if taskModeId == "fl2va" && firstFrameImage == nil && lastFrameImage == nil {
             statusMessage = L(
                 "在「首尾帧生视频」模式下，请至少提供一张首帧或尾帧图片。",
@@ -1676,7 +1735,7 @@ class StudioViewModel: ObservableObject {
             )
             return
         }
-        if taskModeId == "i2i_edit" && firstFrameImage == nil && lastFrameImage == nil {
+        if taskModeId == "i2i_edit" && firstFrameImage == nil && lastFrameImage == nil && !(selectedModelId == "moss_image_edit" && !referenceImages.isEmpty) {
             statusMessage = L(
                 "在「图像编辑/重绘」模式下，请至少拖入一张参考原图。",
                 "In Image Edit / Restyle mode, please drop at least one reference image."
@@ -1785,16 +1844,34 @@ class StudioViewModel: ObservableObject {
                     payload["last_frame_base64"] = b64
                 }
             }
-            if ["multiref", "motion_transfer"].contains(taskModeId) {
-                let encodedRefs = referenceImages.prefix(9).compactMap { encodeImageToBase64($0) }
-                if !encodedRefs.isEmpty {
-                    payload["ref_images_base64"] = encodedRefs
+            if ["multiref", "motion_transfer", "drama_multishot", "drama_storyboard", "voice_clone", "drama_tts_clone"].contains(taskModeId) {
+                if ["multiref", "motion_transfer", "drama_multishot", "drama_storyboard"].contains(taskModeId) {
+                    let encodedRefs = referenceImages.prefix(9).compactMap { encodeImageToBase64($0) }
+                    if !encodedRefs.isEmpty {
+                        payload["ref_images_base64"] = encodedRefs
+                    }
+                    payload["ref_image_size"] = refImageSizeMode
                 }
-                payload["ref_image_size"] = refImageSizeMode
                 if let audioB64 = refAudioBase64, !audioB64.isEmpty {
                     payload["ref_audio_base64"] = audioB64
                     payload["ref_audio_filename"] = refAudioFileName ?? "voice_seed.wav"
                 }
+            }
+            if selectedModelId == "qwen3_tts_voice_design" {
+                payload["tts_instruct"] = ttsInstruct
+                payload["tts_language"] = ttsLanguage
+                payload["tts_ref_text"] = ttsRefText
+                payload["tts_x_vector_only"] = ttsXVectorOnly
+            }
+            if selectedModelId == "drama3_tts" {
+                payload["drama3_experts"] = drama3Experts
+                payload["drama3_speakers_mode"] = drama3SpeakersMode
+                payload["drama3_voice_guidance"] = drama3VoiceGuidance
+                payload["temperature"] = drama3Temperature
+                payload["top_p"] = drama3TopP
+                payload["top_k"] = drama3TopK
+                payload["drama3_shorten_pauses"] = drama3ShortenPauses
+                payload["tts_ref_text"] = ttsRefText
             }
             if selectedModelId == "minimax_h3_ref2va_tara" {
                 if let videoB64 = refVideoBase64, !videoB64.isEmpty {
@@ -1808,21 +1885,6 @@ class StudioViewModel: ObservableObject {
                 payload["tara_falloff_seconds"] = taraFalloffSeconds
                 payload["tara_max_penalty"] = taraMaxPenalty
             }
-            if selectedModelId == "seedvr2_upscaler" {
-                if let videoB64 = refVideoBase64, !videoB64.isEmpty {
-                    payload["ref_video_base64"] = videoB64
-                    payload["ref_video_filename"] = refVideoFileName ?? "source_video.mp4"
-                }
-                payload["seedvr2_model"] = seedvr2Model
-                payload["seedvr2_resolution"] = seedvr2Resolution
-                payload["seedvr2_max_resolution"] = 0
-                payload["seedvr2_batch_size"] = seedvr2BatchSize
-                payload["seedvr2_temporal_overlap"] = seedvr2TemporalOverlap
-                payload["seedvr2_color_correction"] = seedvr2ColorCorrection
-                payload["seedvr2_keep_audio"] = seedvr2KeepAudio
-                payload["seedvr2_attention_mode"] = seedvr2AttentionMode
-                payload["seedvr2_decode_tile_size"] = seedvr2DecodeTileSize
-            }
             if selectedModelId == "recavsr_upscaler" {
                 if let videoB64 = refVideoBase64, !videoB64.isEmpty {
                     payload["ref_video_base64"] = videoB64
@@ -1833,6 +1895,41 @@ class StudioViewModel: ObservableObject {
                 payload["recavsr_color_fix"] = recavsrColorFix
                 payload["recavsr_kernels"] = recavsrKernels
                 payload["recavsr_encoder"] = recavsrEncoder
+            }
+            if selectedModelId == "moss_image_edit" {
+                if taskModeId == "i2i_edit" && !referenceImages.isEmpty {
+                    let encodedRefs = referenceImages.prefix(3).compactMap { encodeImageToBase64($0) }
+                    if !encodedRefs.isEmpty {
+                        payload["ref_images_base64"] = encodedRefs
+                    }
+                }
+                payload["moss_edit_lora_strength"] = mossEditLoraStrength
+                payload["moss_nsfw_lora_enabled"] = mossNsfwLoraEnabled
+                payload["moss_nsfw_lora_strength"] = mossNsfwLoraStrength
+                payload["moss_cfg"] = mossCfg
+                payload["moss_kv_cache"] = mossKvCache
+                payload["moss_match_input_size"] = mossMatchInputSize
+            }
+            if selectedModelId == "wan22_remix_nsfw" {
+                payload["wan22_shift"] = wan22Shift
+                payload["wan22_split_step"] = wan22SplitStep
+                payload["wan22_cfg"] = wan22Cfg
+            }
+            if selectedModelId == "minimax_h3_drama_director" {
+                payload["drama_project_seconds"] = dramaProjectSeconds
+                payload["drama_chunk_seconds"] = dramaChunkSeconds
+                payload["drama_continuity"] = dramaContinuity
+                payload["drama_pin_frames"] = dramaPinFrames
+                payload["drama_style"] = dramaStyle
+                payload["drama_idea"] = dramaIdea
+                let parsedNames = dramaCharacterNamesText
+                    .replacingOccurrences(of: "，", with: ",")
+                    .split(separator: ",")
+                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: "@", with: "") }
+                    .filter { !$0.isEmpty }
+                if !parsedNames.isEmpty {
+                    payload["drama_character_names"] = parsedNames
+                }
             }
             if selectedModelId == "minimax_h3_sulphur3" {
                 payload["corrector_enabled"] = h3CorrectorEnabled
@@ -2070,9 +2167,11 @@ class StudioViewModel: ObservableObject {
             selectMedia(destURL)
             if !keepGeneratingProgress {
                 progressValue = 1.0
-                let isMP4 = destURL.pathExtension.lowercased() == "mp4"
-                let kindZh = isMP4 ? "视频" : "图像"
-                let kindEn = isMP4 ? "Video" : "Image"
+                let ext = destURL.pathExtension.lowercased()
+                let isAudio = ["wav", "flac", "mp3", "m4a", "opus", "ogg"].contains(ext)
+                let isMP4 = ext == "mp4" || ext == "mov" || ext == "webm"
+                let kindZh = isAudio ? "音频" : (isMP4 ? "视频" : "图像")
+                let kindEn = isAudio ? "Audio" : (isMP4 ? "Video" : "Image")
                 if let el = elapsedSeconds, el > 0 {
                     statusMessage = L(
                         "\(kindZh)生成完成 · 耗时 \(formatDuration(el)) · 已保存：\(destURL.lastPathComponent)",

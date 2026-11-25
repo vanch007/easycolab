@@ -89,7 +89,7 @@ final class IOSStudioViewModel: ObservableObject {
     @Published var combinedTelemetryChartMode: Bool = true
 
     // Active Model & VRAM Residency
-    @Published var selectedModelId: String = "minimax_h3"
+    @Published var selectedModelId: String = "comfyui_studio"
     @Published var customModels: [OpenModelSpec] = []
     @Published var showAddCustomModelSheet: Bool = false
     @Published var customRepoIdInput: String = ""

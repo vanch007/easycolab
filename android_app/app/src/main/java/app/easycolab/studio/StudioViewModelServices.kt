@@ -74,6 +74,7 @@ internal fun StudioViewModel.savePersistedCustomModels() {
             val modStr = when (s.modality) {
                 ModelModality.VIDEO_AUDIO -> "video_audio"
                 ModelModality.IMAGE -> "image"
+                ModelModality.AUDIO -> "audio"
                 else -> "llm_vlm"
             }
             val obj = JSONObject()

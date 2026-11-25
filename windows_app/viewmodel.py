@@ -186,12 +186,12 @@ class EasyColabViewModel(ViewModelServicesMixin, QObject):
         # ── Model Selection, Weights & VRAM State ──
         self.custom_models: List[OpenModelSpec] = []
         self._load_persisted_custom_models()
-        self.selected_model_id: str = "minimax_h3"
-        self.task_mode_id: str = "t2va"
+        self.selected_model_id: str = "comfyui_studio"
+        self.task_mode_id: str = "comfy_canvas"
         self.selected_precision: str = "bf16"
         self.selected_offload: str = "disk"
 
-        self.model_files: List[ModelFileItem] = [f.clone() for f in MODEL_SPEC_MAP["minimax_h3"].default_files]
+        self.model_files: List[ModelFileItem] = [f.clone() for f in (MODEL_SPEC_MAP.get(self.selected_model_id) or OPEN_MODEL_CATALOG[0]).default_files]
         self.downloaded_count: int = 0
         self.total_count: int = len(self.model_files)
         self.all_downloaded: bool = False

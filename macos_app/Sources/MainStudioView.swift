@@ -1445,7 +1445,7 @@ struct MainStudioView: View {
                         .frame(width: 148)
                     }
 
-                    if vm.selectedModelId == "qwen38_27b_gguf",
+                    if vm.selectedModelId == "qwen38_27b_uncensored_gguf" || vm.selectedModelId == "qwen38_27b_gguf",
                        vm.isSelectedModelLoadedInVRAM,
                        vm.loadedContextLengthTokens > 0,
                        vm.loadedContextLengthTokens != vm.contextLengthTokens {
@@ -1455,7 +1455,7 @@ struct MainStudioView: View {
                         ))
                             .font(.system(size: 10.5))
                             .foregroundStyle(.orange)
-                    } else if vm.selectedModelId == "qwen38_27b_gguf", vm.contextLengthK >= 128 {
+                    } else if (vm.selectedModelId == "qwen38_27b_uncensored_gguf" || vm.selectedModelId == "qwen38_27b_gguf"), vm.contextLengthK >= 128 {
                         Text(L(
                             "提示：日常对话选 32K/64K 可达峰值 90~110 tok/s；256K 预分配超长槽位约为 80+ tok/s",
                             "Tip: 32K/64K hits peak 90–110 tok/s; 256K pre-allocated context runs at ~80+ tok/s"
@@ -1869,8 +1869,21 @@ struct MainStudioView: View {
 
             seedAndBatchControls(unitLabelZh: "张")
 
+        case .audio:
+            VStack(alignment: .leading, spacing: 4) {
+                Text(L("云端 TTS 声音引擎", "Cloud TTS Engine"))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text(vm.selectedModelId == "drama3_tts"
+                     ? L("Fish Audio Drama 3 35B MoE + Qwen3-ASR 1.7B，请在右侧设定角色声纹与舞台指示。", "Fish Audio Drama 3 35B MoE + Qwen3-ASR 1.7B. Configure speaker mode & cues on the right.")
+                     : L("Qwen3-TTS 1.7B VoiceDesign / Base，请在右侧选择语言并填写声线/情绪指令。", "Qwen3-TTS 1.7B VoiceDesign / Base. Configure language & voice prompt on the right."))
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            seedAndBatchControls(unitLabelZh: "条")
+
         case .videoAudio, .video:
-            if vm.selectedModelId == "seedvr2_upscaler" || vm.selectedModelId == "recavsr_upscaler" || vm.taskModeId == "video_upscale" {
+            if vm.selectedModelId == "recavsr_upscaler" || vm.taskModeId == "video_upscale" {
                 Text(L(
                     "视频超分会自动沿用原视频宽高比与帧率；请在右侧超分控制面板调节目标分辨率/倍率与编码参数。",
                     "Video upscaler preserves source aspect ratio & FPS; adjust target resolution/scale and encoder settings on the right."
@@ -1947,7 +1960,7 @@ struct MainStudioView: View {
                             .font(.caption.weight(.medium))
                             .monospacedDigit()
                     }
-                    if vm.selectedModelId == "minimax_h3_10eros_max" || vm.selectedModelId == "minimax_h3_ref2va_tara" {
+                    if vm.selectedModelId == "minimax_h3_10eros_max" || vm.selectedModelId == "minimax_h3_ref2va_tara" || vm.selectedModelId == "wan22_remix_nsfw" || vm.selectedModelId == "minimax_h3_drama_director" {
                         Slider(
                             value: Binding(
                                 get: { vm.inferenceSteps.clamped(to: 4...20) },

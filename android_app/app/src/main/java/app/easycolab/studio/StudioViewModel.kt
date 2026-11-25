@@ -162,7 +162,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     var combinedTelemetryChartMode by mutableStateOf(true)
 
     // Active Model & VRAM Residency
-    var selectedModelId by mutableStateOf("minimax_h3")
+    var selectedModelId by mutableStateOf("comfyui_studio")
     var customModels by mutableStateOf<List<OpenModelSpec>>(emptyList())
     var showAddCustomModelDialog by mutableStateOf(false)
     var customRepoInput by mutableStateOf("")

@@ -219,7 +219,7 @@ fun CreateTabScreen(vm: StudioViewModel) {
 
         // 4. Modality-specific studio panels
         when (spec.modality) {
-            ModelModality.VIDEO_AUDIO, ModelModality.IMAGE -> {
+            ModelModality.VIDEO_AUDIO, ModelModality.IMAGE, ModelModality.AUDIO -> {
                 item { VideoAndImageWorkspaceSection(vm = vm) }
                 if (vm.currentMediaFile != null) {
                     item { MediaStageCard(vm = vm) }

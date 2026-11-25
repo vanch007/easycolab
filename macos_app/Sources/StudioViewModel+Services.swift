@@ -1535,6 +1535,20 @@ extension StudioViewModel {
             if let rc = params.recavsr_color_fix, !rc.isEmpty { recavsrColorFix = rc }
             if let rk = params.recavsr_kernels, !rk.isEmpty { recavsrKernels = rk }
             if let re = params.recavsr_encoder, !re.isEmpty { recavsrEncoder = re }
+
+            if let me = params.moss_edit_lora_strength { mossEditLoraStrength = me }
+            if let mnEn = params.moss_nsfw_lora_enabled { mossNsfwLoraEnabled = mnEn }
+            if let mnStr = params.moss_nsfw_lora_strength { mossNsfwLoraStrength = mnStr }
+            if let mCfg = params.moss_cfg, mCfg >= 1.0 { mossCfg = mCfg }
+
+            if let ws = params.wan22_shift, ws >= 1.0 { wan22Shift = ws }
+            if let wsp = params.wan22_split_step, wsp >= 1 { wan22SplitStep = wsp }
+            if let wc = params.wan22_cfg, wc >= 1.0 { wan22Cfg = wc }
+
+            if let dps = params.drama_project_seconds, dps >= 5.0 { dramaProjectSeconds = dps }
+            if let dcon = params.drama_continuity, !dcon.isEmpty { dramaContinuity = dcon }
+            if let dpin = params.drama_pin_frames, !dpin.isEmpty { dramaPinFrames = dpin }
+            if let dst = params.drama_style, !dst.isEmpty { dramaStyle = dst }
         }
 
         if taskModeId == "video_upscale" || taskModeId == "motion_transfer" {
@@ -1711,7 +1725,9 @@ extension StudioViewModel {
             }
         }
 
-        let validExts: Set<String> = ["mp4", "png", "jpg", "jpeg", "webp"]
+        let validExts: Set<String> = ["mp4", "png", "jpg", "jpeg", "webp", "wav", "flac", "mp3", "m4a", "opus", "ogg"]
+        let audioExts: Set<String> = ["wav", "flac", "mp3", "m4a", "opus", "ogg"]
+        let imageExts: Set<String> = ["png", "jpg", "jpeg", "webp"]
         var seenNames = Set<String>()
         let filtered = allURLs.filter { url in
             guard validExts.contains(url.pathExtension.lowercased()) else { return false }
@@ -1725,7 +1741,8 @@ extension StudioViewModel {
             return LocalMediaItem(
                 url: url,
                 filename: fname,
-                isImage: ext != "mp4",
+                isImage: imageExts.contains(ext),
+                isAudio: audioExts.contains(ext),
                 createdAt: date,
                 elapsedSeconds: mediaElapsedMap[fname]
             )
@@ -1740,7 +1757,8 @@ extension StudioViewModel {
     func selectMedia(_ url: URL) {
         currentMediaURL = url
         let ext = url.pathExtension.lowercased()
-        if ext == "mp4" {
+        let playableExts: Set<String> = ["mp4", "mov", "webm", "wav", "flac", "mp3", "m4a", "opus", "ogg"]
+        if playableExts.contains(ext) {
             currentPreviewImage = nil
             player = AVPlayer(url: url)
             player?.play()
@@ -1749,6 +1767,11 @@ extension StudioViewModel {
             player = nil
             currentPreviewImage = NSImage(contentsOf: url)
         }
+    }
+
+    func useCurrentAudioAsVoiceReference() {
+        guard let url = currentMediaURL else { return }
+        setReferenceAudio(from: url)
     }
 
     func applyStatusResponse(_ decoded: ColabStatusResponse) {
@@ -1919,6 +1942,7 @@ extension StudioViewModel {
             switch spec.modality {
             case .videoAudio, .video: modStr = "video_audio"
             case .image: modStr = "image"
+            case .audio: modStr = "audio"
             case .llmVLM, .comfyUI: modStr = "llm_vlm"
             }
             return CustomHFModelDTO(
